@@ -41,8 +41,10 @@ pub fn select_columns(input: &Path, opts: &SelectOptions) -> Result<u64> {
         indices.push(idx);
     }
 
+    // Use roots() not leaves() — top-level field indices differ from leaf
+    // column indices when the schema contains structs, lists, or maps.
     let mask =
-        parquet::arrow::ProjectionMask::leaves(builder.parquet_schema(), indices.iter().copied());
+        parquet::arrow::ProjectionMask::roots(builder.parquet_schema(), indices.iter().copied());
     let reader = builder
         .with_projection(mask)
         .build()

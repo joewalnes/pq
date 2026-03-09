@@ -52,7 +52,9 @@ pub fn read_batches(path: &Path, opts: &ReadOptions) -> Result<(Vec<RecordBatch>
                 })?;
             indices.push(idx);
         }
-        let mask = parquet::arrow::ProjectionMask::leaves(
+        // Use roots() not leaves() — top-level field indices differ from leaf
+        // column indices when the schema contains structs, lists, or maps.
+        let mask = parquet::arrow::ProjectionMask::roots(
             builder.parquet_schema(),
             indices.iter().copied(),
         );

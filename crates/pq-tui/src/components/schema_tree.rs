@@ -82,7 +82,7 @@ fn add_field_items(
     nullable: bool,
     depth: usize,
 ) {
-    let type_name = match dt {
+    match dt {
         DataType::Struct(fields) => {
             items.push(SchemaTreeItem {
                 name: name.to_string(),
@@ -99,24 +99,103 @@ fn add_field_items(
                     depth + 1,
                 );
             }
-            return;
         }
         DataType::List(inner) | DataType::LargeList(inner) => {
+            let type_label = format_short_type(dt);
             items.push(SchemaTreeItem {
                 name: name.to_string(),
-                type_name: format!("list<{:?}>", inner.data_type()),
+                type_name: type_label,
                 nullable,
                 depth,
             });
-            return;
+            // Recurse into struct children of lists
+            if let DataType::Struct(fields) = inner.data_type() {
+                for field in fields {
+                    add_field_items(
+                        items,
+                        field.name(),
+                        field.data_type(),
+                        field.is_nullable(),
+                        depth + 1,
+                    );
+                }
+            }
         }
-        other => format!("{other:?}"),
-    };
+        DataType::FixedSizeList(inner, size) => {
+            let inner_type = format_short_type(inner.data_type());
+            items.push(SchemaTreeItem {
+                name: name.to_string(),
+                type_name: format!("fixed_list<{inner_type}, {size}>"),
+                nullable,
+                depth,
+            });
+            if let DataType::Struct(fields) = inner.data_type() {
+                for field in fields {
+                    add_field_items(
+                        items,
+                        field.name(),
+                        field.data_type(),
+                        field.is_nullable(),
+                        depth + 1,
+                    );
+                }
+            }
+        }
+        DataType::Map(entry_field, _) => {
+            items.push(SchemaTreeItem {
+                name: name.to_string(),
+                type_name: "map".to_string(),
+                nullable,
+                depth,
+            });
+            if let DataType::Struct(fields) = entry_field.data_type() {
+                for field in fields {
+                    add_field_items(
+                        items,
+                        field.name(),
+                        field.data_type(),
+                        field.is_nullable(),
+                        depth + 1,
+                    );
+                }
+            }
+        }
+        dt => {
+            items.push(SchemaTreeItem {
+                name: name.to_string(),
+                type_name: format_short_type(dt),
+                nullable,
+                depth,
+            });
+        }
+    }
+}
 
-    items.push(SchemaTreeItem {
-        name: name.to_string(),
-        type_name,
-        nullable,
-        depth,
-    });
+fn format_short_type(dt: &DataType) -> String {
+    match dt {
+        DataType::Null => "null".to_string(),
+        DataType::Boolean => "bool".to_string(),
+        DataType::Int8 => "int8".to_string(),
+        DataType::Int16 => "int16".to_string(),
+        DataType::Int32 => "int32".to_string(),
+        DataType::Int64 => "int64".to_string(),
+        DataType::UInt8 => "uint8".to_string(),
+        DataType::UInt16 => "uint16".to_string(),
+        DataType::UInt32 => "uint32".to_string(),
+        DataType::UInt64 => "uint64".to_string(),
+        DataType::Float16 => "f16".to_string(),
+        DataType::Float32 => "f32".to_string(),
+        DataType::Float64 => "f64".to_string(),
+        DataType::Utf8 | DataType::LargeUtf8 => "string".to_string(),
+        DataType::Binary | DataType::LargeBinary => "binary".to_string(),
+        DataType::Date32 | DataType::Date64 => "date".to_string(),
+        DataType::Timestamp(_, _) => "timestamp".to_string(),
+        DataType::Decimal128(p, s) | DataType::Decimal256(p, s) => format!("decimal({p},{s})"),
+        DataType::List(inner) | DataType::LargeList(inner) => {
+            format!("list<{}>", format_short_type(inner.data_type()))
+        }
+        DataType::Struct(_) => "struct".to_string(),
+        DataType::Map(_, _) => "map".to_string(),
+        other => format!("{other:?}"),
+    }
 }

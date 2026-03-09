@@ -1,0 +1,5 @@
+{"id":1,"name":"Alice","address":{"street":"123 Main St","city":"Seattle","geo":{"lat":47.6,"lon":-122.3}},"tags":["admin","user"],"orders":[{"item":"laptop","qty":1,"price":999.99},{"item":"mouse","qty":2,"price":29.99}],"active":true}
+{"id":2,"name":"Bob","address":{"street":"456 Oak Ave","city":"Portland","geo":{"lat":45.5,"lon":-122.7}},"tags":["user"],"orders":[{"item":"keyboard","qty":1,"price":149.99}],"active":false}
+{"id":3,"name":"Carol","address":{"street":"789 Pine Rd","city":"Denver","geo":{"lat":39.7,"lon":-104.9}},"tags":["user","moderator"],"orders":[],"active":true}
+{"id":4,"name":"Dave","address":{"street":"321 Elm St","city":"Austin","geo":{"lat":30.3,"lon":-97.7}},"tags":[],"orders":[{"item":"monitor","qty":1,"price":599.99},{"item":"cable","qty":3,"price":12.99},{"item":"stand","qty":1,"price":89.99}],"active":true}
+{"id":5,"name":"Eve","address":{"street":"654 Birch Ln","city":"Chicago","geo":{"lat":41.9,"lon":-87.6}},"tags":["admin"],"orders":[{"item":"webcam","qty":1,"price":79.99}],"active":false}

@@ -67,6 +67,11 @@ fn field_to_schema_field(field: &Arc<Field>) -> SchemaField {
     }
 }
 
+/// Format a DataType as a human-readable string.
+pub fn format_data_type_public(dt: &DataType) -> String {
+    format_data_type(dt)
+}
+
 fn format_data_type(dt: &DataType) -> String {
     match dt {
         DataType::Null => "null".to_string(),
@@ -149,10 +154,34 @@ fn arrow_type_to_sql(dt: &DataType) -> String {
         DataType::Float32 => "REAL".to_string(),
         DataType::Float64 => "DOUBLE PRECISION".to_string(),
         DataType::Utf8 | DataType::LargeUtf8 => "TEXT".to_string(),
-        DataType::Binary | DataType::LargeBinary => "BYTEA".to_string(),
+        DataType::Binary | DataType::LargeBinary | DataType::FixedSizeBinary(_) => {
+            "BYTEA".to_string()
+        }
         DataType::Date32 | DataType::Date64 => "DATE".to_string(),
         DataType::Timestamp(_, _) => "TIMESTAMP".to_string(),
         DataType::Decimal128(p, s) | DataType::Decimal256(p, s) => format!("DECIMAL({p},{s})"),
+        DataType::List(inner) | DataType::LargeList(inner) | DataType::FixedSizeList(inner, _) => {
+            format!("{}[]", arrow_type_to_sql(inner.data_type()))
+        }
+        DataType::Struct(fields) => {
+            let field_defs: Vec<String> = fields
+                .iter()
+                .map(|f| format!("{} {}", f.name(), arrow_type_to_sql(f.data_type())))
+                .collect();
+            format!("STRUCT({})", field_defs.join(", "))
+        }
+        DataType::Map(entry, _) => {
+            if let DataType::Struct(fields) = entry.data_type() {
+                if fields.len() == 2 {
+                    return format!(
+                        "MAP({}, {})",
+                        arrow_type_to_sql(fields[0].data_type()),
+                        arrow_type_to_sql(fields[1].data_type()),
+                    );
+                }
+            }
+            "MAP(TEXT, TEXT)".to_string()
+        }
         _ => "TEXT".to_string(),
     }
 }

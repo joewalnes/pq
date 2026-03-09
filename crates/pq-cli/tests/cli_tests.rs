@@ -366,3 +366,420 @@ fn test_help() {
         .success()
         .stdout(predicate::str::contains("Parquet Swiss Army Knife"));
 }
+
+// ── Complex / nested type tests ─────────────────────────────────────────
+
+fn nested_fixture_path() -> String {
+    workspace_root()
+        .join("tests/fixtures/nested_data.parquet")
+        .to_str()
+        .unwrap()
+        .to_string()
+}
+
+fn ensure_nested_fixture() {
+    let parquet = workspace_root().join("tests/fixtures/nested_data.parquet");
+    if parquet.exists() {
+        return;
+    }
+    let jsonl_path = workspace_root().join("tests/fixtures/nested_data.jsonl");
+    pq().args([
+        "convert",
+        jsonl_path.to_str().unwrap(),
+        "-o",
+        parquet.to_str().unwrap(),
+    ])
+    .assert()
+    .success();
+}
+
+#[test]
+fn test_nested_convert_roundtrip() {
+    // Convert nested JSONL -> parquet -> read back and verify structure is preserved
+    let tmp = TempDir::new().unwrap();
+    let jsonl_in = workspace_root().join("tests/fixtures/nested_data.jsonl");
+    let parquet = tmp.path().join("nested.parquet");
+
+    pq().args([
+        "convert",
+        jsonl_in.to_str().unwrap(),
+        "-o",
+        parquet.to_str().unwrap(),
+    ])
+    .assert()
+    .success()
+    .stderr(predicate::str::contains("5 rows"));
+
+    // Read back and check nested struct fields survive
+    let output = pq()
+        .args(["cat", parquet.to_str().unwrap(), "--limit", "1", "-O", "jsonl"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let row: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+
+    // Verify struct fields
+    assert!(row["address"].is_object(), "address should be a struct");
+    assert!(row["address"]["geo"].is_object(), "address.geo should be a nested struct");
+    assert!(row["address"]["geo"]["lat"].is_number(), "address.geo.lat should be a number");
+
+    // Verify arrays
+    assert!(row["tags"].is_array(), "tags should be an array");
+    assert!(row["orders"].is_array(), "orders should be an array");
+
+    // Verify array of structs
+    let orders = row["orders"].as_array().unwrap();
+    assert!(!orders.is_empty());
+    assert!(orders[0]["item"].is_string(), "orders[0].item should be a string");
+    assert!(orders[0]["price"].is_number(), "orders[0].price should be a number");
+}
+
+#[test]
+fn test_nested_schema_tree() {
+    ensure_nested_fixture();
+    pq().args(["schema", &nested_fixture_path(), "-O", "table"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("address: struct"))
+        .stdout(predicate::str::contains("geo: struct"))
+        .stdout(predicate::str::contains("lat: float64"))
+        .stdout(predicate::str::contains("orders: list<struct>"))
+        .stdout(predicate::str::contains("tags: list<string>"));
+}
+
+#[test]
+fn test_nested_schema_json_schema() {
+    ensure_nested_fixture();
+    let output = pq()
+        .args(["schema", &nested_fixture_path(), "--format", "json-schema"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let schema: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+
+    // address should be type: object with properties
+    assert_eq!(schema["properties"]["address"]["type"], "object");
+    assert!(schema["properties"]["address"]["properties"]["geo"].is_object());
+    assert_eq!(schema["properties"]["address"]["properties"]["geo"]["type"], "object");
+
+    // orders should be type: array with items type: object
+    assert_eq!(schema["properties"]["orders"]["type"], "array");
+    assert_eq!(schema["properties"]["orders"]["items"]["type"], "object");
+
+    // tags should be type: array with items type: string
+    assert_eq!(schema["properties"]["tags"]["type"], "array");
+    assert_eq!(schema["properties"]["tags"]["items"]["type"], "string");
+}
+
+#[test]
+fn test_nested_schema_ddl() {
+    ensure_nested_fixture();
+    pq().args(["schema", &nested_fixture_path(), "--format", "ddl"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("STRUCT("))
+        .stdout(predicate::str::contains("TEXT[]"));
+}
+
+#[test]
+fn test_nested_cat_jsonl() {
+    ensure_nested_fixture();
+    let output = pq()
+        .args(["cat", &nested_fixture_path(), "--limit", "1", "-O", "jsonl"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let row: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+
+    // Struct of struct: address.geo.lat
+    assert_eq!(row["address"]["geo"]["lat"], 47.6);
+    assert_eq!(row["address"]["city"], "Seattle");
+}
+
+#[test]
+fn test_nested_cat_json_array() {
+    ensure_nested_fixture();
+    let output = pq()
+        .args(["cat", &nested_fixture_path(), "-O", "json"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(rows.len(), 5);
+
+    // Verify empty arrays are preserved
+    let carol = &rows[2]; // Carol has empty orders
+    assert_eq!(carol["orders"].as_array().unwrap().len(), 0);
+    assert_eq!(carol["tags"].as_array().unwrap().len(), 2); // ["user", "moderator"]
+}
+
+#[test]
+fn test_nested_jq_struct_field() {
+    ensure_nested_fixture();
+    pq().args(["jq", &nested_fixture_path(), ".address.city", "-r"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Seattle"))
+        .stdout(predicate::str::contains("Portland"))
+        .stdout(predicate::str::contains("Denver"));
+}
+
+#[test]
+fn test_nested_jq_struct_of_struct() {
+    ensure_nested_fixture();
+    pq().args(["jq", &nested_fixture_path(), ".address.geo.lat"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("47.6"))
+        .stdout(predicate::str::contains("45.5"));
+}
+
+#[test]
+fn test_nested_jq_array_of_structs() {
+    ensure_nested_fixture();
+    // Flatten orders into item names
+    pq().args(["jq", &nested_fixture_path(), ".orders[].item", "-r"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("laptop"))
+        .stdout(predicate::str::contains("mouse"))
+        .stdout(predicate::str::contains("keyboard"));
+}
+
+#[test]
+fn test_nested_jq_transform() {
+    ensure_nested_fixture();
+    // Transform: extract city and count of orders
+    let output = pq()
+        .args([
+            "jq",
+            &nested_fixture_path(),
+            "{city: .address.city, num_orders: (.orders | length)}",
+        ])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert_eq!(lines.len(), 5);
+
+    let first: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    assert_eq!(first["city"], "Seattle");
+    assert_eq!(first["num_orders"], 2);
+}
+
+#[test]
+fn test_nested_select_struct_column() {
+    ensure_nested_fixture();
+    let tmp = TempDir::new().unwrap();
+    let output_path = tmp.path().join("selected.parquet");
+
+    pq().args([
+        "select",
+        &nested_fixture_path(),
+        "-c",
+        "address",
+        "-o",
+        output_path.to_str().unwrap(),
+    ])
+    .assert()
+    .success();
+
+    // Verify the selected file has only the address column, with nested struct intact
+    let output = pq()
+        .args(["cat", output_path.to_str().unwrap(), "--limit", "1", "-O", "jsonl"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let row: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+
+    assert!(row["address"]["geo"]["lat"].is_number());
+    // Should not have other top-level columns
+    assert!(row.get("id").is_none());
+    assert!(row.get("name").is_none());
+}
+
+#[test]
+fn test_nested_select_list_column() {
+    ensure_nested_fixture();
+    let tmp = TempDir::new().unwrap();
+    let output_path = tmp.path().join("orders_only.parquet");
+
+    pq().args([
+        "select",
+        &nested_fixture_path(),
+        "-c",
+        "name,orders",
+        "-o",
+        output_path.to_str().unwrap(),
+    ])
+    .assert()
+    .success();
+
+    let output = pq()
+        .args(["cat", output_path.to_str().unwrap(), "-O", "jsonl"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let rows: Vec<serde_json::Value> = stdout
+        .trim()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(rows.len(), 5);
+
+    // Dave has 3 orders
+    let dave = &rows[3];
+    assert_eq!(dave["name"], "Dave");
+    assert_eq!(dave["orders"].as_array().unwrap().len(), 3);
+}
+
+#[test]
+fn test_nested_slice() {
+    ensure_nested_fixture();
+    let tmp = TempDir::new().unwrap();
+    let output_path = tmp.path().join("sliced.parquet");
+
+    pq().args([
+        "slice",
+        &nested_fixture_path(),
+        "--offset",
+        "2",
+        "--limit",
+        "2",
+        "-o",
+        output_path.to_str().unwrap(),
+    ])
+    .assert()
+    .success();
+
+    let output = pq()
+        .args(["cat", output_path.to_str().unwrap(), "-O", "jsonl"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let rows: Vec<serde_json::Value> = stdout
+        .trim()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(rows.len(), 2);
+
+    // Should be Carol and Dave (offset=2, limit=2)
+    assert_eq!(rows[0]["name"], "Carol");
+    assert_eq!(rows[1]["name"], "Dave");
+    // Nested struct still intact after slice
+    assert!(rows[0]["address"]["geo"]["lat"].is_number());
+}
+
+#[test]
+fn test_nested_merge() {
+    ensure_nested_fixture();
+    let tmp = TempDir::new().unwrap();
+    let output_path = tmp.path().join("merged.parquet");
+
+    pq().args([
+        "merge",
+        &nested_fixture_path(),
+        &nested_fixture_path(),
+        "-o",
+        output_path.to_str().unwrap(),
+    ])
+    .assert()
+    .success()
+    .stderr(predicate::str::contains("10 rows"));
+
+    // Verify all 10 rows have intact nested data
+    let output = pq()
+        .args(["cat", output_path.to_str().unwrap(), "-O", "json"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(rows.len(), 10);
+
+    // First 5 and last 5 should be identical
+    for i in 0..5 {
+        assert_eq!(rows[i]["name"], rows[i + 5]["name"]);
+        assert_eq!(rows[i]["address"], rows[i + 5]["address"]);
+        assert_eq!(rows[i]["orders"], rows[i + 5]["orders"]);
+    }
+}
+
+#[test]
+fn test_nested_sql_struct_access() {
+    ensure_nested_fixture();
+    let query = format!(
+        "SELECT name, address['city'] as city FROM '{}' WHERE address['city'] = 'Seattle'",
+        nested_fixture_path()
+    );
+    pq().args(["sql", &query, "-O", "jsonl"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Alice"))
+        .stdout(predicate::str::contains("Seattle"));
+}
+
+#[test]
+fn test_nested_info() {
+    ensure_nested_fixture();
+    let output = pq()
+        .args(["info", &nested_fixture_path(), "-O", "json"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let info: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+
+    assert_eq!(info["num_rows"], 5);
+    // num_columns is the leaf (physical) column count in parquet:
+    // active, address.city, address.geo.lat, address.geo.lon, address.street,
+    // id, name, orders.item, orders.price, orders.qty, tags.item = 11
+    assert_eq!(info["num_columns"], 11);
+}
+
+#[test]
+fn test_nested_count() {
+    ensure_nested_fixture();
+    pq().args(["count", &nested_fixture_path(), "-O", "json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("5"));
+}
+
+#[test]
+fn test_nested_head_table_output() {
+    ensure_nested_fixture();
+    // Table output should not crash on complex types
+    pq().args(["head", &nested_fixture_path(), "-n", "2", "-O", "table"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn test_nested_cat_csv_output() {
+    ensure_nested_fixture();
+    // CSV output should not crash on complex types
+    pq().args(["head", &nested_fixture_path(), "-n", "2", "-O", "csv"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("address"))
+        .stdout(predicate::str::contains("orders"));
+}
+
+#[test]
+fn test_nested_stats() {
+    ensure_nested_fixture();
+    // Stats should handle complex columns (they won't have min/max but shouldn't crash)
+    pq().args(["stats", &nested_fixture_path(), "-O", "json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("column_name"));
+}
+
+#[test]
+fn test_nested_layout() {
+    ensure_nested_fixture();
+    pq().args(["layout", &nested_fixture_path(), "-O", "json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("num_row_groups"));
+}
