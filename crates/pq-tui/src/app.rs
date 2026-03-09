@@ -221,11 +221,20 @@ impl App {
         } else if !self.status_message.is_empty() {
             self.status_message.clone()
         } else {
-            format!(
+            let row_status = format!(
                 "Row {}/{}",
                 self.data_table.selected_row + 1,
                 self.total_rows
-            )
+            );
+            let data_width = main_chunks[0]
+                .width
+                .saturating_sub(2); // account for borders
+            let col_status = self.data_table.column_status(data_width);
+            if col_status.is_empty() {
+                row_status
+            } else {
+                format!("{row_status}  {col_status}")
+            }
         };
         frame.render_widget(
             Paragraph::new(status_text).style(Style::default().fg(Color::Yellow)),

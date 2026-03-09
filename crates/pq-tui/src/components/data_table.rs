@@ -5,6 +5,9 @@ use ratatui::prelude::*;
 use ratatui::widgets::*;
 use std::sync::Arc;
 
+const MIN_COL_WIDTH: u16 = 10;
+const MAX_COL_WIDTH: u16 = 60;
+
 pub struct DataTableState {
     pub headers: Vec<String>,
     pub rows: Vec<Vec<String>>,
@@ -34,7 +37,7 @@ impl DataTableState {
             }
         }
 
-        // Calculate column widths
+        // Calculate column widths based on content, clamped to [MIN, MAX]
         let col_widths: Vec<u16> = headers
             .iter()
             .enumerate()
@@ -44,7 +47,9 @@ impl DataTableState {
                     .map(|r| r.get(i).map(|s| s.len()).unwrap_or(0))
                     .max()
                     .unwrap_or(0);
-                (h.len().max(max_data).min(40) + 2) as u16
+                let content_width = h.len().max(max_data);
+                // Add padding (2 chars), then clamp
+                ((content_width + 2) as u16).clamp(MIN_COL_WIDTH, MAX_COL_WIDTH)
             })
             .collect();
 
@@ -91,6 +96,23 @@ impl DataTableState {
         }
     }
 
+    /// Determine which columns fit in the given width starting from col_offset.
+    fn visible_columns(&self, available_width: u16) -> Vec<usize> {
+        let mut cols = Vec::new();
+        let mut used = 0u16;
+        for i in self.col_offset..self.headers.len() {
+            let w = self.col_widths.get(i).copied().unwrap_or(MIN_COL_WIDTH);
+            // Account for table cell separator (1 char between columns)
+            let needed = if cols.is_empty() { w } else { w + 1 };
+            if used + needed > available_width && !cols.is_empty() {
+                break;
+            }
+            used += needed;
+            cols.push(i);
+        }
+        cols
+    }
+
     pub fn render(&self, frame: &mut Frame, area: Rect, block: Block) {
         let inner = block.inner(area);
         frame.render_widget(block, area);
@@ -103,7 +125,7 @@ impl DataTableState {
             return;
         }
 
-        let visible_cols: Vec<usize> = (self.col_offset..self.headers.len()).collect();
+        let visible_cols = self.visible_columns(inner.width);
 
         // Header
         let header_cells: Vec<Cell> = visible_cols
@@ -134,7 +156,17 @@ impl DataTableState {
                 let actual_idx = start + display_idx;
                 let cells: Vec<Cell> = visible_cols
                     .iter()
-                    .map(|&i| Cell::from(row.get(i).cloned().unwrap_or_default()))
+                    .map(|&i| {
+                        let text = row.get(i).cloned().unwrap_or_default();
+                        // Truncate long values for display
+                        let max = self.col_widths.get(i).copied().unwrap_or(MIN_COL_WIDTH) as usize;
+                        let display = if text.len() > max.saturating_sub(1) {
+                            format!("{}…", &text[..max.saturating_sub(2)])
+                        } else {
+                            text
+                        };
+                        Cell::from(display)
+                    })
                     .collect();
                 let style = if actual_idx == self.selected_row {
                     Style::default().bg(Color::DarkGray).fg(Color::White)
@@ -147,7 +179,7 @@ impl DataTableState {
 
         let widths: Vec<Constraint> = visible_cols
             .iter()
-            .map(|&i| Constraint::Length(self.col_widths.get(i).copied().unwrap_or(10)))
+            .map(|&i| Constraint::Length(self.col_widths.get(i).copied().unwrap_or(MIN_COL_WIDTH)))
             .collect();
 
         let table = Table::new(table_rows, &widths)
@@ -155,5 +187,21 @@ impl DataTableState {
             .row_highlight_style(Style::default().bg(Color::DarkGray));
 
         frame.render_widget(table, inner);
+    }
+
+    /// Return a string describing the visible column range, for the status bar.
+    pub fn column_status(&self, available_width: u16) -> String {
+        let visible = self.visible_columns(available_width);
+        if visible.is_empty() {
+            return String::new();
+        }
+        let first = visible[0] + 1;
+        let last = visible[visible.len() - 1] + 1;
+        let total = self.headers.len();
+        if first == 1 && last == total {
+            String::new()
+        } else {
+            format!("Cols {first}-{last}/{total}")
+        }
     }
 }
