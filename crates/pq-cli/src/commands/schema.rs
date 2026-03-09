@@ -1,14 +1,13 @@
 use std::io::Write;
 use std::path::Path;
 
-use pq_core::schema::{read_arrow_schema, schema_to_ddl, schema_to_fields};
+use pq_core::schema::{open_arrow_schema, schema_to_ddl, schema_to_fields};
 
 use crate::cli::SchemaFormat;
 use crate::output::Format;
 
 pub fn run(file: &str, schema_format: &SchemaFormat, output_format: Format) -> anyhow::Result<()> {
-    let path = Path::new(file);
-    let schema = read_arrow_schema(path)?;
+    let schema = open_arrow_schema(file)?;
 
     let stdout = std::io::stdout();
     let mut writer = stdout.lock();
@@ -76,7 +75,11 @@ fn print_field_tree(
 
     match field.data_type() {
         DataType::Struct(fields) => {
-            writeln!(writer, "{prefix}{connector}{}: struct{nullable}", field.name())?;
+            writeln!(
+                writer,
+                "{prefix}{connector}{}: struct{nullable}",
+                field.name()
+            )?;
             for (i, child) in fields.iter().enumerate() {
                 let child_is_last = i == fields.len() - 1;
                 print_field_tree(writer, child, &child_prefix, child_is_last)?;

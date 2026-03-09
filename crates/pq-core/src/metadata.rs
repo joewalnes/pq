@@ -5,6 +5,7 @@ use std::fs::File;
 use std::path::Path;
 
 use crate::error::{PqError, Result};
+use crate::source;
 
 #[derive(Debug, Serialize)]
 pub struct FileMetadata {
@@ -138,4 +139,70 @@ pub fn extract_row_groups(path: &Path) -> Result<Vec<RowGroupInfo>> {
     }
 
     Ok(row_groups)
+}
+
+// ---------------------------------------------------------------------------
+// Universal functions: accept a path or URL string, dispatch accordingly
+// ---------------------------------------------------------------------------
+
+/// Read parquet metadata from a local path or remote URL.
+pub fn open_metadata(location: &str) -> Result<ParquetMetaData> {
+    if source::is_url(location) {
+        let (meta, _size) = source::block_on_async(crate::async_reader::read_metadata(location))?;
+        Ok(meta)
+    } else {
+        read_metadata(Path::new(location))
+    }
+}
+
+/// Extract file metadata from a local path or remote URL.
+pub fn open_file_metadata(location: &str) -> Result<FileMetadata> {
+    if source::is_url(location) {
+        let (metadata, file_size) =
+            source::block_on_async(crate::async_reader::read_metadata(location))?;
+        let file_meta = metadata.file_metadata();
+
+        let mut compressions: Vec<String> = Vec::new();
+        for rg in metadata.row_groups() {
+            for col in rg.columns() {
+                let comp = format!("{:?}", col.compression());
+                if !compressions.contains(&comp) {
+                    compressions.push(comp);
+                }
+            }
+        }
+
+        let key_value_metadata = file_meta
+            .key_value_metadata()
+            .map(|kvs| {
+                kvs.iter()
+                    .map(|kv| KeyValuePair {
+                        key: kv.key.clone(),
+                        value: kv.value.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let version = match file_meta.version() {
+            1 => "1.0".to_string(),
+            2 => "2.6".to_string(),
+            v => format!("{v}"),
+        };
+
+        Ok(FileMetadata {
+            path: location.to_string(),
+            file_size,
+            num_rows: file_meta.num_rows(),
+            num_row_groups: metadata.num_row_groups(),
+            num_columns: file_meta.schema_descr().num_columns(),
+            created_by: file_meta.created_by().map(|s| s.to_string()),
+            format_version: version,
+            schema_name: file_meta.schema_descr().name().to_string(),
+            key_value_metadata,
+            compression: compressions,
+        })
+    } else {
+        extract_file_metadata(Path::new(location))
+    }
 }

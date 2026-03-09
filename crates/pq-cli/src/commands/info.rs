@@ -1,13 +1,11 @@
 use std::io::Write;
-use std::path::Path;
 
-use pq_core::metadata::extract_file_metadata;
+use pq_core::metadata::open_file_metadata;
 
 use crate::output::Format;
 
 pub fn run(file: &str, format: Format) -> anyhow::Result<()> {
-    let path = Path::new(file);
-    let meta = extract_file_metadata(path)?;
+    let meta = open_file_metadata(file)?;
 
     let stdout = std::io::stdout();
     let mut writer = stdout.lock();

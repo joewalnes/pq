@@ -63,8 +63,7 @@ fn run(cli: Cli, format: Format) -> anyhow::Result<()> {
             lines,
             ref columns,
         } => {
-            let path = std::path::Path::new(file);
-            let (batches, _schema) = pq_core::reader::read_tail(path, lines, columns.clone())?;
+            let (batches, _schema) = pq_core::reader::open_tail(file, lines, columns.clone())?;
             let stdout = std::io::stdout();
             let mut writer = stdout.lock();
             output::render_batches(&mut writer, &batches, format)?;
@@ -132,8 +131,7 @@ fn run_sample(
     use rand::seq::SliceRandom;
     use rand::SeedableRng;
 
-    let path = std::path::Path::new(file);
-    let total = pq_core::reader::row_count(path)? as usize;
+    let total = pq_core::reader::open_row_count(file)? as usize;
 
     if total == 0 {
         let stdout = std::io::stdout();
@@ -162,7 +160,7 @@ fn run_sample(
         offset: None,
         batch_size: 8192,
     };
-    let (batches, _schema) = pq_core::reader::read_batches(path, &opts)?;
+    let (batches, _schema) = pq_core::reader::open_batches(file, &opts)?;
 
     let all_rows: Vec<serde_json::Value> = batches
         .iter()

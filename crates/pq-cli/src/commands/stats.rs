@@ -1,14 +1,12 @@
 use std::io::Write;
-use std::path::Path;
 
-use pq_core::metadata::read_metadata;
+use pq_core::metadata::open_metadata;
 use pq_core::statistics::extract_column_stats;
 
 use crate::output::Format;
 
 pub fn run(file: &str, format: Format) -> anyhow::Result<()> {
-    let path = Path::new(file);
-    let metadata = read_metadata(path)?;
+    let metadata = open_metadata(file)?;
     let stats = extract_column_stats(&metadata);
 
     let stdout = std::io::stdout();

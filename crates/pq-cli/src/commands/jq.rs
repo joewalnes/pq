@@ -1,7 +1,6 @@
 use std::io::Write;
-use std::path::Path;
 
-use pq_core::reader::{read_batches, ReadOptions};
+use pq_core::reader::{open_batches, ReadOptions};
 
 use crate::output::Format;
 
@@ -12,9 +11,8 @@ pub fn run(
     raw_output: bool,
     format: Format,
 ) -> anyhow::Result<()> {
-    let path = Path::new(file);
     let opts = ReadOptions::default();
-    let (batches, _schema) = read_batches(path, &opts)?;
+    let (batches, _schema) = open_batches(file, &opts)?;
 
     let json_rows: Vec<serde_json::Value> = batches
         .iter()

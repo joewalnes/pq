@@ -1,7 +1,11 @@
+use std::path::Path;
+
 use arrow::array::RecordBatch;
 use datafusion::prelude::*;
-use std::path::Path;
 use thiserror::Error;
+use url::Url;
+
+use pq_core::source;
 
 #[derive(Error, Debug)]
 pub enum SqlError {
@@ -10,6 +14,9 @@ pub enum SqlError {
 
     #[error("No results returned")]
     NoResults,
+
+    #[error("{0}")]
+    Other(String),
 }
 
 pub async fn execute_sql(query: &str) -> std::result::Result<Vec<RecordBatch>, SqlError> {
@@ -29,8 +36,7 @@ pub async fn execute_sql_on_file(
     query: &str,
 ) -> std::result::Result<Vec<RecordBatch>, SqlError> {
     let ctx = SessionContext::new();
-    ctx.register_parquet(table_name, path, ParquetReadOptions::default())
-        .await?;
+    register_location(&ctx, table_name, path).await?;
 
     let df = ctx.sql(query).await?;
     let batches = df.collect().await?;
@@ -46,8 +52,7 @@ pub async fn query_with_where(
     offset: Option<usize>,
 ) -> std::result::Result<Vec<RecordBatch>, SqlError> {
     let ctx = SessionContext::new();
-    ctx.register_parquet("data", path, ParquetReadOptions::default())
-        .await?;
+    register_location(&ctx, "data", path).await?;
 
     let cols = match columns {
         Some(cols) => cols.join(", "),
@@ -66,6 +71,54 @@ pub async fn query_with_where(
     let df = ctx.sql(&sql).await?;
     let batches = df.collect().await?;
     Ok(batches)
+}
+
+/// Register a local path or remote URL as a parquet table in the DataFusion context.
+async fn register_location(
+    ctx: &SessionContext,
+    table_name: &str,
+    location: &str,
+) -> std::result::Result<(), SqlError> {
+    if source::is_url(location) {
+        register_remote_parquet(ctx, table_name, location).await
+    } else {
+        ctx.register_parquet(table_name, location, ParquetReadOptions::default())
+            .await?;
+        Ok(())
+    }
+}
+
+/// Register a remote URL as a parquet table, setting up the object store first.
+async fn register_remote_parquet(
+    ctx: &SessionContext,
+    table_name: &str,
+    location: &str,
+) -> std::result::Result<(), SqlError> {
+    let (store, _path) = source::parse_url(location).map_err(|e| SqlError::Other(e.to_string()))?;
+    let url = Url::parse(location).map_err(|e| SqlError::Other(e.to_string()))?;
+
+    // Register the object store with DataFusion using the base URL
+    let base_url = base_url_for_registration(&url);
+    ctx.register_object_store(&base_url, store);
+
+    ctx.register_parquet(table_name, location, ParquetReadOptions::default())
+        .await?;
+    Ok(())
+}
+
+/// Build the base URL that DataFusion uses for object store lookup.
+fn base_url_for_registration(url: &Url) -> Url {
+    match url.scheme() {
+        "s3" => {
+            let bucket = url.host_str().unwrap_or("");
+            Url::parse(&format!("s3://{bucket}")).unwrap()
+        }
+        _ => {
+            let port_suffix = url.port().map(|p| format!(":{p}")).unwrap_or_default();
+            let host = url.host_str().unwrap_or("");
+            Url::parse(&format!("{}://{host}{port_suffix}", url.scheme())).unwrap()
+        }
+    }
 }
 
 /// Find file paths in a SQL query and register them as tables.
@@ -91,17 +144,26 @@ async fn register_files_from_query(
     }
 
     for path_str in &paths {
-        let path = Path::new(path_str);
-        let is_parquet = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e == "parquet" || e == "parq" || e == "pq")
-            .unwrap_or(false);
-        if is_parquet && path.exists() {
-            ctx.register_parquet(path_str, path_str, ParquetReadOptions::default())
-                .await?;
+        let is_parquet = is_parquet_ref(path_str);
+        if !is_parquet {
+            continue;
+        }
+
+        if source::is_url(path_str) {
+            register_remote_parquet(ctx, path_str, path_str).await?;
+        } else {
+            let path = Path::new(path_str);
+            if path.exists() {
+                ctx.register_parquet(path_str, path_str, ParquetReadOptions::default())
+                    .await?;
+            }
         }
     }
 
     Ok(())
+}
+
+fn is_parquet_ref(s: &str) -> bool {
+    let lower = s.to_lowercase();
+    lower.ends_with(".parquet") || lower.ends_with(".parq") || lower.ends_with(".pq")
 }

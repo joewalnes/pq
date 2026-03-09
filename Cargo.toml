@@ -17,8 +17,11 @@ rust-version = "1.75"
 [workspace.dependencies]
 # Arrow ecosystem (arrow/parquet 53 to match datafusion 44)
 arrow = { version = "53", features = ["prettyprint"] }
-parquet = { version = "53", features = ["arrow", "async"] }
+parquet = { version = "53", features = ["arrow", "async", "object_store"] }
 datafusion = "44"
+object_store = { version = "0.11", features = ["http", "aws"] }
+url = "2"
+futures = "0.3"
 
 # CLI
 clap = { version = "4", features = ["derive", "env", "wrap_help"] }

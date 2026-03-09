@@ -1,7 +1,6 @@
 use std::io::Write;
-use std::path::Path;
 
-use pq_core::reader::{read_batches, ReadOptions};
+use pq_core::reader::{open_batches, ReadOptions};
 
 use crate::output::{self, Format};
 
@@ -37,7 +36,6 @@ pub fn run(
         return Ok(());
     }
 
-    let path = Path::new(file);
     let opts = ReadOptions {
         columns,
         limit,
@@ -45,7 +43,7 @@ pub fn run(
         batch_size: 8192,
     };
 
-    let (batches, _schema) = read_batches(path, &opts)?;
+    let (batches, _schema) = open_batches(file, &opts)?;
 
     if let Some(jq_filter) = jq_filter {
         apply_jq_and_output(&mut writer, &batches, jq_filter, format)?;

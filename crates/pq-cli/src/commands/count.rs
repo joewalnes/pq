@@ -1,7 +1,6 @@
 use std::io::Write;
-use std::path::Path;
 
-use pq_core::reader::row_count;
+use pq_core::reader::open_row_count;
 
 use crate::output::Format;
 
@@ -13,8 +12,7 @@ pub fn run(files: &[String], format: Format) -> anyhow::Result<()> {
     let mut total: i64 = 0;
 
     for file in files {
-        let path = Path::new(file);
-        let count = row_count(path)?;
+        let count = open_row_count(file)?;
         total += count;
         results.push((file.clone(), count));
     }

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use pq_core::reader::{read_batches, ReadOptions};
+use pq_core::reader::{open_batches, ReadOptions};
 
 pub fn run(file: &str) -> anyhow::Result<()> {
     let path = PathBuf::from(file);
@@ -13,7 +13,7 @@ pub fn run(file: &str) -> anyhow::Result<()> {
         batch_size: 8192,
     };
 
-    let (batches, schema) = read_batches(&path, &opts)?;
+    let (batches, schema) = open_batches(file, &opts)?;
 
     // Set up terminal
     crossterm::terminal::enable_raw_mode()?;

@@ -5,6 +5,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::error::{PqError, Result};
+use crate::source;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SchemaField {
@@ -183,5 +184,18 @@ fn arrow_type_to_sql(dt: &DataType) -> String {
             "MAP(TEXT, TEXT)".to_string()
         }
         _ => "TEXT".to_string(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Universal function: accept a path or URL string, dispatch accordingly
+// ---------------------------------------------------------------------------
+
+/// Read the Arrow schema from a local path or remote URL.
+pub fn open_arrow_schema(location: &str) -> Result<Schema> {
+    if source::is_url(location) {
+        source::block_on_async(crate::async_reader::read_arrow_schema(location))
+    } else {
+        read_arrow_schema(Path::new(location))
     }
 }

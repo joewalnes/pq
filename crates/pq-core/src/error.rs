@@ -32,6 +32,9 @@ pub enum PqError {
     #[error("Invalid row range: offset {offset} exceeds total rows {total}")]
     InvalidRowRange { offset: usize, total: usize },
 
+    #[error("Object store error: {0}")]
+    ObjectStore(String),
+
     #[error("{0}")]
     Other(String),
 }

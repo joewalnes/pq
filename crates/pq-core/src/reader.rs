@@ -6,6 +6,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::error::{PqError, Result};
+use crate::source;
 
 pub struct ReadOptions {
     pub columns: Option<Vec<String>>,
@@ -110,4 +111,50 @@ pub fn read_tail(
 pub fn row_count(path: &Path) -> Result<i64> {
     let metadata = crate::metadata::read_metadata(path)?;
     Ok(metadata.file_metadata().num_rows())
+}
+
+// ---------------------------------------------------------------------------
+// Universal functions: accept a path or URL string, dispatch accordingly
+// ---------------------------------------------------------------------------
+
+/// Read batches from a local path or remote URL.
+pub fn open_batches(location: &str, opts: &ReadOptions) -> Result<(Vec<RecordBatch>, Arc<Schema>)> {
+    if source::is_url(location) {
+        source::block_on_async(crate::async_reader::read_batches(location, opts))
+    } else {
+        read_batches(Path::new(location), opts)
+    }
+}
+
+/// Read tail rows from a local path or remote URL.
+pub fn open_tail(
+    location: &str,
+    n: usize,
+    columns: Option<Vec<String>>,
+) -> Result<(Vec<RecordBatch>, Arc<Schema>)> {
+    if source::is_url(location) {
+        let (meta, _size) = source::block_on_async(crate::async_reader::read_metadata(location))?;
+        let total_rows = meta.file_metadata().num_rows() as usize;
+        let offset = total_rows.saturating_sub(n);
+        let limit = if total_rows > n { n } else { total_rows };
+        let opts = ReadOptions {
+            columns,
+            limit: Some(limit),
+            offset: Some(offset),
+            batch_size: 8192,
+        };
+        source::block_on_async(crate::async_reader::read_batches(location, &opts))
+    } else {
+        read_tail(Path::new(location), n, columns)
+    }
+}
+
+/// Get row count from a local path or remote URL.
+pub fn open_row_count(location: &str) -> Result<i64> {
+    if source::is_url(location) {
+        let (meta, _size) = source::block_on_async(crate::async_reader::read_metadata(location))?;
+        Ok(meta.file_metadata().num_rows())
+    } else {
+        row_count(Path::new(location))
+    }
 }
