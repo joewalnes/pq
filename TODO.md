@@ -7,7 +7,8 @@
 - [ ] `repack <file>` — Rewrite with different compression (`--compression zstd|snappy|gzip|none`), row group size (`--row-group-size`), encoding, or sort order
 - [ ] `sort <file>` — Sort by one or more columns (`--by col1,col2 --desc`) and write new file; could also be a flag on `repack`
 - [ ] `export <file>` — Parquet to CSV/JSON/JSONL file output (`-o output.csv`); proper streaming export with progress for large files
-- [ ] Remote file access — Support `s3://`, `gs://`, `https://` URLs anywhere a file path is accepted via `object_store` crate
+- [x] Remote file access — S3 and HTTPS supported for all read-only commands via `object_store` + `ParquetObjectReader`. Only footer + requested row groups are fetched. Transform commands remain local-only.
+- [ ] Remote file access: GCS (`gs://`) and Azure (`az://`, `abfss://`) — URL schemes are detected but not yet wired (requires `gcp`/`azure` features on `object_store`)
 
 ## Tier 2 — Differentiation
 
