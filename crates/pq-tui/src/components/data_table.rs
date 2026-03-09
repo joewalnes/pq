@@ -165,7 +165,11 @@ impl DataTableState {
                     let text = row.get(i).cloned().unwrap_or_default();
                     let max = self.col_widths.get(i).copied().unwrap_or(MIN_COL_WIDTH) as usize;
                     let display = if text.len() > max.saturating_sub(1) {
-                        format!("{}…", &text[..max.saturating_sub(2)])
+                        let mut end = max.saturating_sub(2).min(text.len());
+                        while end > 0 && !text.is_char_boundary(end) {
+                            end -= 1;
+                        }
+                        format!("{}…", &text[..end])
                     } else {
                         text
                     };
