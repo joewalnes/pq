@@ -4,7 +4,7 @@ pub fn run(format: Format) -> anyhow::Result<()> {
     let capabilities = serde_json::json!({
         "tool": "pq",
         "version": env!("CARGO_PKG_VERSION"),
-        "description": "A Parquet Swiss Army Knife — inspect, query, transform, and explore Parquet files",
+        "description": "A Parquet Swiss Army Knife — inspect, query, transform, and view Parquet files",
         "commands": [
             {
                 "name": "info",

@@ -3,9 +3,9 @@ use clap::{Parser, Subcommand, ValueEnum};
 #[derive(Parser)]
 #[command(
     name = "pq",
-    about = "A Parquet Swiss Army Knife — inspect, query, transform, and explore Parquet files",
+    about = "A Parquet Swiss Army Knife — inspect, query, transform, and view Parquet files",
     version,
-    after_help = "Examples:\n  pq info data.parquet\n  pq cat data.parquet --limit 100\n  pq sql \"SELECT count(*) FROM 'data.parquet'\"\n  pq jq data.parquet '.name'\n  pq explore data.parquet"
+    after_help = "Examples:\n  pq data.parquet                              # open in TUI viewer\n  pq info data.parquet\n  pq cat data.parquet --limit 100\n  pq sql \"SELECT count(*) FROM 'data.parquet'\"\n  pq jq data.parquet '.name'"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -158,8 +158,8 @@ pub enum Command {
         query: String,
     },
 
-    /// Interactive TUI data explorer
-    Explore {
+    /// Interactive TUI data viewer (default when a file is given without a subcommand)
+    View {
         /// Parquet file path
         file: String,
     },

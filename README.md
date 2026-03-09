@@ -1,6 +1,6 @@
 # pq
 
-A Parquet Swiss Army Knife. Inspect, query, transform, and explore Parquet files from the command line.
+A Parquet Swiss Army Knife. Inspect, query, transform, and view Parquet files from the command line.
 
 ## 10-second tutorial
 
@@ -47,8 +47,8 @@ $ pq cat events.parquet --columns city,event --where "duration > 1.0" | wc -l
 # Create parquet from JSON
 $ pq convert data.jsonl -o data.parquet
 
-# Interactive TUI explorer
-$ pq explore events.parquet
+# Interactive TUI viewer (or just: pq events.parquet)
+$ pq view events.parquet
 ```
 
 ## Install
@@ -80,7 +80,7 @@ make install    # builds release binary, copies to ~/.local/bin/pq
 - `pq count` — fast row count (reads metadata only, no full scan)
 - `pq sql` — full SQL queries via [Apache DataFusion](https://datafusion.apache.org/)
 - `pq jq` — jq expressions with `--slurp` and `--raw-output`
-- `pq explore` — interactive TUI data explorer
+- `pq view` — interactive TUI data viewer (default when a file is given without a subcommand)
 
 **Transformation**
 - `pq select` — project columns and filter rows into a new Parquet file

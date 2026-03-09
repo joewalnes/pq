@@ -9,7 +9,24 @@ use cli::{Cli, Command};
 use output::{Format, OutputMode};
 
 fn main() {
-    let cli = Cli::parse();
+    // If no subcommand is given but a file/URL is provided, default to `view`.
+    // e.g. `pq data.parquet` behaves like `pq view data.parquet`.
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(e) => {
+            let args: Vec<String> = std::env::args().collect();
+            if args.len() > 1 {
+                let mut new_args = vec![args[0].clone(), "view".to_string()];
+                new_args.extend(args[1..].iter().cloned());
+                match Cli::try_parse_from(&new_args) {
+                    Ok(cli) => cli,
+                    Err(_) => e.exit(),
+                }
+            } else {
+                e.exit()
+            }
+        }
+    };
 
     let mode = OutputMode::detect(cli.output_format.as_ref());
     let format = Format::from_cli(cli.output_format.as_ref(), mode);
@@ -81,7 +98,7 @@ fn run(cli: Cli, format: Format) -> anyhow::Result<()> {
 
         Command::Sql { ref query } => commands::sql::run(query, format),
 
-        Command::Explore { ref file } => commands::explore::run(file),
+        Command::View { ref file } => commands::view::run(file),
 
         Command::Select {
             ref file,

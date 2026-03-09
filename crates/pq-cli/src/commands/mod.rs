@@ -3,7 +3,7 @@ pub mod cat;
 pub mod completions;
 pub mod convert;
 pub mod count;
-pub mod explore;
+pub mod view;
 pub mod info;
 pub mod jq;
 pub mod layout;
