@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use object_store::path::Path as ObjectPath;
+use object_store::ClientOptions;
 use object_store::ObjectStore;
 use url::Url;
 
@@ -29,8 +30,10 @@ pub fn parse_url(location: &str) -> Result<(Arc<dyn ObjectStore>, ObjectPath)> {
             let port_suffix = url.port().map(|p| format!(":{p}")).unwrap_or_default();
             let base = format!("{}://{host}{port_suffix}", url.scheme());
 
+            let client_options = ClientOptions::new().with_allow_http(true);
             let store = object_store::http::HttpBuilder::new()
                 .with_url(&base)
+                .with_client_options(client_options)
                 .build()
                 .map_err(|e| PqError::ObjectStore(e.to_string()))?;
 

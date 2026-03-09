@@ -1,4 +1,4 @@
-.PHONY: all build test lint install
+.PHONY: all build test test-remote lint install
 
 all: build test lint
 
@@ -57,3 +57,45 @@ $(DATA_DIR)/.stamp:
 
 clean-data:
 	rm -rf $(DATA_DIR)
+
+# -- Integration tests (SeaweedFS) -----------------------------------------
+# Spins up a SeaweedFS container with S3 + filer, runs remote_tests, tears down.
+#
+#   make test-remote          # full lifecycle
+#   make test-seaweed-up      # start container only
+#   make test-seaweed-down    # stop container only
+
+SEAWEED_CONTAINER := pq-seaweed-test
+SEAWEED_S3_PORT   := 8333
+SEAWEED_FILER_PORT := 8888
+SEAWEED_S3_KEY    := testkey
+SEAWEED_S3_SECRET := testsecret
+SEAWEED_S3_CONF   := /tmp/pq-seaweed-s3.json
+
+.PHONY: test-remote test-seaweed-up test-seaweed-down
+
+test-seaweed-up:
+	@printf '{"identities":[{"name":"testuser","credentials":[{"accessKey":"%s","secretKey":"%s"}],"actions":["Admin","Read","Write","List","Tagging"]}]}\n' \
+		$(SEAWEED_S3_KEY) $(SEAWEED_S3_SECRET) > $(SEAWEED_S3_CONF)
+	@docker rm -f $(SEAWEED_CONTAINER) 2>/dev/null || true
+	docker run -d --name $(SEAWEED_CONTAINER) \
+		-p $(SEAWEED_S3_PORT):8333 \
+		-p $(SEAWEED_FILER_PORT):8888 \
+		-v $(SEAWEED_S3_CONF):/etc/s3.json:ro \
+		chrislusf/seaweedfs server -s3 -s3.config=/etc/s3.json
+	@echo "Waiting for SeaweedFS to start..."
+	@for i in 1 2 3 4 5 6 7 8 9 10; do \
+		curl -sf http://localhost:$(SEAWEED_S3_PORT)/ >/dev/null 2>&1 && break; \
+		sleep 1; \
+	done
+	@echo "SeaweedFS ready (S3=:$(SEAWEED_S3_PORT), filer=:$(SEAWEED_FILER_PORT))"
+
+test-seaweed-down:
+	docker rm -f $(SEAWEED_CONTAINER) 2>/dev/null || true
+	@rm -f $(SEAWEED_S3_CONF)
+
+test-remote: test-seaweed-up
+	cargo test --test remote_tests -- --ignored; \
+	status=$$?; \
+	$(MAKE) test-seaweed-down; \
+	exit $$status
