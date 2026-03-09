@@ -1,4 +1,4 @@
-.PHONY: all build test test-remote lint install
+.PHONY: all build test test-integration lint install
 
 all: build test lint
 
@@ -61,7 +61,7 @@ clean-data:
 # -- Integration tests (SeaweedFS) -----------------------------------------
 # Spins up a SeaweedFS container with S3 + filer, runs remote_tests, tears down.
 #
-#   make test-remote          # full lifecycle
+#   make test-integration     # full lifecycle
 #   make test-seaweed-up      # start container only
 #   make test-seaweed-down    # stop container only
 
@@ -72,7 +72,7 @@ SEAWEED_S3_KEY    := testkey
 SEAWEED_S3_SECRET := testsecret
 SEAWEED_S3_CONF   := /tmp/pq-seaweed-s3.json
 
-.PHONY: test-remote test-seaweed-up test-seaweed-down
+.PHONY: test-integration test-seaweed-up test-seaweed-down
 
 test-seaweed-up:
 	@printf '{"identities":[{"name":"testuser","credentials":[{"accessKey":"%s","secretKey":"%s"}],"actions":["Admin","Read","Write","List","Tagging"]}]}\n' \
@@ -94,7 +94,7 @@ test-seaweed-down:
 	docker rm -f $(SEAWEED_CONTAINER) 2>/dev/null || true
 	@rm -f $(SEAWEED_S3_CONF)
 
-test-remote: test-seaweed-up
+test-integration: test-seaweed-up
 	cargo test --test remote_tests -- --ignored; \
 	status=$$?; \
 	$(MAKE) test-seaweed-down; \

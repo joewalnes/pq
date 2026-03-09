@@ -110,6 +110,22 @@ make lint     # clippy + fmt check
 make install  # install in ~/.local/bin/pq
 ```
 
+### Integration tests
+
+Remote-access tests (HTTP + S3) run against a local [SeaweedFS](https://github.com/seaweedfs/seaweedfs) container. Requires Docker.
+
+```sh
+make test-integration   # starts SeaweedFS, runs tests, tears down
+```
+
+You can also manage the container manually:
+
+```sh
+make test-seaweed-up    # start SeaweedFS container
+cargo test --test remote_tests -- --ignored   # run tests
+make test-seaweed-down  # stop container
+```
+
 ## Author
 
 Joe Walnes
