@@ -125,19 +125,24 @@ impl DataTableState {
             return;
         }
 
-        let visible_cols = self.visible_columns(inner.width);
+        // Row number column: width based on digit count of total rows
+        let row_num_width = (self.rows.len().max(1).ilog10() as u16 + 1).max(2) + 1; // +1 padding
+        let data_width = inner.width.saturating_sub(row_num_width + 1); // +1 for separator
+        let visible_cols = self.visible_columns(data_width);
 
-        // Header
-        let header_cells: Vec<Cell> = visible_cols
-            .iter()
-            .map(|&i| {
-                Cell::from(self.headers[i].clone()).style(
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                )
-            })
-            .collect();
+        // Header: # + data columns
+        let mut header_cells: Vec<Cell> = vec![Cell::from("#").style(
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        )];
+        header_cells.extend(visible_cols.iter().map(|&i| {
+            Cell::from(self.headers[i].clone()).style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )
+        }));
         let header = Row::new(header_cells).height(1);
 
         // Rows
@@ -154,20 +159,18 @@ impl DataTableState {
             .enumerate()
             .map(|(display_idx, row)| {
                 let actual_idx = start + display_idx;
-                let cells: Vec<Cell> = visible_cols
-                    .iter()
-                    .map(|&i| {
-                        let text = row.get(i).cloned().unwrap_or_default();
-                        // Truncate long values for display
-                        let max = self.col_widths.get(i).copied().unwrap_or(MIN_COL_WIDTH) as usize;
-                        let display = if text.len() > max.saturating_sub(1) {
-                            format!("{}…", &text[..max.saturating_sub(2)])
-                        } else {
-                            text
-                        };
-                        Cell::from(display)
-                    })
-                    .collect();
+                let mut cells: Vec<Cell> = vec![Cell::from(format!("{}", actual_idx + 1))
+                    .style(Style::default().fg(Color::DarkGray))];
+                cells.extend(visible_cols.iter().map(|&i| {
+                    let text = row.get(i).cloned().unwrap_or_default();
+                    let max = self.col_widths.get(i).copied().unwrap_or(MIN_COL_WIDTH) as usize;
+                    let display = if text.len() > max.saturating_sub(1) {
+                        format!("{}…", &text[..max.saturating_sub(2)])
+                    } else {
+                        text
+                    };
+                    Cell::from(display)
+                }));
                 let style = if actual_idx == self.selected_row {
                     Style::default().bg(Color::DarkGray).fg(Color::White)
                 } else {
@@ -177,10 +180,12 @@ impl DataTableState {
             })
             .collect();
 
-        let widths: Vec<Constraint> = visible_cols
-            .iter()
-            .map(|&i| Constraint::Length(self.col_widths.get(i).copied().unwrap_or(MIN_COL_WIDTH)))
-            .collect();
+        let mut widths: Vec<Constraint> = vec![Constraint::Length(row_num_width)];
+        widths.extend(
+            visible_cols
+                .iter()
+                .map(|&i| Constraint::Length(self.col_widths.get(i).copied().unwrap_or(MIN_COL_WIDTH))),
+        );
 
         let table = Table::new(table_rows, &widths)
             .header(header)

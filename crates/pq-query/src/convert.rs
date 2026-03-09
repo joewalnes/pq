@@ -2,6 +2,18 @@ use arrow::array::*;
 use arrow::datatypes::*;
 use serde_json::Value;
 
+/// Convert a single row from a RecordBatch to a JSON object
+pub fn batch_row_to_json(batch: &RecordBatch, row_idx: usize) -> Value {
+    let schema = batch.schema();
+    let mut obj = serde_json::Map::new();
+    for (col_idx, field) in schema.fields().iter().enumerate() {
+        let col = batch.column(col_idx);
+        let value = array_value_to_json(col.as_ref(), row_idx);
+        obj.insert(field.name().clone(), value);
+    }
+    Value::Object(obj)
+}
+
 /// Convert a RecordBatch to a vector of JSON objects (one per row)
 pub fn batch_to_json_rows(batch: &RecordBatch) -> Vec<Value> {
     let mut rows = Vec::with_capacity(batch.num_rows());

@@ -8,14 +8,48 @@ use ratatui::prelude::*;
 use ratatui::widgets::*;
 
 use crate::components::data_table::DataTableState;
+use crate::components::detail_panel::DetailPanelState;
 use crate::components::schema_tree::SchemaTreeState;
 use crate::theme::Theme;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ActivePanel {
+pub enum AppTab {
     Data,
     Schema,
-    Filter,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LayoutMode {
+    SplitHorizontal,
+    SplitVertical,
+    ListOnly,
+    DetailOnly,
+}
+
+impl LayoutMode {
+    fn next(self) -> Self {
+        match self {
+            Self::SplitHorizontal => Self::SplitVertical,
+            Self::SplitVertical => Self::ListOnly,
+            Self::ListOnly => Self::DetailOnly,
+            Self::DetailOnly => Self::SplitHorizontal,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::SplitHorizontal => "H-Split",
+            Self::SplitVertical => "V-Split",
+            Self::ListOnly => "List",
+            Self::DetailOnly => "Detail",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum DataFocus {
+    RowList,
+    Detail,
 }
 
 pub struct App {
@@ -23,14 +57,18 @@ pub struct App {
     pub schema: Arc<Schema>,
     pub batches: Vec<RecordBatch>,
     pub total_rows: usize,
-    pub active_panel: ActivePanel,
+    pub tab: AppTab,
+    pub layout_mode: LayoutMode,
+    pub data_focus: DataFocus,
     pub data_table: DataTableState,
+    pub detail_panel: DetailPanelState,
     pub schema_tree: SchemaTreeState,
     pub filter_input: String,
     pub filter_active: bool,
     pub should_quit: bool,
     pub theme: Theme,
     pub status_message: String,
+    last_selected_row: usize,
 }
 
 impl App {
@@ -38,20 +76,31 @@ impl App {
         let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
         let data_table = DataTableState::new(&schema, &batches);
         let schema_tree = SchemaTreeState::new(&schema);
+        let mut detail_panel = DetailPanelState::new();
+
+        // Initialize detail panel with first row if available
+        if !batches.is_empty() && batches[0].num_rows() > 0 {
+            let json = pq_query::convert::batch_row_to_json(&batches[0], 0);
+            detail_panel.update(&json);
+        }
 
         Self {
             path,
             schema,
             batches,
             total_rows,
-            active_panel: ActivePanel::Data,
+            tab: AppTab::Data,
+            layout_mode: LayoutMode::SplitHorizontal,
+            data_focus: DataFocus::RowList,
             data_table,
+            detail_panel,
             schema_tree,
             filter_input: String::new(),
             filter_active: false,
             should_quit: false,
             theme: Theme::default(),
             status_message: String::new(),
+            last_selected_row: 0,
         }
     }
 
@@ -72,7 +121,29 @@ impl App {
         Ok(())
     }
 
+    /// Update detail panel when the selected row changes.
+    fn update_detail_if_needed(&mut self) {
+        let selected = self.data_table.selected_row;
+        if selected == self.last_selected_row && !self.detail_panel.lines.is_empty() {
+            return;
+        }
+        self.last_selected_row = selected;
+        let mut offset = 0;
+        for batch in &self.batches {
+            let batch_rows = batch.num_rows();
+            if selected < offset + batch_rows {
+                let row_in_batch = selected - offset;
+                let json = pq_query::convert::batch_row_to_json(batch, row_in_batch);
+                self.detail_panel.update(&json);
+                return;
+            }
+            offset += batch_rows;
+        }
+        self.detail_panel.clear();
+    }
+
     fn handle_key(&mut self, key: KeyEvent) {
+        // Filter input mode
         if self.filter_active {
             match key.code {
                 KeyCode::Esc => {
@@ -94,67 +165,111 @@ impl App {
         }
 
         match key.code {
+            // Quit
             KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.should_quit = true;
             }
+
+            // Tab: switch between Data and Schema tabs
             KeyCode::Tab => {
-                self.active_panel = match self.active_panel {
-                    ActivePanel::Data => ActivePanel::Schema,
-                    ActivePanel::Schema => ActivePanel::Data,
-                    ActivePanel::Filter => ActivePanel::Data,
+                self.tab = match self.tab {
+                    AppTab::Data => AppTab::Schema,
+                    AppTab::Schema => AppTab::Data,
                 };
             }
+
+            // v: cycle layout mode (Data tab only)
+            KeyCode::Char('v') => {
+                if self.tab == AppTab::Data {
+                    self.layout_mode = self.layout_mode.next();
+                }
+            }
+
+            // Enter: toggle focus between row list and detail panel (Data tab)
+            KeyCode::Enter => {
+                if self.tab == AppTab::Data {
+                    self.data_focus = match self.data_focus {
+                        DataFocus::RowList => DataFocus::Detail,
+                        DataFocus::Detail => DataFocus::RowList,
+                    };
+                }
+            }
+
+            // Filter
             KeyCode::Char('/') => {
                 self.filter_active = true;
-                self.active_panel = ActivePanel::Filter;
             }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if self.active_panel == ActivePanel::Data {
-                    self.data_table.scroll_down();
-                } else {
+
+            // Vertical scrolling
+            KeyCode::Down | KeyCode::Char('j') => match self.tab {
+                AppTab::Data => match self.data_focus {
+                    DataFocus::RowList => {
+                        self.data_table.scroll_down();
+                        self.update_detail_if_needed();
+                    }
+                    DataFocus::Detail => {
+                        self.detail_panel.scroll_down();
+                    }
+                },
+                AppTab::Schema => {
                     self.schema_tree.scroll_down();
                 }
-            }
-            KeyCode::Up | KeyCode::Char('k') => {
-                if self.active_panel == ActivePanel::Data {
-                    self.data_table.scroll_up();
-                } else {
+            },
+            KeyCode::Up | KeyCode::Char('k') => match self.tab {
+                AppTab::Data => match self.data_focus {
+                    DataFocus::RowList => {
+                        self.data_table.scroll_up();
+                        self.update_detail_if_needed();
+                    }
+                    DataFocus::Detail => {
+                        self.detail_panel.scroll_up();
+                    }
+                },
+                AppTab::Schema => {
                     self.schema_tree.scroll_up();
                 }
-            }
+            },
+
+            // Horizontal scrolling (row list only)
             KeyCode::Left | KeyCode::Char('h') => {
-                if self.active_panel == ActivePanel::Data {
+                if self.tab == AppTab::Data && self.data_focus == DataFocus::RowList {
                     self.data_table.scroll_left();
                 }
             }
             KeyCode::Right | KeyCode::Char('l') => {
-                if self.active_panel == ActivePanel::Data {
+                if self.tab == AppTab::Data && self.data_focus == DataFocus::RowList {
                     self.data_table.scroll_right();
                 }
             }
+
+            // Page scrolling
             KeyCode::PageDown => {
-                if self.active_panel == ActivePanel::Data {
+                if self.tab == AppTab::Data && self.data_focus == DataFocus::RowList {
                     for _ in 0..20 {
                         self.data_table.scroll_down();
                     }
+                    self.update_detail_if_needed();
                 }
             }
             KeyCode::PageUp => {
-                if self.active_panel == ActivePanel::Data {
+                if self.tab == AppTab::Data && self.data_focus == DataFocus::RowList {
                     for _ in 0..20 {
                         self.data_table.scroll_up();
                     }
+                    self.update_detail_if_needed();
                 }
             }
             KeyCode::Home | KeyCode::Char('g') => {
-                if self.active_panel == ActivePanel::Data {
+                if self.tab == AppTab::Data && self.data_focus == DataFocus::RowList {
                     self.data_table.scroll_to_top();
+                    self.update_detail_if_needed();
                 }
             }
             KeyCode::End | KeyCode::Char('G') => {
-                if self.active_panel == ActivePanel::Data {
+                if self.tab == AppTab::Data && self.data_focus == DataFocus::RowList {
                     self.data_table.scroll_to_bottom();
+                    self.update_detail_if_needed();
                 }
             }
             _ => {}
@@ -163,89 +278,179 @@ impl App {
 
     fn draw(&mut self, frame: &mut Frame) {
         let area = frame.area();
-        let chunks = ratatui::layout::Layout::default()
+        let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(1), // Title
+                Constraint::Length(1), // Tab bar
                 Constraint::Min(0),    // Main content
-                Constraint::Length(1), // Filter / status bar
+                Constraint::Length(1), // Status bar
                 Constraint::Length(1), // Help bar
             ])
             .split(area);
 
-        // Title bar
-        let title = format!(
-            " {} | {} rows | {} columns",
-            self.path.display(),
+        self.draw_tab_bar(frame, chunks[0]);
+
+        match self.tab {
+            AppTab::Data => self.draw_data_tab(frame, chunks[1]),
+            AppTab::Schema => self.draw_schema_tab(frame, chunks[1]),
+        }
+
+        self.draw_status_bar(frame, chunks[1].width, chunks[2]);
+        self.draw_help_bar(frame, chunks[3]);
+    }
+
+    fn draw_tab_bar(&self, frame: &mut Frame, area: Rect) {
+        let data_style = if self.tab == AppTab::Data {
+            Style::default()
+                .bg(Color::Blue)
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        let schema_style = if self.tab == AppTab::Schema {
+            Style::default()
+                .bg(Color::Blue)
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+
+        let file_info = format!(
+            " {} | {} rows | {} cols",
+            self.path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy(),
             self.total_rows,
-            self.schema.fields().len()
+            self.schema.fields().len(),
         );
+
+        let tabs = Line::from(vec![
+            Span::styled(" Data ", data_style),
+            Span::raw(" "),
+            Span::styled(" Schema ", schema_style),
+            Span::styled(file_info, Style::default().fg(Color::DarkGray)),
+        ]);
+
         frame.render_widget(
-            Paragraph::new(title).style(Style::default().bg(Color::Blue).fg(Color::White)),
-            chunks[0],
+            Paragraph::new(tabs).style(Style::default().bg(Color::Rgb(30, 30, 30))),
+            area,
         );
+    }
 
-        // Main content: split horizontally
-        let main_chunks = ratatui::layout::Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(75), Constraint::Percentage(25)])
-            .split(chunks[1]);
+    fn draw_data_tab(&self, frame: &mut Frame, area: Rect) {
+        match self.layout_mode {
+            LayoutMode::SplitHorizontal => {
+                let chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+                    .split(area);
+                self.draw_row_list(frame, chunks[0]);
+                self.draw_detail_panel(frame, chunks[1]);
+            }
+            LayoutMode::SplitVertical => {
+                let chunks = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+                    .split(area);
+                self.draw_row_list(frame, chunks[0]);
+                self.draw_detail_panel(frame, chunks[1]);
+            }
+            LayoutMode::ListOnly => {
+                self.draw_row_list(frame, area);
+            }
+            LayoutMode::DetailOnly => {
+                self.draw_detail_panel(frame, area);
+            }
+        }
+    }
 
-        // Data table
-        let data_border_style = if self.active_panel == ActivePanel::Data {
+    fn draw_row_list(&self, frame: &mut Frame, area: Rect) {
+        let is_focused = self.tab == AppTab::Data && self.data_focus == DataFocus::RowList;
+        let border_style = if is_focused {
             Style::default().fg(Color::Cyan)
         } else {
             Style::default().fg(Color::DarkGray)
         };
-        let data_block = Block::default()
-            .title(" Data ")
+        let block = Block::default()
+            .title(" Rows ")
             .borders(Borders::ALL)
-            .border_style(data_border_style);
-        self.data_table.render(frame, main_chunks[0], data_block);
+            .border_style(border_style);
+        self.data_table.render(frame, area, block);
+    }
 
-        // Schema tree
-        let schema_border_style = if self.active_panel == ActivePanel::Schema {
+    fn draw_detail_panel(&self, frame: &mut Frame, area: Rect) {
+        let is_focused = self.tab == AppTab::Data && self.data_focus == DataFocus::Detail;
+        let border_style = if is_focused {
             Style::default().fg(Color::Cyan)
         } else {
             Style::default().fg(Color::DarkGray)
         };
-        let schema_block = Block::default()
+        let title = format!(
+            " Detail — Row {}/{} ",
+            self.data_table.selected_row + 1,
+            self.total_rows,
+        );
+        let block = Block::default()
+            .title(title)
+            .borders(Borders::ALL)
+            .border_style(border_style);
+        self.detail_panel.render(frame, area, block);
+    }
+
+    fn draw_schema_tab(&self, frame: &mut Frame, area: Rect) {
+        let block = Block::default()
             .title(" Schema ")
             .borders(Borders::ALL)
-            .border_style(schema_border_style);
-        self.schema_tree.render(frame, main_chunks[1], schema_block);
+            .border_style(Style::default().fg(Color::Cyan));
+        self.schema_tree.render(frame, area, block);
+    }
 
-        // Filter / status
+    fn draw_status_bar(&self, frame: &mut Frame, main_width: u16, area: Rect) {
         let status_text = if self.filter_active {
             format!("Filter: {}_", self.filter_input)
         } else if !self.status_message.is_empty() {
             self.status_message.clone()
-        } else {
+        } else if self.tab == AppTab::Data {
             let row_status = format!(
                 "Row {}/{}",
                 self.data_table.selected_row + 1,
-                self.total_rows
+                self.total_rows,
             );
-            let data_width = main_chunks[0]
-                .width
-                .saturating_sub(2); // account for borders
+            let layout_label = self.layout_mode.label();
+            let focus_label = match self.data_focus {
+                DataFocus::RowList => "rows",
+                DataFocus::Detail => "detail",
+            };
+            let data_width = main_width.saturating_sub(2);
             let col_status = self.data_table.column_status(data_width);
-            if col_status.is_empty() {
-                row_status
-            } else {
-                format!("{row_status}  {col_status}")
+            let mut parts = vec![row_status];
+            if !col_status.is_empty() {
+                parts.push(col_status);
             }
+            parts.push(format!("[{layout_label}:{focus_label}]"));
+            parts.join("  ")
+        } else {
+            "Schema view".to_string()
         };
         frame.render_widget(
             Paragraph::new(status_text).style(Style::default().fg(Color::Yellow)),
-            chunks[2],
+            area,
         );
+    }
 
-        // Help bar
-        let help = " q:Quit  Tab:Switch Panel  j/k:Scroll  h/l:Columns  /:Filter  PgUp/PgDn:Page ";
+    fn draw_help_bar(&self, frame: &mut Frame, area: Rect) {
+        let help = match self.tab {
+            AppTab::Data => {
+                " q:Quit  Tab:Schema  v:Layout  Enter:Focus  j/k:Scroll  h/l:Columns  /:Filter "
+            }
+            AppTab::Schema => " q:Quit  Tab:Data  j/k:Scroll ",
+        };
         frame.render_widget(
             Paragraph::new(help).style(Style::default().fg(Color::DarkGray)),
-            chunks[3],
+            area,
         );
     }
 }
