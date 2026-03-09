@@ -1,0 +1,3 @@
+/target
+*.parquet
+!tests/fixtures/test_data.parquet

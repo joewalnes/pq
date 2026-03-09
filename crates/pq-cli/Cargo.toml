@@ -1,0 +1,38 @@
+[package]
+name = "pq-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "pq"
+path = "src/main.rs"
+
+[dependencies]
+pq-core.workspace = true
+pq-query.workspace = true
+pq-tui.workspace = true
+pq-transform.workspace = true
+arrow.workspace = true
+parquet.workspace = true
+clap.workspace = true
+clap_complete.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+comfy-table.workspace = true
+console.workspace = true
+indicatif.workspace = true
+miette.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+rand.workspace = true
+bytesize.workspace = true
+chrono.workspace = true
+csv.workspace = true
+crossterm.workspace = true
+ratatui.workspace = true
+
+[dev-dependencies]
+assert_cmd.workspace = true
+predicates.workspace = true
+tempfile.workspace = true
+insta.workspace = true

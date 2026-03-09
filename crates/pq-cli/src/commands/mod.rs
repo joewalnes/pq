@@ -1,0 +1,15 @@
+pub mod capabilities;
+pub mod cat;
+pub mod completions;
+pub mod convert;
+pub mod count;
+pub mod explore;
+pub mod info;
+pub mod jq;
+pub mod layout;
+pub mod merge;
+pub mod schema;
+pub mod select;
+pub mod slice;
+pub mod sql;
+pub mod stats;

@@ -1,0 +1,13 @@
+[package]
+name = "pq-tui"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+pq-core.workspace = true
+pq-query.workspace = true
+arrow.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
+tokio.workspace = true
+anyhow.workspace = true

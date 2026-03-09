@@ -1,0 +1,70 @@
+[workspace]
+members = [
+    "crates/pq-cli",
+    "crates/pq-core",
+    "crates/pq-query",
+    "crates/pq-tui",
+    "crates/pq-transform",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+rust-version = "1.75"
+
+[workspace.dependencies]
+# Arrow ecosystem (arrow/parquet 53 to match datafusion 44)
+arrow = { version = "53", features = ["prettyprint"] }
+parquet = { version = "53", features = ["arrow", "async"] }
+datafusion = "44"
+
+# CLI
+clap = { version = "4", features = ["derive", "env", "wrap_help"] }
+clap_complete = "4"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Output
+comfy-table = "7"
+console = "0.15"
+indicatif = "0.17"
+
+# TUI
+ratatui = "0.29"
+crossterm = "0.28"
+
+# jq (1.x stable ecosystem)
+jaq-interpret = "1.5"
+jaq-core = "1.5"
+jaq-std = "1.6"
+jaq-parse = "1.0"
+
+# Error handling
+thiserror = "2"
+miette = { version = "7", features = ["fancy"] }
+anyhow = "1"
+
+# Async
+tokio = { version = "1", features = ["full"] }
+
+# Misc
+rand = "0.8"
+chrono = "0.4"
+bytesize = "1"
+csv = "1"
+
+# Dev
+insta = { version = "1", features = ["json", "yaml"] }
+assert_cmd = "2"
+predicates = "3"
+tempfile = "3"
+
+# Internal
+pq-core = { path = "crates/pq-core" }
+pq-query = { path = "crates/pq-query" }
+pq-tui = { path = "crates/pq-tui" }
+pq-transform = { path = "crates/pq-transform" }
