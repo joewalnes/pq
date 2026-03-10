@@ -254,6 +254,79 @@ pub enum Command {
         raw_output: bool,
     },
 
+    /// Export Parquet data to CSV, JSON, or JSONL
+    Export {
+        /// Parquet file path(s)
+        #[arg(required = true)]
+        files: Vec<String>,
+
+        /// Output file path
+        #[arg(short, long, required = true)]
+        output: String,
+
+        /// Output format (auto-detected from extension if not specified)
+        #[arg(short, long)]
+        format: Option<ExportFormatArg>,
+    },
+
+    /// Statistical summary per column (count, nulls, min, max, mean, stddev, distinct, top-K)
+    Describe {
+        /// Parquet file path(s)
+        #[arg(required = true)]
+        files: Vec<String>,
+
+        /// Number of top frequent values to show per column
+        #[arg(long, default_value = "5")]
+        top: usize,
+    },
+
+    /// Search rows matching a regex pattern across all columns
+    Grep {
+        /// Parquet file path(s)
+        #[arg(required = true)]
+        files: Vec<String>,
+
+        /// Regex pattern to search for
+        pattern: String,
+
+        /// Columns to search (comma-separated; default: all)
+        #[arg(short, long, value_delimiter = ',')]
+        columns: Option<Vec<String>>,
+
+        /// Maximum number of matching rows to return
+        #[arg(short, long)]
+        limit: Option<usize>,
+
+        /// Case-insensitive matching
+        #[arg(short, long)]
+        ignore_case: bool,
+    },
+
+    /// Split a Parquet file into multiple files
+    Split {
+        /// Input Parquet file
+        file: String,
+
+        /// Number of rows per output file
+        #[arg(long)]
+        rows: Option<usize>,
+
+        /// Column to partition by (Hive-style output)
+        #[arg(long)]
+        partition_by: Option<String>,
+
+        /// Output directory
+        #[arg(short, long, required = true)]
+        output: String,
+    },
+
+    /// Validate Parquet file integrity (footer, schema, statistics)
+    Validate {
+        /// Parquet file path(s)
+        #[arg(required = true)]
+        files: Vec<String>,
+    },
+
     /// Machine-readable tool description for AI agents
     Capabilities,
 
@@ -282,6 +355,13 @@ pub enum SchemaModeArg {
 
 #[derive(Clone, ValueEnum)]
 pub enum InputFormatArg {
+    Json,
+    Jsonl,
+    Csv,
+}
+
+#[derive(Clone, ValueEnum)]
+pub enum ExportFormatArg {
     Json,
     Jsonl,
     Csv,

@@ -946,3 +946,225 @@ fn test_nested_layout() {
         .success()
         .stdout(predicate::str::contains("num_row_groups"));
 }
+
+// ── Export tests ─────────────────────────────────────────────────────────
+
+#[test]
+fn test_export_jsonl() {
+    ensure_fixture();
+    let tmp = TempDir::new().unwrap();
+    let output = tmp.path().join("export.jsonl");
+
+    pq().args([
+        "export",
+        &fixture_path(),
+        "-o",
+        output.to_str().unwrap(),
+    ])
+    .assert()
+    .success()
+    .stderr(predicate::str::contains("100 rows"));
+
+    let content = fs::read_to_string(&output).unwrap();
+    let lines: Vec<&str> = content.trim().lines().collect();
+    assert_eq!(lines.len(), 100);
+    let row: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    assert!(row["id"].is_number());
+}
+
+#[test]
+fn test_export_csv() {
+    ensure_fixture();
+    let tmp = TempDir::new().unwrap();
+    let output = tmp.path().join("export.csv");
+
+    pq().args([
+        "export",
+        &fixture_path(),
+        "-o",
+        output.to_str().unwrap(),
+    ])
+    .assert()
+    .success()
+    .stderr(predicate::str::contains("100 rows"));
+
+    let content = fs::read_to_string(&output).unwrap();
+    let lines: Vec<&str> = content.trim().lines().collect();
+    // 100 data rows + 1 header
+    assert_eq!(lines.len(), 101);
+    assert!(lines[0].contains("id"));
+}
+
+#[test]
+fn test_export_json() {
+    ensure_fixture();
+    let tmp = TempDir::new().unwrap();
+    let output = tmp.path().join("export.json");
+
+    pq().args([
+        "export",
+        &fixture_path(),
+        "-o",
+        output.to_str().unwrap(),
+    ])
+    .assert()
+    .success()
+    .stderr(predicate::str::contains("100 rows"));
+
+    let content = fs::read_to_string(&output).unwrap();
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&content).unwrap();
+    assert_eq!(rows.len(), 100);
+}
+
+// ── Describe tests ──────────────────────────────────────────────────────
+
+#[test]
+fn test_describe() {
+    ensure_fixture();
+    pq().args(["describe", &fixture_path(), "-O", "table"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Column"))
+        .stdout(predicate::str::contains("Distinct"));
+}
+
+#[test]
+fn test_describe_json() {
+    ensure_fixture();
+    let output = pq()
+        .args(["describe", &fixture_path(), "-O", "json"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let desc: Vec<serde_json::Value> = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(desc.len(), 6); // 6 columns
+    assert!(desc[0]["column"].is_string());
+    assert!(desc[0]["count"].is_number());
+}
+
+// ── Grep tests ──────────────────────────────────────────────────────────
+
+#[test]
+fn test_grep() {
+    ensure_fixture();
+    pq().args(["grep", &fixture_path(), "Tokyo", "-O", "jsonl"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Tokyo"));
+}
+
+#[test]
+fn test_grep_case_insensitive() {
+    ensure_fixture();
+    pq().args(["grep", &fixture_path(), "tokyo", "-i", "-O", "jsonl"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Tokyo"));
+}
+
+#[test]
+fn test_grep_limit() {
+    ensure_fixture();
+    let output = pq()
+        .args([
+            "grep",
+            &fixture_path(),
+            "Tokyo",
+            "--limit",
+            "3",
+            "-O",
+            "jsonl",
+        ])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert_eq!(lines.len(), 3);
+}
+
+#[test]
+fn test_grep_no_match() {
+    ensure_fixture();
+    pq().args(["grep", &fixture_path(), "ZZZNOMATCH", "-O", "jsonl"])
+        .assert()
+        .failure(); // exit 1 on no matches
+}
+
+// ── Split tests ─────────────────────────────────────────────────────────
+
+#[test]
+fn test_split_by_rows() {
+    ensure_fixture();
+    let tmp = TempDir::new().unwrap();
+    let output_dir = tmp.path().join("parts");
+
+    pq().args([
+        "split",
+        &fixture_path(),
+        "--rows",
+        "30",
+        "-o",
+        output_dir.to_str().unwrap(),
+    ])
+    .assert()
+    .success()
+    .stderr(predicate::str::contains("Split 100 rows into 4 files"));
+
+    // Verify output files exist
+    let parts: Vec<_> = std::fs::read_dir(&output_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .collect();
+    assert_eq!(parts.len(), 4);
+}
+
+#[test]
+fn test_split_by_partition() {
+    ensure_fixture();
+    let tmp = TempDir::new().unwrap();
+    let output_dir = tmp.path().join("partitioned");
+
+    pq().args([
+        "split",
+        &fixture_path(),
+        "--partition-by",
+        "city",
+        "-o",
+        output_dir.to_str().unwrap(),
+    ])
+    .assert()
+    .success()
+    .stderr(predicate::str::contains("5 partitions"));
+
+    // Should have 5 subdirectories (one per city)
+    let dirs: Vec<_> = std::fs::read_dir(&output_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .collect();
+    assert_eq!(dirs.len(), 5);
+}
+
+// ── Validate tests ──────────────────────────────────────────────────────
+
+#[test]
+fn test_validate() {
+    ensure_fixture();
+    pq().args(["validate", &fixture_path(), "-O", "table"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("VALID"));
+}
+
+#[test]
+fn test_validate_json() {
+    ensure_fixture();
+    let output = pq()
+        .args(["validate", &fixture_path(), "-O", "json"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let result: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(result["valid"], true);
+    assert_eq!(result["num_rows"], 100);
+}

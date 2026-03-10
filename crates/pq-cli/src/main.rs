@@ -175,6 +175,54 @@ fn run(cli: Cli, format: Format) -> anyhow::Result<()> {
             commands::jq::run(&resolved, filter, slurp, raw_output, format)
         }
 
+        Command::Export {
+            ref files,
+            ref output,
+            ref format,
+        } => {
+            let resolved = files::resolve_files(files)?;
+            let fmt = format.as_ref().map(|f| match f {
+                cli::ExportFormatArg::Json => output::Format::Json,
+                cli::ExportFormatArg::Jsonl => output::Format::JsonLines,
+                cli::ExportFormatArg::Csv => output::Format::Csv,
+            });
+            commands::export::run(&resolved, output, fmt)
+        }
+
+        Command::Describe {
+            ref files,
+            top,
+        } => {
+            let resolved = files::resolve_files(files)?;
+            commands::describe::run(&resolved, top, format)
+        }
+
+        Command::Grep {
+            ref files,
+            ref pattern,
+            ref columns,
+            limit,
+            ignore_case,
+        } => {
+            let resolved = files::resolve_files(files)?;
+            commands::grep::run(&resolved, pattern, columns.clone(), limit, ignore_case, format)
+        }
+
+        Command::Split {
+            ref file,
+            rows,
+            ref partition_by,
+            ref output,
+        } => commands::split::run(file, rows, partition_by.as_deref(), output),
+
+        Command::Validate { ref files } => {
+            let resolved = files::resolve_files(files)?;
+            for f in &resolved {
+                commands::validate::run(f, format)?;
+            }
+            Ok(())
+        }
+
         Command::Capabilities => commands::capabilities::run(format),
 
         Command::Completions { shell } => commands::completions::run(shell),
