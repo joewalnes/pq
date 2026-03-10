@@ -76,6 +76,22 @@ pub fn parse_url(location: &str) -> Result<(Arc<dyn ObjectStore>, ObjectPath)> {
             let path = url.path().trim_start_matches('/');
             (base, ObjectPath::from(path))
         }
+        "gs" => {
+            let bucket = url
+                .host_str()
+                .ok_or_else(|| PqError::Other(format!("GCS URL has no bucket: {location}")))?;
+            let base = format!("gs://{bucket}");
+            let path = url.path().trim_start_matches('/');
+            (base, ObjectPath::from(path))
+        }
+        "az" | "abfss" => {
+            let container = url
+                .host_str()
+                .ok_or_else(|| PqError::Other(format!("Azure URL has no container: {location}")))?;
+            let base = format!("{}://{container}", url.scheme());
+            let path = url.path().trim_start_matches('/');
+            (base, ObjectPath::from(path))
+        }
         scheme => {
             return Err(PqError::Other(format!(
                 "Unsupported URL scheme: {scheme}://"
@@ -106,6 +122,22 @@ pub fn parse_url(location: &str) -> Result<(Arc<dyn ObjectStore>, ObjectPath)> {
             let bucket = url.host_str().unwrap();
             let store = object_store::aws::AmazonS3Builder::from_env()
                 .with_bucket_name(bucket)
+                .build()
+                .map_err(|e| PqError::ObjectStore(e.to_string()))?;
+            wrap_store(Arc::new(store))
+        }
+        "gs" => {
+            let bucket = url.host_str().unwrap();
+            let store = object_store::gcp::GoogleCloudStorageBuilder::from_env()
+                .with_bucket_name(bucket)
+                .build()
+                .map_err(|e| PqError::ObjectStore(e.to_string()))?;
+            wrap_store(Arc::new(store))
+        }
+        "az" | "abfss" => {
+            let container = url.host_str().unwrap();
+            let store = object_store::azure::MicrosoftAzureBuilder::from_env()
+                .with_container_name(container)
                 .build()
                 .map_err(|e| PqError::ObjectStore(e.to_string()))?;
             wrap_store(Arc::new(store))
