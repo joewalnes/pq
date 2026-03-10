@@ -139,8 +139,14 @@ impl DataTableState {
 
         let table_rows: Vec<Row> = (start..end)
             .map(|actual_idx| {
-                let mut cells: Vec<Cell> = vec![Cell::from(format!("{}", actual_idx + 1))
-                    .style(Style::default().fg(Color::DarkGray))];
+                let is_selected = actual_idx == self.selected_row;
+                let row_num_style = if is_selected {
+                    Style::default().fg(Color::White)
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                };
+                let mut cells: Vec<Cell> =
+                    vec![Cell::from(format!("{}", actual_idx + 1)).style(row_num_style)];
 
                 if let Some(row) = page_cache.get_row(actual_idx) {
                     cells.extend(visible_cols.iter().map(|&i| {

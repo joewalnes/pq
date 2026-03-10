@@ -20,11 +20,11 @@
 
 ## Bugs
 
-- [ ] TUI: row number unreadable on selected row — The row number column (1, 2, 3…) is styled `fg(Color::DarkGray)` at cell level, but the selected row highlight is `bg(Color::DarkGray)`. Cell-level fg wins, so the row number becomes grey-on-grey and invisible. See `data_table.rs:142-143` vs `data_table.rs:172-173`.
+- [x] TUI: row number unreadable on selected row — Fixed: row number now uses `fg(White)` on selected row, `fg(DarkGray)` otherwise.
 
 ## Infrastructure
 
-- [ ] Streaming TUI — Remove 10K row cap in `view`; lazy-load batches as user scrolls
+- [x] Streaming TUI — Lazy PageCache with background fetch thread; no row limit
 - [ ] `union <files...>` — Like merge but actually implements union-by-name (fill missing columns with nulls)
 - [ ] Progress bars on all transform commands (repack, sort, merge, convert, export, split)
 - [ ] Fix `merge --schema-mode union|intersect` — currently both just use first file's schema
