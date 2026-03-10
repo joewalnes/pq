@@ -335,6 +335,169 @@ fn test_merge() {
 }
 
 #[test]
+fn test_merge_strict_rejects_mismatch() {
+    ensure_fixture();
+    let tmp = TempDir::new().unwrap();
+    // Create a file with a subset of columns (different schema)
+    let subset = tmp.path().join("subset.parquet");
+    pq().args([
+        "select",
+        &fixture_path(),
+        "-c",
+        "id,name",
+        "-o",
+        subset.to_str().unwrap(),
+    ])
+    .assert()
+    .success();
+
+    let output = tmp.path().join("merged.parquet");
+    pq().args([
+        "merge",
+        &fixture_path(),
+        subset.to_str().unwrap(),
+        "--schema-mode",
+        "strict",
+        "-o",
+        output.to_str().unwrap(),
+    ])
+    .assert()
+    .failure()
+    .stderr(predicate::str::contains("Schema mismatch"));
+}
+
+#[test]
+fn test_merge_union() {
+    ensure_fixture();
+    let tmp = TempDir::new().unwrap();
+    // Create a file with only id and name columns
+    let subset = tmp.path().join("subset.parquet");
+    pq().args([
+        "select",
+        &fixture_path(),
+        "-c",
+        "id,name",
+        "-o",
+        subset.to_str().unwrap(),
+    ])
+    .assert()
+    .success();
+
+    let output = tmp.path().join("merged.parquet");
+    pq().args([
+        "merge",
+        &fixture_path(),
+        subset.to_str().unwrap(),
+        "--schema-mode",
+        "union",
+        "-o",
+        output.to_str().unwrap(),
+    ])
+    .assert()
+    .success()
+    .stderr(predicate::str::contains("200 rows"));
+
+    // Union should have all 6 columns from the full file
+    let schema_output = pq()
+        .args(["schema", output.to_str().unwrap(), "--format", "ddl"])
+        .output()
+        .unwrap();
+    let schema = String::from_utf8(schema_output.stdout).unwrap();
+    assert!(schema.contains("id"), "union schema should contain id");
+    assert!(schema.contains("name"), "union schema should contain name");
+    assert!(schema.contains("age"), "union schema should contain age");
+    assert!(schema.contains("score"), "union schema should contain score");
+    assert!(
+        schema.contains("active"),
+        "union schema should contain active"
+    );
+    assert!(schema.contains("city"), "union schema should contain city");
+
+    // Verify rows from subset file have nulls for missing columns
+    let cat_output = pq()
+        .args([
+            "cat",
+            output.to_str().unwrap(),
+            "-O",
+            "jsonl",
+            "--limit",
+            "1",
+            "--offset",
+            "100",
+        ])
+        .output()
+        .unwrap();
+    let row: serde_json::Value =
+        serde_json::from_str(&String::from_utf8(cat_output.stdout).unwrap().trim()).unwrap();
+    // Row 100 is from the subset file — age/score/active/city should be null
+    assert!(row["age"].is_null(), "subset row should have null age");
+    assert!(row["score"].is_null(), "subset row should have null score");
+}
+
+#[test]
+fn test_merge_intersect() {
+    ensure_fixture();
+    let tmp = TempDir::new().unwrap();
+    // Create a file with only id, name, and age columns
+    let subset = tmp.path().join("subset.parquet");
+    pq().args([
+        "select",
+        &fixture_path(),
+        "-c",
+        "id,name,age",
+        "-o",
+        subset.to_str().unwrap(),
+    ])
+    .assert()
+    .success();
+
+    let output = tmp.path().join("merged.parquet");
+    pq().args([
+        "merge",
+        &fixture_path(),
+        subset.to_str().unwrap(),
+        "--schema-mode",
+        "intersect",
+        "-o",
+        output.to_str().unwrap(),
+    ])
+    .assert()
+    .success()
+    .stderr(predicate::str::contains("200 rows"));
+
+    // Intersect should have only the 3 common columns
+    let schema_output = pq()
+        .args(["schema", output.to_str().unwrap(), "--format", "ddl"])
+        .output()
+        .unwrap();
+    let schema = String::from_utf8(schema_output.stdout).unwrap();
+    assert!(
+        schema.contains("id"),
+        "intersect schema should contain id"
+    );
+    assert!(
+        schema.contains("name"),
+        "intersect schema should contain name"
+    );
+    assert!(
+        schema.contains("age"),
+        "intersect schema should contain age"
+    );
+    assert!(
+        !schema.contains("score"),
+        "intersect schema should NOT contain score"
+    );
+    assert!(
+        !schema.contains("active"),
+        "intersect schema should NOT contain active"
+    );
+    assert!(
+        !schema.contains("city"),
+        "intersect schema should NOT contain city"
+    );
+}
+
+#[test]
 fn test_capabilities() {
     pq().args(["capabilities", "-O", "json"])
         .assert()

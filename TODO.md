@@ -27,4 +27,4 @@
 - [x] Streaming TUI — Lazy PageCache with background fetch thread; no row limit
 - [ ] `union <files...>` — Like merge but actually implements union-by-name (fill missing columns with nulls)
 - [ ] Progress bars on all transform commands (repack, sort, merge, convert, export, split)
-- [ ] Fix `merge --schema-mode union|intersect` — currently both just use first file's schema
+- [x] Fix `merge --schema-mode union|intersect` — implemented: union adds null columns for missing fields, intersect keeps only common columns, strict rejects mismatches
