@@ -18,6 +18,10 @@
 - [ ] `schema evolve <file>` — Add columns (`--add name:type`), drop (`--drop col`), rename (`--rename old:new`), cast types (`--cast col:type`)
 - [ ] `validate <file>` — Check file integrity: valid footer, page checksums, schema consistency across row groups, statistics sanity
 
+## Bugs
+
+- [ ] TUI: row number unreadable on selected row — The row number column (1, 2, 3…) is styled `fg(Color::DarkGray)` at cell level, but the selected row highlight is `bg(Color::DarkGray)`. Cell-level fg wins, so the row number becomes grey-on-grey and invisible. See `data_table.rs:142-143` vs `data_table.rs:172-173`.
+
 ## Infrastructure
 
 - [ ] Streaming TUI — Remove 10K row cap in `view`; lazy-load batches as user scrolls
