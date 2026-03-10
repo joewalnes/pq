@@ -1,5 +1,6 @@
 mod cli;
 mod commands;
+mod files;
 mod output;
 
 use clap::Parser;
@@ -45,45 +46,77 @@ fn main() {
 
 fn run(cli: Cli, format: Format) -> anyhow::Result<()> {
     match cli.command {
-        Command::Info { ref file } => commands::info::run(file, format),
+        Command::Info { ref files } => {
+            let resolved = files::resolve_files(files)?;
+            for f in &resolved {
+                commands::info::run(f, format)?;
+            }
+            Ok(())
+        }
 
         Command::Schema {
-            ref file,
+            ref files,
             format: ref schema_fmt,
-        } => commands::schema::run(file, schema_fmt, format),
+        } => {
+            let resolved = files::resolve_files(files)?;
+            for f in &resolved {
+                commands::schema::run(f, schema_fmt, format)?;
+            }
+            Ok(())
+        }
 
-        Command::Stats { ref file } => commands::stats::run(file, format),
+        Command::Stats { ref files } => {
+            let resolved = files::resolve_files(files)?;
+            for f in &resolved {
+                commands::stats::run(f, format)?;
+            }
+            Ok(())
+        }
 
-        Command::Layout { ref file } => commands::layout::run(file, format),
+        Command::Layout { ref files } => {
+            let resolved = files::resolve_files(files)?;
+            for f in &resolved {
+                commands::layout::run(f, format)?;
+            }
+            Ok(())
+        }
 
         Command::Cat {
-            ref file,
+            ref files,
             limit,
             offset,
             ref columns,
             ref where_clause,
             ref jq,
-        } => commands::cat::run(
-            file,
-            limit,
-            offset,
-            columns.clone(),
-            where_clause.as_deref(),
-            jq.as_deref(),
-            format,
-        ),
+        } => {
+            let resolved = files::resolve_files(files)?;
+            commands::cat::run(
+                &resolved,
+                limit,
+                offset,
+                columns.clone(),
+                where_clause.as_deref(),
+                jq.as_deref(),
+                format,
+            )
+        }
 
         Command::Head {
-            ref file,
-            lines,
-            ref columns,
-        } => commands::cat::run(file, Some(lines), None, columns.clone(), None, None, format),
-
-        Command::Tail {
-            ref file,
+            ref files,
             lines,
             ref columns,
         } => {
+            let resolved = files::resolve_files(files)?;
+            commands::cat::run(&resolved, Some(lines), None, columns.clone(), None, None, format)
+        }
+
+        Command::Tail {
+            ref files,
+            lines,
+            ref columns,
+        } => {
+            let resolved = files::resolve_files(files)?;
+            let file = resolved.last().unwrap();
             let (batches, _schema) = pq_core::reader::open_tail(file, lines, columns.clone())?;
             let stdout = std::io::stdout();
             let mut writer = stdout.lock();
@@ -92,11 +125,14 @@ fn run(cli: Cli, format: Format) -> anyhow::Result<()> {
         }
 
         Command::Sample {
-            ref file,
+            ref files,
             lines,
             seed,
             ref columns,
-        } => run_sample(file, lines, seed, columns.clone(), format),
+        } => {
+            let resolved = files::resolve_files(files)?;
+            run_sample(&resolved[0], lines, seed, columns.clone(), format)
+        }
 
         Command::Count { ref files } => commands::count::run(files, format),
 
@@ -130,11 +166,14 @@ fn run(cli: Cli, format: Format) -> anyhow::Result<()> {
         } => commands::convert::run(input, output, format.as_ref()),
 
         Command::Jq {
-            ref file,
+            ref files,
             ref filter,
             slurp,
             raw_output,
-        } => commands::jq::run(file, filter, slurp, raw_output, format),
+        } => {
+            let resolved = files::resolve_files(files)?;
+            commands::jq::run(&resolved, filter, slurp, raw_output, format)
+        }
 
         Command::Capabilities => commands::capabilities::run(format),
 

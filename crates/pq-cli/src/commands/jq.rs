@@ -5,21 +5,26 @@ use pq_core::reader::{open_batches, ReadOptions};
 use crate::output::Format;
 
 pub fn run(
-    file: &str,
+    files: &[String],
     filter: &str,
     slurp: bool,
     raw_output: bool,
     format: Format,
 ) -> anyhow::Result<()> {
-    let opts = ReadOptions::default();
-    let (batches, _schema) = open_batches(file, &opts)?;
+    let mut all_rows: Vec<serde_json::Value> = Vec::new();
 
-    let json_rows: Vec<serde_json::Value> = batches
-        .iter()
-        .flat_map(pq_query::convert::batch_to_json_rows)
-        .collect();
+    for file in files {
+        let opts = ReadOptions::default();
+        let (batches, _schema) = open_batches(file, &opts)?;
 
-    let results = pq_query::jq::apply_jq_filter(filter, json_rows, slurp)?;
+        let json_rows: Vec<serde_json::Value> = batches
+            .iter()
+            .flat_map(pq_query::convert::batch_to_json_rows)
+            .collect();
+        all_rows.extend(json_rows);
+    }
+
+    let results = pq_query::jq::apply_jq_filter(filter, all_rows, slurp)?;
 
     let stdout = std::io::stdout();
     let mut writer = stdout.lock();

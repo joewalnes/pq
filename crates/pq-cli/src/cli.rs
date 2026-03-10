@@ -52,14 +52,16 @@ pub enum ColorMode {
 pub enum Command {
     /// Display file summary (size, rows, schema, compression, metadata)
     Info {
-        /// Parquet file path
-        file: String,
+        /// Parquet file path(s)
+        #[arg(required = true)]
+        files: Vec<String>,
     },
 
     /// Display schema (tree, json-schema, arrow, ddl)
     Schema {
-        /// Parquet file path
-        file: String,
+        /// Parquet file path(s)
+        #[arg(required = true)]
+        files: Vec<String>,
 
         /// Schema output format
         #[arg(long, default_value = "tree")]
@@ -68,20 +70,23 @@ pub enum Command {
 
     /// Display column statistics (min, max, nulls, distinct)
     Stats {
-        /// Parquet file path
-        file: String,
+        /// Parquet file path(s)
+        #[arg(required = true)]
+        files: Vec<String>,
     },
 
     /// Display physical layout (row groups, column chunks, pages)
     Layout {
-        /// Parquet file path
-        file: String,
+        /// Parquet file path(s)
+        #[arg(required = true)]
+        files: Vec<String>,
     },
 
     /// Dump rows from a Parquet file
     Cat {
-        /// Parquet file path
-        file: String,
+        /// Parquet file path(s)
+        #[arg(required = true)]
+        files: Vec<String>,
 
         /// Maximum number of rows to output
         #[arg(short, long)]
@@ -106,8 +111,9 @@ pub enum Command {
 
     /// Show first N rows (default 10)
     Head {
-        /// Parquet file path
-        file: String,
+        /// Parquet file path(s)
+        #[arg(required = true)]
+        files: Vec<String>,
 
         /// Number of rows to show
         #[arg(short = 'n', long, default_value = "10")]
@@ -120,8 +126,9 @@ pub enum Command {
 
     /// Show last N rows (default 10)
     Tail {
-        /// Parquet file path
-        file: String,
+        /// Parquet file path(s)
+        #[arg(required = true)]
+        files: Vec<String>,
 
         /// Number of rows to show
         #[arg(short = 'n', long, default_value = "10")]
@@ -134,8 +141,9 @@ pub enum Command {
 
     /// Show random N rows
     Sample {
-        /// Parquet file path
-        file: String,
+        /// Parquet file path(s)
+        #[arg(required = true)]
+        files: Vec<String>,
 
         /// Number of rows to sample
         #[arg(short = 'n', long, default_value = "10")]
@@ -230,8 +238,9 @@ pub enum Command {
 
     /// Apply jq expressions to Parquet data
     Jq {
-        /// Parquet file path
-        file: String,
+        /// Parquet file path(s)
+        #[arg(required = true)]
+        files: Vec<String>,
 
         /// jq filter expression
         filter: String,
