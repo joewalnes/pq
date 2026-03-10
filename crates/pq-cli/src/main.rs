@@ -28,6 +28,10 @@ fn main() {
         }
     };
 
+    if cli.debug {
+        pq_core::source::set_debug(true);
+    }
+
     let mode = OutputMode::detect(cli.output_format.as_ref());
     let format = Format::from_cli(cli.output_format.as_ref(), mode);
 

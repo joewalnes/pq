@@ -1,48 +1,31 @@
-use arrow::array::RecordBatch;
 use arrow::datatypes::Schema;
-use arrow::util::display::ArrayFormatter;
 use ratatui::prelude::*;
 use ratatui::widgets::*;
 use std::sync::Arc;
+
+use crate::page_cache::PageCache;
 
 const MIN_COL_WIDTH: u16 = 10;
 const MAX_COL_WIDTH: u16 = 60;
 
 pub struct DataTableState {
     pub headers: Vec<String>,
-    pub rows: Vec<Vec<String>>,
+    pub total_rows: usize,
     pub selected_row: usize,
     pub col_offset: usize,
     pub col_widths: Vec<u16>,
 }
 
 impl DataTableState {
-    pub fn new(schema: &Arc<Schema>, batches: &[RecordBatch]) -> Self {
+    pub fn new(schema: &Arc<Schema>, first_page_rows: &[Vec<String>], total_rows: usize) -> Self {
         let headers: Vec<String> = schema.fields().iter().map(|f| f.name().clone()).collect();
 
-        let mut rows = Vec::new();
-        for batch in batches {
-            for row_idx in 0..batch.num_rows() {
-                let mut row = Vec::new();
-                for col_idx in 0..batch.num_columns() {
-                    let col = batch.column(col_idx);
-                    let formatter = ArrayFormatter::try_new(col.as_ref(), &Default::default());
-                    let val = match formatter {
-                        Ok(f) => f.value(row_idx).to_string(),
-                        Err(_) => "<error>".to_string(),
-                    };
-                    row.push(val);
-                }
-                rows.push(row);
-            }
-        }
-
-        // Calculate column widths based on content, clamped to [MIN, MAX]
+        // Calculate column widths based on first page content, clamped to [MIN, MAX]
         let col_widths: Vec<u16> = headers
             .iter()
             .enumerate()
             .map(|(i, h)| {
-                let max_data = rows
+                let max_data = first_page_rows
                     .iter()
                     .map(|r| r.get(i).map(|s| s.len()).unwrap_or(0))
                     .max()
@@ -55,7 +38,7 @@ impl DataTableState {
 
         Self {
             headers,
-            rows,
+            total_rows,
             selected_row: 0,
             col_offset: 0,
             col_widths,
@@ -63,7 +46,7 @@ impl DataTableState {
     }
 
     pub fn scroll_down(&mut self) {
-        if self.selected_row + 1 < self.rows.len() {
+        if self.total_rows > 0 && self.selected_row + 1 < self.total_rows {
             self.selected_row += 1;
         }
     }
@@ -91,8 +74,8 @@ impl DataTableState {
     }
 
     pub fn scroll_to_bottom(&mut self) {
-        if !self.rows.is_empty() {
-            self.selected_row = self.rows.len() - 1;
+        if self.total_rows > 0 {
+            self.selected_row = self.total_rows - 1;
         }
     }
 
@@ -113,11 +96,11 @@ impl DataTableState {
         cols
     }
 
-    pub fn render(&self, frame: &mut Frame, area: Rect, block: Block) {
+    pub fn render(&self, frame: &mut Frame, area: Rect, block: Block, page_cache: &PageCache) {
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
-        if self.rows.is_empty() {
+        if self.total_rows == 0 {
             frame.render_widget(
                 Paragraph::new("No data").style(Style::default().fg(Color::DarkGray)),
                 inner,
@@ -126,7 +109,7 @@ impl DataTableState {
         }
 
         // Row number column: width based on digit count of total rows
-        let row_num_width = (self.rows.len().max(1).ilog10() as u16 + 1).max(2) + 1; // +1 padding
+        let row_num_width = (self.total_rows.max(1).ilog10() as u16 + 1).max(2) + 1; // +1 padding
         let data_width = inner.width.saturating_sub(row_num_width + 1); // +1 for separator
         let visible_cols = self.visible_columns(data_width);
 
@@ -152,29 +135,40 @@ impl DataTableState {
         } else {
             0
         };
+        let end = (start + visible_height).min(self.total_rows);
 
-        let table_rows: Vec<Row> = self.rows[start..]
-            .iter()
-            .take(visible_height)
-            .enumerate()
-            .map(|(display_idx, row)| {
-                let actual_idx = start + display_idx;
+        let table_rows: Vec<Row> = (start..end)
+            .map(|actual_idx| {
                 let mut cells: Vec<Cell> = vec![Cell::from(format!("{}", actual_idx + 1))
                     .style(Style::default().fg(Color::DarkGray))];
-                cells.extend(visible_cols.iter().map(|&i| {
-                    let text = row.get(i).cloned().unwrap_or_default();
-                    let max = self.col_widths.get(i).copied().unwrap_or(MIN_COL_WIDTH) as usize;
-                    let display = if text.len() > max.saturating_sub(1) {
-                        let mut end = max.saturating_sub(2).min(text.len());
-                        while end > 0 && !text.is_char_boundary(end) {
-                            end -= 1;
-                        }
-                        format!("{}…", &text[..end])
-                    } else {
-                        text
-                    };
-                    Cell::from(display)
-                }));
+
+                if let Some(row) = page_cache.get_row(actual_idx) {
+                    cells.extend(visible_cols.iter().map(|&i| {
+                        let text = row.get(i).cloned().unwrap_or_default();
+                        let max =
+                            self.col_widths.get(i).copied().unwrap_or(MIN_COL_WIDTH) as usize;
+                        let display = if text.len() > max.saturating_sub(1) {
+                            let mut end = max.saturating_sub(2).min(text.len());
+                            while end > 0 && !text.is_char_boundary(end) {
+                                end -= 1;
+                            }
+                            format!("{}…", &text[..end])
+                        } else {
+                            text
+                        };
+                        Cell::from(display)
+                    }));
+                } else {
+                    // Loading placeholder
+                    cells.push(
+                        Cell::from("Loading...").style(
+                            Style::default()
+                                .fg(Color::DarkGray)
+                                .add_modifier(Modifier::DIM),
+                        ),
+                    );
+                }
+
                 let style = if actual_idx == self.selected_row {
                     Style::default().bg(Color::DarkGray).fg(Color::White)
                 } else {
@@ -185,11 +179,9 @@ impl DataTableState {
             .collect();
 
         let mut widths: Vec<Constraint> = vec![Constraint::Length(row_num_width)];
-        widths.extend(
-            visible_cols
-                .iter()
-                .map(|&i| Constraint::Length(self.col_widths.get(i).copied().unwrap_or(MIN_COL_WIDTH))),
-        );
+        widths.extend(visible_cols.iter().map(|&i| {
+            Constraint::Length(self.col_widths.get(i).copied().unwrap_or(MIN_COL_WIDTH))
+        }));
 
         let table = Table::new(table_rows, &widths)
             .header(header)

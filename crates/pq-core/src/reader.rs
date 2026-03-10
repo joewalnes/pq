@@ -27,6 +27,14 @@ impl Default for ReadOptions {
 }
 
 pub fn read_batches(path: &Path, opts: &ReadOptions) -> Result<(Vec<RecordBatch>, Arc<Schema>)> {
+    let (batches, schema, _) = read_batches_with_row_count(path, opts)?;
+    Ok((batches, schema))
+}
+
+pub fn read_batches_with_row_count(
+    path: &Path,
+    opts: &ReadOptions,
+) -> Result<(Vec<RecordBatch>, Arc<Schema>, i64)> {
     let file = File::open(path).map_err(|e| PqError::FileOpen {
         path: path.display().to_string(),
         source: e,
@@ -38,6 +46,8 @@ pub fn read_batches(path: &Path, opts: &ReadOptions) -> Result<(Vec<RecordBatch>
             source: e,
         })?
         .with_batch_size(opts.batch_size);
+
+    let total_rows = builder.metadata().file_metadata().num_rows();
 
     // Apply column projection
     if let Some(ref columns) = opts.columns {
@@ -82,7 +92,7 @@ pub fn read_batches(path: &Path, opts: &ReadOptions) -> Result<(Vec<RecordBatch>
         batches.push(batch);
     }
 
-    Ok((batches, schema))
+    Ok((batches, schema, total_rows))
 }
 
 /// Read rows from the end of the file
@@ -113,6 +123,21 @@ pub fn row_count(path: &Path) -> Result<i64> {
     Ok(metadata.file_metadata().num_rows())
 }
 
+/// Read schema and row count from metadata without reading data.
+pub fn read_schema_and_row_count(path: &Path) -> Result<(Arc<Schema>, i64)> {
+    let file = File::open(path).map_err(|e| PqError::FileOpen {
+        path: path.display().to_string(),
+        source: e,
+    })?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(|e| PqError::ParquetRead {
+        path: path.display().to_string(),
+        source: e,
+    })?;
+    let total_rows = builder.metadata().file_metadata().num_rows();
+    let schema = builder.schema().clone();
+    Ok((schema, total_rows))
+}
+
 // ---------------------------------------------------------------------------
 // Universal functions: accept a path or URL string, dispatch accordingly
 // ---------------------------------------------------------------------------
@@ -123,6 +148,20 @@ pub fn open_batches(location: &str, opts: &ReadOptions) -> Result<(Vec<RecordBat
         source::block_on_async(crate::async_reader::read_batches(location, opts))
     } else {
         read_batches(Path::new(location), opts)
+    }
+}
+
+/// Read batches and total row count from a single metadata read.
+pub fn open_batches_with_row_count(
+    location: &str,
+    opts: &ReadOptions,
+) -> Result<(Vec<RecordBatch>, Arc<Schema>, i64)> {
+    if source::is_url(location) {
+        source::block_on_async(crate::async_reader::read_batches_with_row_count(
+            location, opts,
+        ))
+    } else {
+        read_batches_with_row_count(Path::new(location), opts)
     }
 }
 
@@ -146,6 +185,15 @@ pub fn open_tail(
         source::block_on_async(crate::async_reader::read_batches(location, &opts))
     } else {
         read_tail(Path::new(location), n, columns)
+    }
+}
+
+/// Read schema and total row count from metadata only (no data read).
+pub fn open_metadata(location: &str) -> Result<(Arc<Schema>, i64)> {
+    if source::is_url(location) {
+        source::block_on_async(crate::async_reader::read_schema_and_row_count(location))
+    } else {
+        read_schema_and_row_count(Path::new(location))
     }
 }
 

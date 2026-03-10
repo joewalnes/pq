@@ -26,6 +26,10 @@ pub struct Cli {
     /// Increase verbosity
     #[arg(short, long, global = true)]
     pub verbose: bool,
+
+    /// Log HTTP requests to stderr (ranges, sizes, timings)
+    #[arg(long, global = true, hide = true)]
+    pub debug: bool,
 }
 
 #[derive(Clone, ValueEnum)]

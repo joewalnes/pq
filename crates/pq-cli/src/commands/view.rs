@@ -1,19 +1,29 @@
 use std::path::PathBuf;
 
-use pq_core::reader::{open_batches, ReadOptions};
+use pq_core::reader::{open_batches_with_row_count, open_metadata, ReadOptions};
+use pq_core::source;
+use pq_tui::page_cache::{format_batches_to_strings, Page, PAGE_SIZE};
 
 pub fn run(file: &str) -> anyhow::Result<()> {
     let path = PathBuf::from(file);
 
-    // Load initial data (first 10000 rows for TUI)
-    let opts = ReadOptions {
-        columns: None,
-        limit: Some(10_000),
-        offset: None,
-        batch_size: 8192,
+    let (schema, total_rows, first_page) = if source::is_url(file) {
+        // Remote: read metadata only (fast), let the background thread fetch data
+        let (schema, total_rows) = open_metadata(file)?;
+        (schema, total_rows as usize, None)
+    } else {
+        // Local: load first page synchronously for instant display
+        let opts = ReadOptions {
+            columns: None,
+            limit: Some(PAGE_SIZE),
+            offset: None,
+            batch_size: 8192,
+        };
+        let (batches, schema, total_rows) = open_batches_with_row_count(file, &opts)?;
+        let rows = format_batches_to_strings(&batches);
+        let first_page = Page { rows, batches };
+        (schema, total_rows as usize, Some(first_page))
     };
-
-    let (batches, schema) = open_batches(file, &opts)?;
 
     // Set up terminal
     crossterm::terminal::enable_raw_mode()?;
@@ -27,7 +37,8 @@ pub fn run(file: &str) -> anyhow::Result<()> {
     let mut terminal = ratatui::Terminal::new(backend)?;
 
     // Run app
-    let mut app = pq_tui::app::App::new(path, schema, batches);
+    let mut app =
+        pq_tui::app::App::new(path, file.to_string(), schema, total_rows, first_page);
     let result = app.run(&mut terminal);
 
     // Restore terminal

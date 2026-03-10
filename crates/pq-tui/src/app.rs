@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use arrow::array::RecordBatch;
 use arrow::datatypes::Schema;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::prelude::*;
@@ -10,6 +9,7 @@ use ratatui::widgets::*;
 use crate::components::data_table::DataTableState;
 use crate::components::detail_panel::DetailPanelState;
 use crate::components::schema_tree::SchemaTreeState;
+use crate::page_cache::{Page, PageCache};
 use crate::theme::Theme;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -55,7 +55,7 @@ pub enum DataFocus {
 pub struct App {
     pub path: PathBuf,
     pub schema: Arc<Schema>,
-    pub batches: Vec<RecordBatch>,
+    pub page_cache: PageCache,
     pub total_rows: usize,
     pub tab: AppTab,
     pub layout_mode: LayoutMode,
@@ -72,22 +72,33 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(path: PathBuf, schema: Arc<Schema>, batches: Vec<RecordBatch>) -> Self {
-        let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
-        let data_table = DataTableState::new(&schema, &batches);
+    pub fn new(
+        path: PathBuf,
+        location: String,
+        schema: Arc<Schema>,
+        total_rows: usize,
+        first_page: Option<Page>,
+    ) -> Self {
+        let first_page_rows: &[Vec<String>] = match &first_page {
+            Some(p) => &p.rows,
+            None => &[],
+        };
+        let data_table = DataTableState::new(&schema, first_page_rows, total_rows);
         let schema_tree = SchemaTreeState::new(&schema);
         let mut detail_panel = DetailPanelState::new();
 
+        let page_cache = PageCache::new(location, schema.clone(), total_rows, first_page);
+
         // Initialize detail panel with first row if available
-        if !batches.is_empty() && batches[0].num_rows() > 0 {
-            let json = pq_query::convert::batch_row_to_json(&batches[0], 0);
+        if let Some((batch, row_in_batch)) = page_cache.get_batch_row(0) {
+            let json = pq_query::convert::batch_row_to_json(batch, row_in_batch);
             detail_panel.update(&json);
         }
 
         Self {
             path,
             schema,
-            batches,
+            page_cache,
             total_rows,
             tab: AppTab::Data,
             layout_mode: LayoutMode::SplitHorizontal,
@@ -106,9 +117,14 @@ impl App {
 
     pub fn run(&mut self, terminal: &mut ratatui::Terminal<impl Backend>) -> anyhow::Result<()> {
         loop {
+            self.page_cache.poll_fetches();
+            self.page_cache
+                .ensure_pages_around(self.data_table.selected_row);
+            self.update_detail_if_needed();
+
             terminal.draw(|frame| self.draw(frame))?;
 
-            if event::poll(std::time::Duration::from_millis(100))? {
+            if event::poll(std::time::Duration::from_millis(50))? {
                 if let Event::Key(key) = event::read()? {
                     self.handle_key(key);
                 }
@@ -121,25 +137,19 @@ impl App {
         Ok(())
     }
 
-    /// Update detail panel when the selected row changes.
+    /// Update detail panel when the selected row changes or its page becomes available.
     fn update_detail_if_needed(&mut self) {
         let selected = self.data_table.selected_row;
-        if selected == self.last_selected_row && !self.detail_panel.lines.is_empty() {
-            return;
-        }
-        self.last_selected_row = selected;
-        let mut offset = 0;
-        for batch in &self.batches {
-            let batch_rows = batch.num_rows();
-            if selected < offset + batch_rows {
-                let row_in_batch = selected - offset;
+        if let Some((batch, row_in_batch)) = self.page_cache.get_batch_row(selected) {
+            if selected != self.last_selected_row || self.detail_panel.lines.is_empty() {
+                self.last_selected_row = selected;
                 let json = pq_query::convert::batch_row_to_json(batch, row_in_batch);
                 self.detail_panel.update(&json);
-                return;
             }
-            offset += batch_rows;
+        } else {
+            self.last_selected_row = selected;
+            self.detail_panel.clear();
         }
-        self.detail_panel.clear();
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
@@ -206,7 +216,6 @@ impl App {
                 AppTab::Data => match self.data_focus {
                     DataFocus::RowList => {
                         self.data_table.scroll_down();
-                        self.update_detail_if_needed();
                     }
                     DataFocus::Detail => {
                         self.detail_panel.scroll_down();
@@ -220,7 +229,6 @@ impl App {
                 AppTab::Data => match self.data_focus {
                     DataFocus::RowList => {
                         self.data_table.scroll_up();
-                        self.update_detail_if_needed();
                     }
                     DataFocus::Detail => {
                         self.detail_panel.scroll_up();
@@ -249,7 +257,6 @@ impl App {
                     for _ in 0..20 {
                         self.data_table.scroll_down();
                     }
-                    self.update_detail_if_needed();
                 }
             }
             KeyCode::PageUp => {
@@ -257,19 +264,16 @@ impl App {
                     for _ in 0..20 {
                         self.data_table.scroll_up();
                     }
-                    self.update_detail_if_needed();
                 }
             }
             KeyCode::Home | KeyCode::Char('g') => {
                 if self.tab == AppTab::Data && self.data_focus == DataFocus::RowList {
                     self.data_table.scroll_to_top();
-                    self.update_detail_if_needed();
                 }
             }
             KeyCode::End | KeyCode::Char('G') => {
                 if self.tab == AppTab::Data && self.data_focus == DataFocus::RowList {
                     self.data_table.scroll_to_bottom();
-                    self.update_detail_if_needed();
                 }
             }
             _ => {}
@@ -378,7 +382,7 @@ impl App {
             .title(" Rows ")
             .borders(Borders::ALL)
             .border_style(border_style);
-        self.data_table.render(frame, area, block);
+        self.data_table.render(frame, area, block, &self.page_cache);
     }
 
     fn draw_detail_panel(&self, frame: &mut Frame, area: Rect) {
@@ -427,6 +431,9 @@ impl App {
             let data_width = main_width.saturating_sub(2);
             let col_status = self.data_table.column_status(data_width);
             let mut parts = vec![row_status];
+            if self.page_cache.is_loading() {
+                parts.push("\u{27f3} Loading...".to_string());
+            }
             if !col_status.is_empty() {
                 parts.push(col_status);
             }
@@ -435,10 +442,14 @@ impl App {
         } else {
             "Schema view".to_string()
         };
-        frame.render_widget(
-            Paragraph::new(status_text).style(Style::default().fg(Color::Yellow)),
-            area,
-        );
+
+        let style = if self.page_cache.is_loading() {
+            Style::default().fg(Color::Rgb(255, 165, 0)) // orange
+        } else {
+            Style::default().fg(Color::Yellow)
+        };
+
+        frame.render_widget(Paragraph::new(status_text).style(style), area);
     }
 
     fn draw_help_bar(&self, frame: &mut Frame, area: Rect) {
