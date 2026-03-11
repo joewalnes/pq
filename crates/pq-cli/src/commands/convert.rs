@@ -2,10 +2,10 @@ use std::path::Path;
 
 use crate::cli::InputFormatArg;
 
-pub fn run(input: &str, output: &str, format: Option<&InputFormatArg>) -> anyhow::Result<()> {
+pub fn run(input: &str, output: &str, input_format: Option<&InputFormatArg>) -> anyhow::Result<()> {
     let path = Path::new(input);
 
-    let input_format = match format {
+    let fmt = match input_format {
         Some(InputFormatArg::Json) => pq_transform::convert::InputFormat::Json,
         Some(InputFormatArg::Jsonl) => pq_transform::convert::InputFormat::JsonLines,
         Some(InputFormatArg::Csv) => pq_transform::convert::InputFormat::Csv,
@@ -21,7 +21,7 @@ pub fn run(input: &str, output: &str, format: Option<&InputFormatArg>) -> anyhow
     };
 
     let opts = pq_transform::convert::ConvertOptions {
-        input_format,
+        input_format: fmt,
         output: output.to_string(),
         compression: parquet::basic::Compression::ZSTD(Default::default()),
     };

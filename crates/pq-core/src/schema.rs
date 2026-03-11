@@ -188,6 +188,150 @@ fn arrow_type_to_sql(dt: &DataType) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Pyarrow schema generation
+// ---------------------------------------------------------------------------
+
+/// Generate a valid Python script that constructs the schema using PyArrow.
+pub fn schema_to_pyarrow(schema: &Schema) -> String {
+    let mut out = String::new();
+    out.push_str("import pyarrow as pa\n\n");
+    out.push_str("schema = pa.schema([\n");
+    for (i, field) in schema.fields().iter().enumerate() {
+        let comma = if i < schema.fields().len() - 1 {
+            ","
+        } else {
+            ""
+        };
+        let nullable = if field.is_nullable() {
+            ""
+        } else {
+            ", nullable=False"
+        };
+        out.push_str(&format!(
+            "    pa.field(\"{}\", {}{}){}\n",
+            field.name(),
+            arrow_type_to_pyarrow(field.data_type()),
+            nullable,
+            comma,
+        ));
+    }
+    out.push_str("])\n");
+    out
+}
+
+fn arrow_type_to_pyarrow(dt: &DataType) -> String {
+    match dt {
+        DataType::Null => "pa.null()".to_string(),
+        DataType::Boolean => "pa.bool_()".to_string(),
+        DataType::Int8 => "pa.int8()".to_string(),
+        DataType::Int16 => "pa.int16()".to_string(),
+        DataType::Int32 => "pa.int32()".to_string(),
+        DataType::Int64 => "pa.int64()".to_string(),
+        DataType::UInt8 => "pa.uint8()".to_string(),
+        DataType::UInt16 => "pa.uint16()".to_string(),
+        DataType::UInt32 => "pa.uint32()".to_string(),
+        DataType::UInt64 => "pa.uint64()".to_string(),
+        DataType::Float16 => "pa.float16()".to_string(),
+        DataType::Float32 => "pa.float32()".to_string(),
+        DataType::Float64 => "pa.float64()".to_string(),
+        DataType::Utf8 | DataType::LargeUtf8 => "pa.string()".to_string(),
+        DataType::Binary | DataType::LargeBinary => "pa.binary()".to_string(),
+        DataType::FixedSizeBinary(n) => format!("pa.binary({n})"),
+        DataType::Date32 => "pa.date32()".to_string(),
+        DataType::Date64 => "pa.date64()".to_string(),
+        DataType::Timestamp(unit, tz) => {
+            let u = match unit {
+                arrow::datatypes::TimeUnit::Second => "s",
+                arrow::datatypes::TimeUnit::Millisecond => "ms",
+                arrow::datatypes::TimeUnit::Microsecond => "us",
+                arrow::datatypes::TimeUnit::Nanosecond => "ns",
+            };
+            match tz {
+                Some(tz) => format!("pa.timestamp(\"{u}\", tz=\"{tz}\")"),
+                None => format!("pa.timestamp(\"{u}\")"),
+            }
+        }
+        DataType::Time32(unit) => {
+            let u = match unit {
+                arrow::datatypes::TimeUnit::Second => "s",
+                arrow::datatypes::TimeUnit::Millisecond => "ms",
+                _ => "ms",
+            };
+            format!("pa.time32(\"{u}\")")
+        }
+        DataType::Time64(unit) => {
+            let u = match unit {
+                arrow::datatypes::TimeUnit::Microsecond => "us",
+                arrow::datatypes::TimeUnit::Nanosecond => "ns",
+                _ => "us",
+            };
+            format!("pa.time64(\"{u}\")")
+        }
+        DataType::Duration(unit) => {
+            let u = match unit {
+                arrow::datatypes::TimeUnit::Second => "s",
+                arrow::datatypes::TimeUnit::Millisecond => "ms",
+                arrow::datatypes::TimeUnit::Microsecond => "us",
+                arrow::datatypes::TimeUnit::Nanosecond => "ns",
+            };
+            format!("pa.duration(\"{u}\")")
+        }
+        DataType::Decimal128(p, s) | DataType::Decimal256(p, s) => {
+            format!("pa.decimal128({p}, {s})")
+        }
+        DataType::List(inner) | DataType::LargeList(inner) => {
+            format!("pa.list_({})", arrow_type_to_pyarrow(inner.data_type()))
+        }
+        DataType::FixedSizeList(inner, n) => {
+            format!(
+                "pa.list_({}, {n})",
+                arrow_type_to_pyarrow(inner.data_type())
+            )
+        }
+        DataType::Struct(fields) => {
+            let mut s = "pa.struct([\n".to_string();
+            for (i, field) in fields.iter().enumerate() {
+                let comma = if i < fields.len() - 1 { "," } else { "" };
+                let nullable = if field.is_nullable() {
+                    ""
+                } else {
+                    ", nullable=False"
+                };
+                s.push_str(&format!(
+                    "        pa.field(\"{}\", {}{}){}\n",
+                    field.name(),
+                    arrow_type_to_pyarrow(field.data_type()),
+                    nullable,
+                    comma,
+                ));
+            }
+            s.push_str("    ])");
+            s
+        }
+        DataType::Map(entry_field, _) => {
+            if let DataType::Struct(fields) = entry_field.data_type() {
+                if fields.len() == 2 {
+                    return format!(
+                        "pa.map_({}, {})",
+                        arrow_type_to_pyarrow(fields[0].data_type()),
+                        arrow_type_to_pyarrow(fields[1].data_type()),
+                    );
+                }
+            }
+            "pa.map_(pa.string(), pa.string())".to_string()
+        }
+        DataType::Dictionary(key_type, value_type) => {
+            format!(
+                "pa.dictionary({}, {})",
+                arrow_type_to_pyarrow(key_type),
+                arrow_type_to_pyarrow(value_type),
+            )
+        }
+        _ => format!("pa.string()  # unsupported: {dt:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Universal function: accept a path or URL string, dispatch accordingly
 // ---------------------------------------------------------------------------
 

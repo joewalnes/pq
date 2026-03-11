@@ -3,8 +3,7 @@ mod commands;
 mod files;
 mod output;
 
-use clap::Parser;
-use std::io::Write;
+use clap::{CommandFactory, Parser};
 
 use cli::{Cli, Command};
 use output::{Format, OutputMode};
@@ -16,7 +15,16 @@ fn main() {
         Ok(cli) => cli,
         Err(e) => {
             let args: Vec<String> = std::env::args().collect();
-            if args.len() > 1 {
+            // Only try the `view` fallback when the first non-flag argument
+            // isn't already a known subcommand.  Otherwise `pq sql` (missing
+            // required arg) would be rewritten to `pq view sql` and silently
+            // try to open a file called "sql".
+            let first_positional = args[1..]
+                .iter()
+                .find(|a| !a.starts_with('-'));
+            let is_subcommand = first_positional.map_or(false, |a| is_known_subcommand(a));
+
+            if args.len() > 1 && !is_subcommand {
                 let mut new_args = vec![args[0].clone(), "view".to_string()];
                 new_args.extend(args[1..].iter().cloned());
                 match Cli::try_parse_from(&new_args) {
@@ -44,6 +52,12 @@ fn main() {
     }
 }
 
+fn is_known_subcommand(arg: &str) -> bool {
+    Cli::command()
+        .get_subcommands()
+        .any(|cmd| cmd.get_name() == arg)
+}
+
 fn run(cli: Cli, format: Format) -> anyhow::Result<()> {
     match cli.command {
         Command::Info { ref files } => {
@@ -56,7 +70,7 @@ fn run(cli: Cli, format: Format) -> anyhow::Result<()> {
 
         Command::Schema {
             ref files,
-            format: ref schema_fmt,
+            style: ref schema_fmt,
         } => {
             let resolved = files::resolve_files(files)?;
             for f in &resolved {
@@ -65,12 +79,21 @@ fn run(cli: Cli, format: Format) -> anyhow::Result<()> {
             Ok(())
         }
 
-        Command::Stats { ref files } => {
+        Command::Stats {
+            ref files,
+            describe,
+            top,
+            sample_size,
+        } => {
             let resolved = files::resolve_files(files)?;
-            for f in &resolved {
-                commands::stats::run(f, format)?;
+            if describe {
+                commands::describe::run(&resolved, top, sample_size, format)
+            } else {
+                for f in &resolved {
+                    commands::stats::run(f, format)?;
+                }
+                Ok(())
             }
-            Ok(())
         }
 
         Command::Layout { ref files } => {
@@ -90,9 +113,16 @@ fn run(cli: Cli, format: Format) -> anyhow::Result<()> {
             ref jq,
         } => {
             let resolved = files::resolve_files(files)?;
+            // TTY mode: default limit to 1000 to prevent hanging on large files
+            let effective_limit = if limit.is_none() && console::Term::stdout().is_term() {
+                eprintln!("(showing first 1,000 rows; use --limit to override)");
+                Some(1000)
+            } else {
+                limit
+            };
             commands::cat::run(
                 &resolved,
-                limit,
+                effective_limit,
                 offset,
                 columns.clone(),
                 where_clause.as_deref(),
@@ -107,7 +137,15 @@ fn run(cli: Cli, format: Format) -> anyhow::Result<()> {
             ref columns,
         } => {
             let resolved = files::resolve_files(files)?;
-            commands::cat::run(&resolved, Some(lines), None, columns.clone(), None, None, format)
+            commands::cat::run(
+                &resolved,
+                Some(lines),
+                None,
+                columns.clone(),
+                None,
+                None,
+                format,
+            )
         }
 
         Command::Tail {
@@ -136,7 +174,16 @@ fn run(cli: Cli, format: Format) -> anyhow::Result<()> {
 
         Command::Count { ref files } => commands::count::run(files, format),
 
-        Command::Sql { ref query } => commands::sql::run(query, format),
+        Command::Sql { ref query } => match query.as_deref() {
+            None | Some("help") => {
+                Cli::command()
+                    .find_subcommand_mut("sql")
+                    .unwrap()
+                    .print_long_help()?;
+                Ok(())
+            }
+            Some(q) => commands::sql::run(q, format),
+        },
 
         Command::View { ref file } => commands::view::run(file),
 
@@ -159,11 +206,11 @@ fn run(cli: Cli, format: Format) -> anyhow::Result<()> {
             ref schema_mode,
         } => commands::merge::run(files, output, schema_mode),
 
-        Command::Convert {
+        Command::Import {
             ref input,
             ref output,
-            ref format,
-        } => commands::convert::run(input, output, format.as_ref()),
+            ref input_format,
+        } => commands::convert::run(input, output, input_format.as_ref()),
 
         Command::Jq {
             ref files,
@@ -178,23 +225,10 @@ fn run(cli: Cli, format: Format) -> anyhow::Result<()> {
         Command::Export {
             ref files,
             ref output,
-            ref format,
+            limit,
         } => {
             let resolved = files::resolve_files(files)?;
-            let fmt = format.as_ref().map(|f| match f {
-                cli::ExportFormatArg::Json => output::Format::Json,
-                cli::ExportFormatArg::Jsonl => output::Format::JsonLines,
-                cli::ExportFormatArg::Csv => output::Format::Csv,
-            });
-            commands::export::run(&resolved, output, fmt)
-        }
-
-        Command::Describe {
-            ref files,
-            top,
-        } => {
-            let resolved = files::resolve_files(files)?;
-            commands::describe::run(&resolved, top, format)
+            commands::export::run(&resolved, output.as_deref(), limit, format)
         }
 
         Command::Grep {
@@ -205,7 +239,14 @@ fn run(cli: Cli, format: Format) -> anyhow::Result<()> {
             ignore_case,
         } => {
             let resolved = files::resolve_files(files)?;
-            commands::grep::run(&resolved, pattern, columns.clone(), limit, ignore_case, format)
+            commands::grep::run(
+                &resolved,
+                pattern,
+                columns.clone(),
+                limit,
+                ignore_case,
+                format,
+            )
         }
 
         Command::Split {
@@ -236,7 +277,7 @@ fn run_sample(
     columns: Option<Vec<String>>,
     format: Format,
 ) -> anyhow::Result<()> {
-    use rand::seq::SliceRandom;
+    use rand::seq::index::sample;
     use rand::SeedableRng;
 
     let total = pq_core::reader::open_row_count(file)? as usize;
@@ -248,53 +289,52 @@ fn run_sample(
         return Ok(());
     }
 
-    let mut indices: Vec<usize> = (0..total).collect();
-    match seed {
+    let sample_n = n.min(total);
+
+    // Generate sorted random indices without allocating 0..total
+    let indices: Vec<usize> = match seed {
         Some(s) => {
             let mut rng = rand::rngs::StdRng::seed_from_u64(s);
-            indices.shuffle(&mut rng);
+            let mut v = sample(&mut rng, total, sample_n).into_vec();
+            v.sort_unstable();
+            v
         }
         None => {
             let mut rng = rand::thread_rng();
-            indices.shuffle(&mut rng);
+            let mut v = sample(&mut rng, total, sample_n).into_vec();
+            v.sort_unstable();
+            v
         }
-    }
-    indices.truncate(n);
-    indices.sort_unstable();
-
-    let opts = pq_core::reader::ReadOptions {
-        columns,
-        limit: None,
-        offset: None,
-        batch_size: 8192,
     };
-    let (batches, _schema) = pq_core::reader::open_batches(file, &opts)?;
 
-    let all_rows: Vec<serde_json::Value> = batches
-        .iter()
-        .flat_map(pq_query::convert::batch_to_json_rows)
-        .collect();
+    // Group consecutive indices into (offset, count) ranges to minimize reads
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    for &idx in &indices {
+        if let Some(last) = ranges.last_mut() {
+            if idx == last.0 + last.1 {
+                last.1 += 1;
+                continue;
+            }
+        }
+        ranges.push((idx, 1));
+    }
 
-    let sampled: Vec<serde_json::Value> = indices
-        .iter()
-        .filter_map(|&i| all_rows.get(i).cloned())
-        .collect();
+    // Read only the needed ranges and collect sampled batches
+    let mut sampled_batches: Vec<arrow::array::RecordBatch> = Vec::new();
+    for (offset, count) in &ranges {
+        let opts = pq_core::reader::ReadOptions {
+            columns: columns.clone(),
+            limit: Some(*count),
+            offset: Some(*offset),
+            batch_size: 8192,
+        };
+        let (batches, _schema) = pq_core::reader::open_batches(file, &opts)?;
+        sampled_batches.extend(batches);
+    }
 
     let stdout = std::io::stdout();
     let mut writer = stdout.lock();
-
-    match format {
-        Format::Json => {
-            serde_json::to_writer_pretty(&mut writer, &sampled)?;
-            writeln!(writer)?;
-        }
-        _ => {
-            for row in &sampled {
-                serde_json::to_writer(&mut writer, row)?;
-                writeln!(writer)?;
-            }
-        }
-    }
+    output::render_batches(&mut writer, &sampled_batches, format)?;
 
     Ok(())
 }

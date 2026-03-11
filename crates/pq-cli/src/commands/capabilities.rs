@@ -14,17 +14,21 @@ pub fn run(format: Format) -> anyhow::Result<()> {
             },
             {
                 "name": "schema",
-                "description": "Display schema in various formats (tree, json, json-schema, arrow, ddl)",
+                "description": "Display schema in various formats (tree, json, json-schema, arrow, ddl, pyarrow)",
                 "args": [
                     {"name": "file", "type": "path", "required": true},
-                    {"name": "--format", "type": "enum", "values": ["tree", "json", "json-schema", "arrow", "ddl"]}
+                    {"name": "--style", "type": "enum", "values": ["tree", "json", "json-schema", "arrow", "ddl", "pyarrow"]}
                 ],
                 "output": ["json", "text"]
             },
             {
                 "name": "stats",
-                "description": "Display column statistics (min, max, nulls, distinct)",
-                "args": [{"name": "file", "type": "path", "required": true}],
+                "description": "Display column statistics (min, max, nulls, distinct); use --describe for data-level stats",
+                "args": [
+                    {"name": "file", "type": "path", "required": true},
+                    {"name": "--describe", "type": "bool"},
+                    {"name": "--top", "type": "int", "default": 5}
+                ],
                 "output": ["json", "table"]
             },
             {
@@ -32,6 +36,12 @@ pub fn run(format: Format) -> anyhow::Result<()> {
                 "description": "Display physical layout (row groups, column chunks)",
                 "args": [{"name": "file", "type": "path", "required": true}],
                 "output": ["json", "text"]
+            },
+            {
+                "name": "validate",
+                "description": "Validate Parquet file integrity (footer, schema, statistics)",
+                "args": [{"name": "file", "type": "path", "required": true}],
+                "output": ["json", "table"]
             },
             {
                 "name": "cat",
@@ -81,6 +91,18 @@ pub fn run(format: Format) -> anyhow::Result<()> {
                 "output": ["json", "text"]
             },
             {
+                "name": "grep",
+                "description": "Search rows matching a regex pattern across all columns",
+                "args": [
+                    {"name": "file", "type": "path", "required": true},
+                    {"name": "pattern", "type": "regex", "required": true},
+                    {"name": "--columns", "type": "string[]"},
+                    {"name": "--limit", "type": "int"},
+                    {"name": "--ignore-case", "type": "bool"}
+                ],
+                "output": ["jsonl", "json"]
+            },
+            {
                 "name": "sql",
                 "description": "Execute SQL query via DataFusion (files referenced in FROM clause)",
                 "args": [{"name": "query", "type": "sql", "required": true}],
@@ -126,17 +148,36 @@ pub fn run(format: Format) -> anyhow::Result<()> {
                 ]
             },
             {
-                "name": "convert",
-                "description": "Convert JSON/CSV to Parquet",
+                "name": "split",
+                "description": "Split a Parquet file into multiple files by row count or partition columns",
+                "args": [
+                    {"name": "file", "type": "path", "required": true},
+                    {"name": "--rows", "type": "int"},
+                    {"name": "--partition-by", "type": "string[]"},
+                    {"name": "--output", "type": "path", "required": true}
+                ]
+            },
+            {
+                "name": "import",
+                "description": "Import CSV/JSON/JSONL into Parquet format",
                 "args": [
                     {"name": "input", "type": "path", "required": true},
                     {"name": "--output", "type": "path", "required": true},
-                    {"name": "--format", "type": "enum", "values": ["json", "jsonl", "csv"]}
+                    {"name": "--input-format", "type": "enum", "values": ["json", "jsonl", "csv"]}
+                ]
+            },
+            {
+                "name": "export",
+                "description": "Export Parquet data to CSV, JSON, or JSONL (default: stdout)",
+                "args": [
+                    {"name": "file", "type": "path", "required": true},
+                    {"name": "--output", "type": "path"},
+                    {"name": "--limit", "type": "int"}
                 ]
             }
         ],
         "global_options": [
-            {"name": "--output-format", "short": "-O", "type": "enum", "values": ["json", "jsonl", "csv", "table", "plain"]},
+            {"name": "--format", "short": "-f", "type": "enum", "values": ["json", "jsonl", "csv", "table", "plain"]},
             {"name": "--color", "type": "enum", "values": ["auto", "always", "never"]},
             {"name": "--quiet", "short": "-q", "type": "bool"},
             {"name": "--verbose", "short": "-v", "type": "bool"}

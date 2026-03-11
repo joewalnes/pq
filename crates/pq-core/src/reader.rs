@@ -129,10 +129,11 @@ pub fn read_schema_and_row_count(path: &Path) -> Result<(Arc<Schema>, i64)> {
         path: path.display().to_string(),
         source: e,
     })?;
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(|e| PqError::ParquetRead {
-        path: path.display().to_string(),
-        source: e,
-    })?;
+    let builder =
+        ParquetRecordBatchReaderBuilder::try_new(file).map_err(|e| PqError::ParquetRead {
+            path: path.display().to_string(),
+            source: e,
+        })?;
     let total_rows = builder.metadata().file_metadata().num_rows();
     let schema = builder.schema().clone();
     Ok((schema, total_rows))

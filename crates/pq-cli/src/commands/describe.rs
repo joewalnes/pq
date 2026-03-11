@@ -31,14 +31,41 @@ pub struct FreqEntry {
     pub count: usize,
 }
 
-pub fn run(files: &[String], top_k: usize, format: Format) -> anyhow::Result<()> {
-    let opts = pq_core::reader::ReadOptions::default();
-
-    // Collect all batches
-    let mut all_batches: Vec<RecordBatch> = Vec::new();
+pub fn run(
+    files: &[String],
+    top_k: usize,
+    sample_size: usize,
+    format: Format,
+) -> anyhow::Result<()> {
+    // Determine total row count from metadata (no data read)
+    let mut total_rows_meta: i64 = 0;
     for f in files {
-        let (batches, _schema) = pq_core::reader::open_batches(f, &opts)?;
+        total_rows_meta += pq_core::reader::open_row_count(f)?;
+    }
+
+    let effective_limit = if sample_size > 0 {
+        Some(sample_size)
+    } else {
+        None
+    };
+
+    // Collect batches (limited to sample_size rows)
+    let mut all_batches: Vec<RecordBatch> = Vec::new();
+    let mut rows_remaining = effective_limit;
+    for f in files {
+        let file_opts = pq_core::reader::ReadOptions {
+            limit: rows_remaining,
+            ..Default::default()
+        };
+        let (batches, _schema) = pq_core::reader::open_batches(f, &file_opts)?;
+        let batch_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
         all_batches.extend(batches);
+        if let Some(ref mut rem) = rows_remaining {
+            *rem = rem.saturating_sub(batch_rows);
+            if *rem == 0 {
+                break;
+            }
+        }
     }
 
     if all_batches.is_empty() {
@@ -46,7 +73,9 @@ pub fn run(files: &[String], top_k: usize, format: Format) -> anyhow::Result<()>
     }
 
     let schema = all_batches[0].schema();
-    let total_rows: usize = all_batches.iter().map(|b| b.num_rows()).sum();
+    let sampled_rows: usize = all_batches.iter().map(|b| b.num_rows()).sum();
+    let total_rows = total_rows_meta as usize;
+    let is_sampled = effective_limit.is_some() && sampled_rows < total_rows;
 
     // Concatenate all arrays per column
     let mut descriptions: Vec<ColumnDescription> = Vec::new();
@@ -59,8 +88,8 @@ pub fn run(files: &[String], top_k: usize, format: Format) -> anyhow::Result<()>
         let concatenated = arrow::compute::concat(&arrays)?;
 
         let null_count = concatenated.null_count();
-        let null_pct = if total_rows > 0 {
-            (null_count as f64 / total_rows as f64) * 100.0
+        let null_pct = if sampled_rows > 0 {
+            (null_count as f64 / sampled_rows as f64) * 100.0
         } else {
             0.0
         };
@@ -71,7 +100,7 @@ pub fn run(files: &[String], top_k: usize, format: Format) -> anyhow::Result<()>
         descriptions.push(ColumnDescription {
             column: field.name().clone(),
             dtype: format_dtype(field.data_type()),
-            count: total_rows,
+            count: sampled_rows,
             nulls: null_count,
             null_pct: (null_pct * 100.0).round() / 100.0,
             min,
@@ -140,6 +169,12 @@ pub fn run(files: &[String], top_k: usize, format: Format) -> anyhow::Result<()>
             }
 
             writeln!(writer, "{table}")?;
+            if is_sampled {
+                writeln!(
+                    writer,
+                    "Statistics computed from first {sampled_rows} of {total_rows} rows (use --sample-size 0 for all)"
+                )?;
+            }
         }
         _ => {
             for d in &descriptions {
@@ -151,11 +186,27 @@ pub fn run(files: &[String], top_k: usize, format: Format) -> anyhow::Result<()>
                     d.count,
                     d.nulls,
                     d.null_pct,
-                    d.min.as_ref().map(format_json_value).unwrap_or_else(|| "-".to_string()),
-                    d.max.as_ref().map(format_json_value).unwrap_or_else(|| "-".to_string()),
-                    d.mean.map(|v| format!("{v:.4}")).unwrap_or_else(|| "-".to_string()),
-                    d.stddev.map(|v| format!("{v:.4}")).unwrap_or_else(|| "-".to_string()),
+                    d.min
+                        .as_ref()
+                        .map(format_json_value)
+                        .unwrap_or_else(|| "-".to_string()),
+                    d.max
+                        .as_ref()
+                        .map(format_json_value)
+                        .unwrap_or_else(|| "-".to_string()),
+                    d.mean
+                        .map(|v| format!("{v:.4}"))
+                        .unwrap_or_else(|| "-".to_string()),
+                    d.stddev
+                        .map(|v| format!("{v:.4}"))
+                        .unwrap_or_else(|| "-".to_string()),
                     d.distinct,
+                )?;
+            }
+            if is_sampled {
+                writeln!(
+                    writer,
+                    "# Statistics computed from first {sampled_rows} of {total_rows} rows"
                 )?;
             }
         }
@@ -211,18 +262,14 @@ fn compute_numeric_stats(
                 Some(a) => {
                     let min = arrow::compute::min(a);
                     let max = arrow::compute::max(a);
-                    let values: Vec<f64> = a
-                        .iter()
-                        .filter_map(|v| v.map(|x| x as f64))
-                        .collect();
+                    let values: Vec<f64> = a.iter().filter_map(|v| v.map(|x| x as f64)).collect();
                     let (mean, stddev) = if values.is_empty() {
                         (None, None)
                     } else {
                         let sum: f64 = values.iter().sum();
                         let mean = sum / values.len() as f64;
-                        let variance: f64 =
-                            values.iter().map(|v| (v - mean).powi(2)).sum::<f64>()
-                                / values.len() as f64;
+                        let variance: f64 = values.iter().map(|v| (v - mean).powi(2)).sum::<f64>()
+                            / values.len() as f64;
                         (Some(mean), Some(variance.sqrt()))
                     };
                     let min_json = min.map(|v| serde_json::json!(v));
@@ -255,13 +302,17 @@ fn compute_numeric_stats(
             let arr = array.as_any().downcast_ref::<BooleanArray>().unwrap();
             let min = arrow::compute::min_boolean(arr).map(|b| serde_json::json!(b));
             let max = arrow::compute::max_boolean(arr).map(|b| serde_json::json!(b));
-            let values: Vec<f64> = arr.iter().filter_map(|v| v.map(|b| if b { 1.0 } else { 0.0 })).collect();
+            let values: Vec<f64> = arr
+                .iter()
+                .filter_map(|v| v.map(|b| if b { 1.0 } else { 0.0 }))
+                .collect();
             let (mean, stddev) = if values.is_empty() {
                 (None, None)
             } else {
                 let sum: f64 = values.iter().sum();
                 let mean = sum / values.len() as f64;
-                let variance: f64 = values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / values.len() as f64;
+                let variance: f64 =
+                    values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / values.len() as f64;
                 (Some(mean), Some(variance.sqrt()))
             };
             (min, max, mean, stddev)

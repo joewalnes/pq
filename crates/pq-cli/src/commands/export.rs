@@ -4,33 +4,51 @@ use crate::output::Format;
 
 pub fn run(
     files: &[String],
-    output: &str,
-    format: Option<Format>,
+    output: Option<&str>,
+    limit: Option<usize>,
+    global_format: Format,
 ) -> anyhow::Result<()> {
-    let format = format.unwrap_or_else(|| {
-        // Auto-detect from output extension
-        match std::path::Path::new(output)
-            .extension()
-            .and_then(|e| e.to_str())
-        {
-            Some("json") => Format::Json,
-            Some("jsonl" | "ndjson") => Format::JsonLines,
-            Some("csv") => Format::Csv,
-            _ => Format::JsonLines,
+    let opts = pq_core::reader::ReadOptions {
+        limit,
+        ..Default::default()
+    };
+
+    // When writing to a file, auto-detect format from extension
+    // When writing to stdout, use the global -f format (default jsonl)
+    match output {
+        Some(output_path) => {
+            let format = match std::path::Path::new(output_path)
+                .extension()
+                .and_then(|e| e.to_str())
+            {
+                Some("json") => Format::Json,
+                Some("jsonl" | "ndjson") => Format::JsonLines,
+                Some("csv") => Format::Csv,
+                _ => Format::JsonLines,
+            };
+            write_to_file(files, output_path, &opts, format)
         }
-    });
+        None => {
+            // Write to stdout using the global format
+            write_to_stdout(files, &opts, global_format)
+        }
+    }
+}
 
-    let opts = pq_core::reader::ReadOptions::default();
-
-    let mut out_file = std::fs::File::create(output)?;
+fn write_to_file(
+    files: &[String],
+    output_path: &str,
+    opts: &pq_core::reader::ReadOptions,
+    format: Format,
+) -> anyhow::Result<()> {
+    let mut out_file = std::fs::File::create(output_path)?;
     let mut total_rows: usize = 0;
     let mut wrote_csv_header = false;
 
-    // For JSON array format, collect all rows first
     if format == Format::Json {
         let mut all_rows: Vec<serde_json::Value> = Vec::new();
         for f in files {
-            let (batches, _schema) = pq_core::reader::open_batches(f, &opts)?;
+            let (batches, _schema) = pq_core::reader::open_batches(f, opts)?;
             for batch in &batches {
                 let rows = pq_query::convert::batch_to_json_rows(batch);
                 total_rows += rows.len();
@@ -41,7 +59,7 @@ pub fn run(
         writeln!(out_file)?;
     } else {
         for f in files {
-            let (batches, _schema) = pq_core::reader::open_batches(f, &opts)?;
+            let (batches, _schema) = pq_core::reader::open_batches(f, opts)?;
             match format {
                 Format::JsonLines | Format::Plain => {
                     for batch in &batches {
@@ -59,11 +77,9 @@ pub fn run(
                         if rows.is_empty() {
                             continue;
                         }
-                        // Write header from first row
                         if !wrote_csv_header {
                             if let Some(obj) = rows[0].as_object() {
-                                let keys: Vec<&str> =
-                                    obj.keys().map(|k| k.as_str()).collect();
+                                let keys: Vec<&str> = obj.keys().map(|k| k.as_str()).collect();
                                 writeln!(out_file, "{}", keys.join(","))?;
                                 wrote_csv_header = true;
                             }
@@ -75,7 +91,10 @@ pub fn run(
                                     .values()
                                     .map(|v| match v {
                                         serde_json::Value::String(s) => {
-                                            if s.contains(',') || s.contains('"') || s.contains('\n') {
+                                            if s.contains(',')
+                                                || s.contains('"')
+                                                || s.contains('\n')
+                                            {
                                                 format!("\"{}\"", s.replace('"', "\"\""))
                                             } else {
                                                 s.clone()
@@ -95,6 +114,46 @@ pub fn run(
         }
     }
 
-    eprintln!("Exported {total_rows} rows to {output}");
+    eprintln!("Exported {total_rows} rows to {output_path}");
+    Ok(())
+}
+
+fn write_to_stdout(
+    files: &[String],
+    opts: &pq_core::reader::ReadOptions,
+    format: Format,
+) -> anyhow::Result<()> {
+    let stdout = std::io::stdout();
+    let mut writer = stdout.lock();
+
+    if format == Format::Json {
+        let mut all_rows: Vec<serde_json::Value> = Vec::new();
+        for f in files {
+            let (batches, _schema) = pq_core::reader::open_batches(f, opts)?;
+            for batch in &batches {
+                all_rows.extend(pq_query::convert::batch_to_json_rows(batch));
+            }
+        }
+        serde_json::to_writer_pretty(&mut writer, &all_rows)?;
+        writeln!(writer)?;
+    } else if format == Format::Table {
+        let mut all_batches = Vec::new();
+        for f in files {
+            let (batches, _schema) = pq_core::reader::open_batches(f, opts)?;
+            all_batches.extend(batches);
+        }
+        crate::output::render_batches(&mut writer, &all_batches, format)?;
+    } else {
+        for f in files {
+            let (batches, _schema) = pq_core::reader::open_batches(f, opts)?;
+            for batch in &batches {
+                for row in &pq_query::convert::batch_to_json_rows(batch) {
+                    serde_json::to_writer(&mut writer, row)?;
+                    writeln!(writer)?;
+                }
+            }
+        }
+    }
+
     Ok(())
 }

@@ -151,8 +151,7 @@ impl DataTableState {
                 if let Some(row) = page_cache.get_row(actual_idx) {
                     cells.extend(visible_cols.iter().map(|&i| {
                         let text = row.get(i).cloned().unwrap_or_default();
-                        let max =
-                            self.col_widths.get(i).copied().unwrap_or(MIN_COL_WIDTH) as usize;
+                        let max = self.col_widths.get(i).copied().unwrap_or(MIN_COL_WIDTH) as usize;
                         let display = if text.len() > max.saturating_sub(1) {
                             let mut end = max.saturating_sub(2).min(text.len());
                             while end > 0 && !text.is_char_boundary(end) {

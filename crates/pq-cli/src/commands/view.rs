@@ -37,8 +37,7 @@ pub fn run(file: &str) -> anyhow::Result<()> {
     let mut terminal = ratatui::Terminal::new(backend)?;
 
     // Run app
-    let mut app =
-        pq_tui::app::App::new(path, file.to_string(), schema, total_rows, first_page);
+    let mut app = pq_tui::app::App::new(path, file.to_string(), schema, total_rows, first_page);
     let result = app.run(&mut terminal);
 
     // Restore terminal

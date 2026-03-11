@@ -88,6 +88,18 @@ pub fn extract_column_stats(metadata: &ParquetMetaData) -> Vec<ColumnStats> {
     stats
 }
 
+/// Format raw bytes as a display-safe string.
+/// Returns the UTF-8 string if all characters are printable, otherwise hex.
+fn bytes_to_display(bytes: &[u8]) -> String {
+    match std::str::from_utf8(bytes) {
+        Ok(s) if s.chars().all(|c| !c.is_control()) => s.to_string(),
+        _ => {
+            let hex: Vec<String> = bytes.iter().map(|b| format!("{b:02X}")).collect();
+            format!("0x{}", hex.join(""))
+        }
+    }
+}
+
 fn stat_to_string_min(stat: &Statistics) -> Option<String> {
     Some(match stat {
         Statistics::Boolean(s) => format!("{}", s.min_opt()?),
@@ -96,14 +108,8 @@ fn stat_to_string_min(stat: &Statistics) -> Option<String> {
         Statistics::Int96(s) => format!("{:?}", s.min_opt()?),
         Statistics::Float(s) => format!("{}", s.min_opt()?),
         Statistics::Double(s) => format!("{}", s.min_opt()?),
-        Statistics::ByteArray(s) => {
-            let bytes = s.min_bytes_opt()?;
-            String::from_utf8(bytes.to_vec()).unwrap_or_else(|_| format!("<{} bytes>", bytes.len()))
-        }
-        Statistics::FixedLenByteArray(s) => {
-            let bytes = s.min_bytes_opt()?;
-            String::from_utf8(bytes.to_vec()).unwrap_or_else(|_| format!("<{} bytes>", bytes.len()))
-        }
+        Statistics::ByteArray(s) => bytes_to_display(s.min_bytes_opt()?),
+        Statistics::FixedLenByteArray(s) => bytes_to_display(s.min_bytes_opt()?),
     })
 }
 
@@ -115,13 +121,7 @@ fn stat_to_string_max(stat: &Statistics) -> Option<String> {
         Statistics::Int96(s) => format!("{:?}", s.max_opt()?),
         Statistics::Float(s) => format!("{}", s.max_opt()?),
         Statistics::Double(s) => format!("{}", s.max_opt()?),
-        Statistics::ByteArray(s) => {
-            let bytes = s.max_bytes_opt()?;
-            String::from_utf8(bytes.to_vec()).unwrap_or_else(|_| format!("<{} bytes>", bytes.len()))
-        }
-        Statistics::FixedLenByteArray(s) => {
-            let bytes = s.max_bytes_opt()?;
-            String::from_utf8(bytes.to_vec()).unwrap_or_else(|_| format!("<{} bytes>", bytes.len()))
-        }
+        Statistics::ByteArray(s) => bytes_to_display(s.max_bytes_opt()?),
+        Statistics::FixedLenByteArray(s) => bytes_to_display(s.max_bytes_opt()?),
     })
 }

@@ -390,12 +390,7 @@ fn test_s3_cat_with_where() {
 fn test_s3_nested() {
     ensure_remote_fixtures();
     pq_s3()
-        .args([
-            "info",
-            &s3_url("nested_data.parquet"),
-            "-O",
-            "json",
-        ])
+        .args(["info", &s3_url("nested_data.parquet"), "-O", "json"])
         .assert()
         .success()
         .stdout(predicate::str::contains("\"num_rows\""));

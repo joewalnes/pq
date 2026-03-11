@@ -152,9 +152,12 @@ async fn register_files_from_query(
         if source::is_url(path_str) {
             register_remote_parquet(ctx, path_str, path_str).await?;
         } else {
+            // Canonicalize to resolve relative paths before checking existence
             let path = Path::new(path_str);
-            if path.exists() {
-                ctx.register_parquet(path_str, path_str, ParquetReadOptions::default())
+            let resolved = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+            if resolved.exists() {
+                let resolved_str = resolved.to_str().unwrap_or(path_str);
+                ctx.register_parquet(path_str, resolved_str, ParquetReadOptions::default())
                     .await?;
             }
         }

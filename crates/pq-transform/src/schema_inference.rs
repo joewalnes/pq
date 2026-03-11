@@ -99,10 +99,7 @@ fn widen_types(a: &DataType, b: &DataType) -> DataType {
         }
         // Struct widening: union of fields
         (DataType::Struct(a_fields), DataType::Struct(b_fields)) => {
-            let mut fields: Vec<Field> = a_fields
-                .iter()
-                .map(|f| f.as_ref().clone())
-                .collect();
+            let mut fields: Vec<Field> = a_fields.iter().map(|f| f.as_ref().clone()).collect();
             for b_field in b_fields.iter() {
                 if let Some(existing) = fields.iter_mut().find(|f| f.name() == b_field.name()) {
                     let merged = widen_types(existing.data_type(), b_field.data_type());
@@ -176,12 +173,8 @@ fn build_array(name: &str, dt: &DataType, values: &[Value]) -> Result<Arc<dyn Ar
                 .collect();
             Ok(Arc::new(arr))
         }
-        DataType::Struct(fields) => {
-            build_struct_array(name, fields, values)
-        }
-        DataType::List(inner_field) => {
-            build_list_array(name, inner_field, values)
-        }
+        DataType::Struct(fields) => build_struct_array(name, fields, values),
+        DataType::List(inner_field) => build_list_array(name, inner_field, values),
         _ => {
             // Fallback: convert to string
             let arr: StringArray = values
@@ -194,31 +187,19 @@ fn build_array(name: &str, dt: &DataType, values: &[Value]) -> Result<Arc<dyn Ar
 }
 
 /// Build a StructArray from JSON objects.
-fn build_struct_array(
-    name: &str,
-    fields: &Fields,
-    values: &[Value],
-) -> Result<Arc<dyn Array>> {
+fn build_struct_array(name: &str, fields: &Fields, values: &[Value]) -> Result<Arc<dyn Array>> {
     // Extract the nested object for each row
-    let nested_values: Vec<Option<&Value>> = values
-        .iter()
-        .map(|v| v.get(name))
-        .collect();
+    let nested_values: Vec<Option<&Value>> = values.iter().map(|v| v.get(name)).collect();
 
     let null_buffer: Vec<bool> = nested_values.iter().map(|v| v.is_some()).collect();
 
     let child_arrays: Vec<Arc<dyn Array>> = fields
         .iter()
-        .map(|field| {
-            build_struct_child_array(field.name(), field.data_type(), &nested_values)
-        })
+        .map(|field| build_struct_child_array(field.name(), field.data_type(), &nested_values))
         .collect::<Result<_>>()?;
 
-    let struct_array = StructArray::try_new(
-        fields.clone(),
-        child_arrays,
-        Some(null_buffer.into()),
-    )?;
+    let struct_array =
+        StructArray::try_new(fields.clone(), child_arrays, Some(null_buffer.into()))?;
     Ok(Arc::new(struct_array))
 }
 
@@ -254,10 +235,7 @@ fn build_struct_child_array(
         DataType::Utf8 => {
             let arr: StringArray = parent_values
                 .iter()
-                .map(|v| {
-                    v.and_then(|obj| obj.get(name))
-                        .and_then(|v| v.as_str())
-                })
+                .map(|v| v.and_then(|obj| obj.get(name)).and_then(|v| v.as_str()))
                 .collect();
             Ok(Arc::new(arr))
         }
@@ -277,16 +255,11 @@ fn build_struct_child_array(
                 })
                 .collect::<Result<_>>()?;
 
-            let struct_array = StructArray::try_new(
-                child_fields.clone(),
-                child_arrays,
-                Some(null_buffer.into()),
-            )?;
+            let struct_array =
+                StructArray::try_new(child_fields.clone(), child_arrays, Some(null_buffer.into()))?;
             Ok(Arc::new(struct_array))
         }
-        DataType::List(inner_field) => {
-            build_list_child_array(name, inner_field, parent_values)
-        }
+        DataType::List(inner_field) => build_list_child_array(name, inner_field, parent_values),
         _ => {
             // Fallback: convert to string
             let arr: StringArray = parent_values
@@ -315,7 +288,7 @@ fn build_list_child_array(
     parent_values: &[Option<&Value>],
 ) -> Result<Arc<dyn Array>> {
     let _ = name; // name was used to extract from parent; here we work with already-extracted values
-    // Build offsets and flatten all list elements
+                  // Build offsets and flatten all list elements
     let mut offsets: Vec<i32> = Vec::with_capacity(parent_values.len() + 1);
     let mut flat_elements: Vec<Value> = Vec::new();
     offsets.push(0);
@@ -375,16 +348,11 @@ fn build_flat_array(dt: &DataType, values: &[Value]) -> Result<Arc<dyn Array>> {
 
             let child_arrays: Vec<Arc<dyn Array>> = fields
                 .iter()
-                .map(|field| {
-                    build_flat_struct_child(field.name(), field.data_type(), values)
-                })
+                .map(|field| build_flat_struct_child(field.name(), field.data_type(), values))
                 .collect::<Result<_>>()?;
 
-            let struct_array = StructArray::try_new(
-                fields.clone(),
-                child_arrays,
-                Some(null_buffer.into()),
-            )?;
+            let struct_array =
+                StructArray::try_new(fields.clone(), child_arrays, Some(null_buffer.into()))?;
             Ok(Arc::new(struct_array))
         }
         DataType::List(inner_field) => {
@@ -428,11 +396,7 @@ fn build_flat_array(dt: &DataType, values: &[Value]) -> Result<Arc<dyn Array>> {
 }
 
 /// Build a child array for a struct field from flat JSON values.
-fn build_flat_struct_child(
-    name: &str,
-    dt: &DataType,
-    values: &[Value],
-) -> Result<Arc<dyn Array>> {
+fn build_flat_struct_child(name: &str, dt: &DataType, values: &[Value]) -> Result<Arc<dyn Array>> {
     match dt {
         DataType::Null => Ok(Arc::new(NullArray::new(values.len()))),
         DataType::Boolean => {
@@ -464,10 +428,7 @@ fn build_flat_struct_child(
             Ok(Arc::new(arr))
         }
         DataType::Struct(fields) => {
-            let child_values: Vec<Option<&Value>> = values
-                .iter()
-                .map(|v| v.get(name))
-                .collect();
+            let child_values: Vec<Option<&Value>> = values.iter().map(|v| v.get(name)).collect();
 
             let null_buffer: Vec<bool> = child_values.iter().map(|v| v.is_some()).collect();
 
@@ -478,11 +439,8 @@ fn build_flat_struct_child(
                 })
                 .collect::<Result<_>>()?;
 
-            let struct_array = StructArray::try_new(
-                fields.clone(),
-                child_arrays,
-                Some(null_buffer.into()),
-            )?;
+            let struct_array =
+                StructArray::try_new(fields.clone(), child_arrays, Some(null_buffer.into()))?;
             Ok(Arc::new(struct_array))
         }
         DataType::List(inner_field) => {

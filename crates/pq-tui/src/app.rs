@@ -323,10 +323,7 @@ impl App {
 
         let file_info = format!(
             " {} | {} rows | {} cols",
-            self.path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy(),
+            self.path.file_name().unwrap_or_default().to_string_lossy(),
             self.total_rows,
             self.schema.fields().len(),
         );

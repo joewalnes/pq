@@ -48,10 +48,7 @@ impl DetailPanelState {
                 self.lines.push(DetailLine {
                     spans: vec![
                         Span::raw(indent),
-                        Span::styled(
-                            key.to_string(),
-                            Style::default().fg(Color::Cyan),
-                        ),
+                        Span::styled(key.to_string(), Style::default().fg(Color::Cyan)),
                         Span::raw(":"),
                     ],
                 });
@@ -63,10 +60,7 @@ impl DetailPanelState {
                 self.lines.push(DetailLine {
                     spans: vec![
                         Span::raw(indent),
-                        Span::styled(
-                            key.to_string(),
-                            Style::default().fg(Color::Cyan),
-                        ),
+                        Span::styled(key.to_string(), Style::default().fg(Color::Cyan)),
                         Span::raw(":"),
                     ],
                 });
@@ -79,15 +73,9 @@ impl DetailPanelState {
                 self.lines.push(DetailLine {
                     spans: vec![
                         Span::raw(indent),
-                        Span::styled(
-                            key.to_string(),
-                            Style::default().fg(Color::Cyan),
-                        ),
+                        Span::styled(key.to_string(), Style::default().fg(Color::Cyan)),
                         Span::raw(": "),
-                        Span::styled(
-                            format!("\"{s}\""),
-                            Style::default().fg(Color::Green),
-                        ),
+                        Span::styled(format!("\"{s}\""), Style::default().fg(Color::Green)),
                     ],
                 });
             }
@@ -95,15 +83,9 @@ impl DetailPanelState {
                 self.lines.push(DetailLine {
                     spans: vec![
                         Span::raw(indent),
-                        Span::styled(
-                            key.to_string(),
-                            Style::default().fg(Color::Cyan),
-                        ),
+                        Span::styled(key.to_string(), Style::default().fg(Color::Cyan)),
                         Span::raw(": "),
-                        Span::styled(
-                            n.to_string(),
-                            Style::default().fg(Color::Yellow),
-                        ),
+                        Span::styled(n.to_string(), Style::default().fg(Color::Yellow)),
                     ],
                 });
             }
@@ -111,15 +93,9 @@ impl DetailPanelState {
                 self.lines.push(DetailLine {
                     spans: vec![
                         Span::raw(indent),
-                        Span::styled(
-                            key.to_string(),
-                            Style::default().fg(Color::Cyan),
-                        ),
+                        Span::styled(key.to_string(), Style::default().fg(Color::Cyan)),
                         Span::raw(": "),
-                        Span::styled(
-                            b.to_string(),
-                            Style::default().fg(Color::Magenta),
-                        ),
+                        Span::styled(b.to_string(), Style::default().fg(Color::Magenta)),
                     ],
                 });
             }
@@ -127,15 +103,9 @@ impl DetailPanelState {
                 self.lines.push(DetailLine {
                     spans: vec![
                         Span::raw(indent),
-                        Span::styled(
-                            key.to_string(),
-                            Style::default().fg(Color::Cyan),
-                        ),
+                        Span::styled(key.to_string(), Style::default().fg(Color::Cyan)),
                         Span::raw(": "),
-                        Span::styled(
-                            "null".to_string(),
-                            Style::default().fg(Color::DarkGray),
-                        ),
+                        Span::styled("null".to_string(), Style::default().fg(Color::DarkGray)),
                     ],
                 });
             }
@@ -160,8 +130,7 @@ impl DetailPanelState {
 
         if self.lines.is_empty() {
             frame.render_widget(
-                Paragraph::new("No row selected")
-                    .style(Style::default().fg(Color::DarkGray)),
+                Paragraph::new("No row selected").style(Style::default().fg(Color::DarkGray)),
                 inner,
             );
             return;

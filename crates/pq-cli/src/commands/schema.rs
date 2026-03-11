@@ -1,7 +1,7 @@
 use std::io::Write;
 use std::path::Path;
 
-use pq_core::schema::{open_arrow_schema, schema_to_ddl, schema_to_fields};
+use pq_core::schema::{open_arrow_schema, schema_to_ddl, schema_to_fields, schema_to_pyarrow};
 
 use crate::cli::SchemaFormat;
 use crate::output::Format;
@@ -42,6 +42,9 @@ pub fn run(file: &str, schema_format: &SchemaFormat, output_format: Format) -> a
                 .and_then(|s| s.to_str())
                 .unwrap_or("data");
             writeln!(writer, "{}", schema_to_ddl(&schema, table_name))?;
+        }
+        SchemaFormat::Pyarrow => {
+            writeln!(writer, "{}", schema_to_pyarrow(&schema))?;
         }
     }
 

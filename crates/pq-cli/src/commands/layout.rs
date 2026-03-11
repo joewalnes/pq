@@ -5,6 +5,20 @@ use pq_core::physical_layout::extract_physical_layout;
 
 use crate::output::Format;
 
+/// Format a number with comma separators.
+fn format_number(n: impl std::fmt::Display) -> String {
+    let s = n.to_string();
+    let bytes = s.as_bytes();
+    let mut result = String::with_capacity(s.len() + s.len() / 3);
+    for (i, &b) in bytes.iter().rev().enumerate() {
+        if i > 0 && i % 3 == 0 && b != b'-' {
+            result.insert(0, ',');
+        }
+        result.insert(0, b as char);
+    }
+    result
+}
+
 pub fn run(file: &str, format: Format) -> anyhow::Result<()> {
     let metadata = open_metadata(file)?;
     let layout = extract_physical_layout(&metadata);
@@ -26,24 +40,47 @@ pub fn run(file: &str, format: Format) -> anyhow::Result<()> {
             writeln!(writer)?;
 
             for rg in &layout.row_groups {
+                let row_end = rg.num_rows.saturating_sub(1);
                 writeln!(
                     writer,
-                    "Row Group {}: {} rows, {}",
+                    "Row Group {} (rows 0\u{2013}{}, {}):",
                     rg.index,
-                    rg.num_rows,
+                    format_number(row_end),
                     bytesize::ByteSize(rg.total_byte_size as u64),
                 )?;
 
+                // Compute column widths for alignment
+                let mut max_path = 6; // "Column"
+                let mut max_type = 4; // "Type"
+                let mut max_codec = 5; // "Codec"
+                let mut max_values = 6; // "Values"
                 for col in &rg.columns {
+                    max_path = max_path.max(col.path.len());
+                    max_type = max_type.max(col.physical_type.len());
+                    max_codec = max_codec.max(col.compression.len());
+                    max_values = max_values.max(format_number(col.num_values).len());
+                }
+
+                writeln!(
+                    writer,
+                    "  {:max_path$}  {:max_type$}  {:max_codec$}  {:>12}  {:>14}  {:>max_values$}  Bytes",
+                    "Column", "Type", "Codec", "Compressed", "Uncompressed", "Values",
+                )?;
+
+                for col in &rg.columns {
+                    let byte_start = col.data_page_offset;
+                    let byte_end = byte_start + col.compressed_size;
                     writeln!(
                         writer,
-                        "  {} ({}) [{:}] compressed={} uncompressed={} values={}{}",
+                        "  {:max_path$}  {:max_type$}  {:max_codec$}  {:>12}  {:>14}  {:>max_values$}  {}\u{2013}{}{}",
                         col.path,
                         col.physical_type,
                         col.compression,
-                        bytesize::ByteSize(col.compressed_size as u64),
-                        bytesize::ByteSize(col.uncompressed_size as u64),
-                        col.num_values,
+                        format_number(col.compressed_size),
+                        format_number(col.uncompressed_size),
+                        format_number(col.num_values),
+                        format_number(byte_start),
+                        format_number(byte_end),
                         if col.has_bloom_filter { " [bloom]" } else { "" },
                     )?;
                 }

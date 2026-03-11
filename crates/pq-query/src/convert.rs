@@ -191,11 +191,7 @@ fn array_value_to_json(array: &dyn Array, idx: usize) -> Value {
             if scale == 0 {
                 Value::String(v.to_string())
             } else {
-                Value::String(format!(
-                    "{}.{}",
-                    v.to_string().trim_end_matches('0'),
-                    scale
-                ))
+                Value::String(format!("{}.{}", v.to_string().trim_end_matches('0'), scale))
             }
         }
         DataType::List(_) => {
@@ -215,10 +211,7 @@ fn array_value_to_json(array: &dyn Array, idx: usize) -> Value {
             Value::Array(items)
         }
         DataType::FixedSizeList(_, _) => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<FixedSizeListArray>()
-                .unwrap();
+            let arr = array.as_any().downcast_ref::<FixedSizeListArray>().unwrap();
             let values = arr.value(idx);
             let items: Vec<Value> = (0..values.len())
                 .map(|i| array_value_to_json(values.as_ref(), i))
