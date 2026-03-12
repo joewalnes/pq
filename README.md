@@ -133,6 +133,7 @@ The docs site is built with [mdBook](https://rust-lang.github.io/mdBook/).
 ```sh
 make docs         # build site to docs/book/
 make docs-serve   # build + open in browser with live reload
+make docs-deploy  # build + push to gh-pages branch
 ```
 
 The CLI reference page is auto-generated from `pq --help` output, so it
