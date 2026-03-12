@@ -18,3 +18,4 @@ pub mod sql;
 pub mod stats;
 pub mod validate;
 pub mod view;
+pub mod write_output;

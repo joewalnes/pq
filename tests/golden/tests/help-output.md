@@ -134,13 +134,16 @@ Examples:
 
 SQL reference: https://datafusion.apache.org/user-guide/sql/index.html
 
-Usage: sql [QUERY]
+Usage: sql [OPTIONS] [QUERY]
 
 Arguments:
   [QUERY]
           SQL query (files can be referenced directly in FROM clause)
 
 Options:
+  -o, --output <OUTPUT>
+          Write output to a file (format auto-detected from extension: .parquet, .json, .jsonl, .csv)
+
   -h, --help
           Print help (see a summary with '-h')
 ```

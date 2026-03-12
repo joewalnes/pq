@@ -112,10 +112,12 @@ fn run(cli: Cli, format: Format, explicit_format: bool) -> anyhow::Result<()> {
             ref columns,
             ref where_clause,
             ref jq,
+            ref output,
         } => {
             let resolved = files::resolve_files(files)?;
             // TTY mode: default limit to 1000 to prevent hanging on large files
-            let effective_limit = if limit.is_none() && console::Term::stdout().is_term() {
+            // (skip when writing to a file — user wants all rows)
+            let effective_limit = if limit.is_none() && output.is_none() && console::Term::stdout().is_term() {
                 eprintln!("(showing first 1,000 rows; use --limit to override)");
                 Some(1000)
             } else {
@@ -130,6 +132,7 @@ fn run(cli: Cli, format: Format, explicit_format: bool) -> anyhow::Result<()> {
                 columns.clone(),
                 where_clause.as_deref(),
                 jq.as_deref(),
+                output.as_deref(),
                 cat_format,
             )
         }
@@ -145,6 +148,7 @@ fn run(cli: Cli, format: Format, explicit_format: bool) -> anyhow::Result<()> {
                 Some(lines),
                 None,
                 columns.clone(),
+                None,
                 None,
                 None,
                 format,
@@ -177,7 +181,10 @@ fn run(cli: Cli, format: Format, explicit_format: bool) -> anyhow::Result<()> {
 
         Command::Count { ref files } => commands::count::run(files, format),
 
-        Command::Sql { ref query } => match query.as_deref() {
+        Command::Sql {
+            ref query,
+            ref output,
+        } => match query.as_deref() {
             None | Some("help") => {
                 Cli::command()
                     .find_subcommand_mut("sql")
@@ -185,7 +192,7 @@ fn run(cli: Cli, format: Format, explicit_format: bool) -> anyhow::Result<()> {
                     .print_long_help()?;
                 Ok(())
             }
-            Some(q) => commands::sql::run(q, format),
+            Some(q) => commands::sql::run(q, output.as_deref(), format),
         },
 
         Command::View { ref file } => commands::view::run(file),
@@ -220,11 +227,12 @@ fn run(cli: Cli, format: Format, explicit_format: bool) -> anyhow::Result<()> {
             ref filter,
             slurp,
             raw_output,
+            ref output,
         } => {
             let resolved = files::resolve_files(files)?;
             // jq defaults to compact JSONL (like real jq), unless user explicitly picks a format
             let jq_format = if explicit_format { format } else { Format::JsonLines };
-            commands::jq::run(&resolved, filter, slurp, raw_output, jq_format)
+            commands::jq::run(&resolved, filter, slurp, raw_output, output.as_deref(), jq_format)
         }
 
         Command::Export {

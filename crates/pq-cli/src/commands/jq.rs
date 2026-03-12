@@ -9,6 +9,7 @@ pub fn run(
     filter: &str,
     slurp: bool,
     raw_output: bool,
+    output: Option<&str>,
     format: Format,
 ) -> anyhow::Result<()> {
     let mut all_rows: Vec<serde_json::Value> = Vec::new();
@@ -25,6 +26,12 @@ pub fn run(
     }
 
     let results = pq_query::jq::apply_jq_filter(filter, all_rows, slurp)?;
+
+    if let Some(path) = output {
+        let rows = super::write_output::json_values_to_file(path, &results)?;
+        eprintln!("Wrote {rows} rows to {path}");
+        return Ok(());
+    }
 
     let stdout = std::io::stdout();
     let mut writer = stdout.lock();

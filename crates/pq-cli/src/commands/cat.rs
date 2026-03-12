@@ -1,5 +1,3 @@
-use std::io::Write;
-
 use pq_core::reader::{open_batches, ReadOptions};
 
 use crate::output::{self, Format};
@@ -11,11 +9,9 @@ pub fn run(
     columns: Option<Vec<String>>,
     where_clause: Option<&str>,
     jq_filter: Option<&str>,
+    output: Option<&str>,
     format: Format,
 ) -> anyhow::Result<()> {
-    let stdout = std::io::stdout();
-    let mut writer = stdout.lock();
-
     // If we have a WHERE clause, use DataFusion SQL (single file only)
     if let Some(where_clause) = where_clause {
         let file = &files[0];
@@ -30,11 +26,11 @@ pub fn run(
         ))?;
 
         if let Some(jq_filter) = jq_filter {
-            apply_jq_and_output(&mut writer, &batches, jq_filter, format)?;
-        } else {
-            output::render_batches(&mut writer, &batches, format)?;
+            let results = apply_jq(&batches, jq_filter)?;
+            return write_jq_output(output, &results, format);
         }
-        return Ok(());
+
+        return write_batch_output(output, &batches, format);
     }
 
     let mut all_batches = Vec::new();
@@ -61,29 +57,61 @@ pub fn run(
     }
 
     if let Some(jq_filter) = jq_filter {
-        apply_jq_and_output(&mut writer, &all_batches, jq_filter, format)?;
-    } else {
-        output::render_batches(&mut writer, &all_batches, format)?;
+        let results = apply_jq(&all_batches, jq_filter)?;
+        return write_jq_output(output, &results, format);
     }
 
-    Ok(())
+    write_batch_output(output, &all_batches, format)
 }
 
-fn apply_jq_and_output(
-    writer: &mut dyn Write,
+fn apply_jq(
     batches: &[arrow::array::RecordBatch],
     filter: &str,
-    format: Format,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Vec<serde_json::Value>> {
     let json_rows: Vec<serde_json::Value> = batches
         .iter()
         .flat_map(pq_query::convert::batch_to_json_rows)
         .collect();
-
     let results = pq_query::jq::apply_jq_filter(filter, json_rows, false)?;
+    Ok(results)
+}
 
-    for result in &results {
-        crate::output::render_value(writer, result, format)?;
+fn write_batch_output(
+    output: Option<&str>,
+    batches: &[arrow::array::RecordBatch],
+    format: Format,
+) -> anyhow::Result<()> {
+    match output {
+        Some(path) => {
+            let rows = super::write_output::write_batches_to_file(path, batches)?;
+            eprintln!("Wrote {rows} rows to {path}");
+        }
+        None => {
+            let stdout = std::io::stdout();
+            let mut writer = stdout.lock();
+            output::render_batches(&mut writer, batches, format)?;
+        }
+    }
+    Ok(())
+}
+
+fn write_jq_output(
+    output: Option<&str>,
+    results: &[serde_json::Value],
+    format: Format,
+) -> anyhow::Result<()> {
+    match output {
+        Some(path) => {
+            let rows = super::write_output::json_values_to_file(path, results)?;
+            eprintln!("Wrote {rows} rows to {path}");
+        }
+        None => {
+            let stdout = std::io::stdout();
+            let mut writer = stdout.lock();
+            for result in results {
+                crate::output::render_value(&mut writer, result, format)?;
+            }
+        }
     }
     Ok(())
 }

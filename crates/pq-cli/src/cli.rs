@@ -192,6 +192,10 @@ pub enum Command {
         /// jq expression to apply to each row
         #[arg(long)]
         jq: Option<String>,
+
+        /// Write output to a file (format auto-detected from extension: .parquet, .json, .jsonl, .csv)
+        #[arg(short = 'O', long)]
+        output: Option<String>,
     },
 
     /// Show first N rows (default 10)
@@ -301,6 +305,10 @@ pub enum Command {
     Sql {
         /// SQL query (files can be referenced directly in FROM clause)
         query: Option<String>,
+
+        /// Write output to a file (format auto-detected from extension: .parquet, .json, .jsonl, .csv)
+        #[arg(short, long)]
+        output: Option<String>,
     },
 
     /// Apply jq expressions to Parquet data
@@ -332,6 +340,10 @@ pub enum Command {
         /// Output raw strings without JSON quoting
         #[arg(short = 'r', long)]
         raw_output: bool,
+
+        /// Write output to a file (format auto-detected from extension: .parquet, .json, .jsonl, .csv)
+        #[arg(short, long)]
+        output: Option<String>,
     },
 
     // ── Transform ────────────────────────────────────────────────────────

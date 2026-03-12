@@ -208,6 +208,54 @@ San Francisco
 Seattle
 ```
 
+## Saving results to files
+
+Use `-o` to write jq results to a file. Format is auto-detected from the extension.
+
+Save transformed data to Parquet:
+
+```console
+$ pq jq employees.parquet '{name, city: .address.city}' -o flat.parquet
+Wrote 8 rows to flat.parquet
+$ pq cat flat.parquet
+╭───────────────┬─────────╮
+│ city          ┆ name    │
+╞═══════════════╪═════════╡
+│ New York      ┆ Alice   │
+├╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌┤
+│ San Francisco ┆ Bob     │
+├╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌┤
+│ Chicago       ┆ Charlie │
+├╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌┤
+│ Seattle       ┆ Diana   │
+├╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌┤
+│ New York      ┆ Eve     │
+├╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌┤
+│ Los Angeles   ┆ Frank   │
+├╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌┤
+│ New York      ┆ Grace   │
+├╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌┤
+│ Chicago       ┆ Hank    │
+╰───────────────┴─────────╯
+```
+
+Save filtered data with `cat --jq -O`:
+
+```console
+$ pq cat employees.parquet --jq 'select(.salary > 110000) | {name, salary}' -O high_earners.parquet
+Wrote 3 rows to high_earners.parquet
+$ pq cat high_earners.parquet
+╭───────┬────────╮
+│ name  ┆ salary │
+╞═══════╪════════╡
+│ Alice ┆ 120000 │
+├╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌┤
+│ Diana ┆ 130000 │
+├╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌┤
+│ Grace ┆ 115000 │
+╰───────┴────────╯
+```
+
 ## Using --jq with cat
 
 The `--jq` flag on `pq cat` lets you combine row limiting with jq transforms:

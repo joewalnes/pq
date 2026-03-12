@@ -109,6 +109,49 @@ $ pq sql "SELECT MIN(price) as min_price, MAX(price) as max_price, ROUND(AVG(pri
 ╰───────────┴───────────┴───────────┴─────────────╯
 ```
 
+## Saving results to files
+
+Use `-o` to write query results to a file. The format is auto-detected from the extension.
+
+Save a SQL query to Parquet:
+
+```console
+$ pq sql "SELECT name, age FROM './users.parquet' WHERE active = true ORDER BY age" -o active_users.parquet
+Wrote 3 rows to active_users.parquet
+$ pq cat active_users.parquet
+╭───────┬─────╮
+│ name  ┆ age │
+╞═══════╪═════╡
+│ Bob   ┆ 25  │
+├╌╌╌╌╌╌╌┼╌╌╌╌╌┤
+│ Diana ┆ 28  │
+├╌╌╌╌╌╌╌┼╌╌╌╌╌┤
+│ Alice ┆ 30  │
+╰───────┴─────╯
+```
+
+Save to JSON:
+
+```console
+$ pq sql "SELECT name, score FROM './users.parquet' ORDER BY score DESC LIMIT 3" -o top_scores.json
+Wrote 3 rows to top_scores.json
+$ cat top_scores.json
+[
+  {
+    "name": "Diana",
+    "score": 95.1
+  },
+  {
+    "name": "Alice",
+    "score": 92.5
+  },
+  {
+    "name": "Bob",
+    "score": 88.0
+  }
+]
+```
+
 ## JOIN two files
 
 Join users with their orders to see order counts by city:
