@@ -1,4 +1,4 @@
-.PHONY: all build test test-integration lint install
+.PHONY: all build test test-golden test-integration lint install
 
 all: build test lint
 
@@ -7,6 +7,10 @@ build:
 
 test:
 	cargo test --workspace
+	@$(MAKE) test-golden
+
+test-golden: build
+	PQ=target/release/pq python3 tests/golden/run.py
 
 lint:
 	cargo clippy --workspace -- -D warnings
