@@ -1,4 +1,4 @@
-.PHONY: all build test test-golden test-integration lint install
+.PHONY: all build test test-golden test-integration lint install docs docs-serve
 
 all: build test lint
 
@@ -19,6 +19,16 @@ lint:
 install: build
 	mkdir -p ~/.local/bin
 	cp target/release/pq ~/.local/bin/pq
+
+# -- Documentation ------------------------------------------------------------
+
+docs: build
+	PQ=target/release/pq ./docs/generate-cli-reference.sh
+	mdbook build docs
+
+docs-serve: build
+	PQ=target/release/pq ./docs/generate-cli-reference.sh
+	mdbook serve docs --open
 
 # -- Sample data -----------------------------------------------------------
 # Downloads a variety of public parquet files for manual testing.

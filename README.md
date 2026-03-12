@@ -60,7 +60,7 @@ cargo install --path crates/pq-cli
 Or clone and use the Makefile:
 
 ```sh
-git clone https://github.com/joewalnes/pq.git
+git clone git@git.corp.stripe.com:joejoejoe/pq.git
 cd pq
 make install    # builds release binary, copies to ~/.local/bin/pq
 ```
@@ -101,7 +101,7 @@ make install    # builds release binary, copies to ~/.local/bin/pq
 Requires Rust 1.75+ and Cargo.
 
 ```sh
-git clone https://github.com/joewalnes/pq.git
+git clone git@git.corp.stripe.com:joejoejoe/pq.git
 cd pq
 make          # build + test + lint
 make build    # cargo build --release
@@ -125,6 +125,23 @@ make test-seaweed-up    # start SeaweedFS container
 cargo test --test remote_tests -- --ignored   # run tests
 make test-seaweed-down  # stop container
 ```
+
+### Documentation
+
+The docs site is built with [mdBook](https://rust-lang.github.io/mdBook/).
+
+```sh
+make docs         # build site to docs/book/
+make docs-serve   # build + open in browser with live reload
+```
+
+The CLI reference page is auto-generated from `pq --help` output, so it
+stays in sync with the code. The generator runs as part of `make docs`.
+
+The tutorials double as integration tests — each one is a markdown file in
+`tests/golden/tutorials/` that the test harness executes, comparing actual
+output against the expected output embedded in the doc. This means tutorials
+can't go stale: if the CLI output changes, the tests fail.
 
 ## Author
 
