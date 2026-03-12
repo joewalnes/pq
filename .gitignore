@@ -2,3 +2,4 @@
 /data
 *.parquet
 !tests/fixtures/test_data.parquet
+/docs/book
