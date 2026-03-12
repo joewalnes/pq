@@ -37,14 +37,14 @@ Wrote 8 rows to name_price.parquet
 The output file has a reduced schema:
 
 ```console
-$ pq schema name_price.parquet -f table
+$ pq schema name_price.parquet
 Schema (2 columns):
 ├── name: string (nullable)
 └── price: float64 (nullable)
 ```
 
 ```console
-$ pq head name_price.parquet -f table
+$ pq head name_price.parquet
 ╭─────────────────┬────────╮
 │ name            ┆ price  │
 ╞═════════════════╪════════╡
@@ -76,7 +76,7 @@ Wrote 3 rows to middle.parquet
 ```
 
 ```console
-$ pq cat middle.parquet -f table
+$ pq cat middle.parquet
 ╭─────────────┬────┬──────────┬────────┬───────╮
 │ category    ┆ id ┆ name     ┆ price  ┆ stock │
 ╞═════════════╪════╪══════════╪════════╪═══════╡
@@ -96,7 +96,7 @@ Wrote 2 rows to first_two.parquet
 ```
 
 ```console
-$ pq cat first_two.parquet -f table
+$ pq cat first_two.parquet
 ╭──────────┬────┬──────────┬───────┬───────╮
 │ category ┆ id ┆ name     ┆ price ┆ stock │
 ╞══════════╪════╪══════════╪═══════╪═══════╡
@@ -130,12 +130,12 @@ Merged 2 files, wrote 10 rows to all_products.parquet
 ```
 
 ```console
-$ pq count all_products.parquet -f table
+$ pq count all_products.parquet
 10
 ```
 
 ```console
-$ pq tail all_products.parquet -n 3 -f table
+$ pq tail all_products.parquet -n 3
 ╭──────────┬────┬─────────────────┬───────┬───────╮
 │ category ┆ id ┆ name            ┆ price ┆ stock │
 ╞══════════╪════╪═════════════════╪═══════╪═══════╡
@@ -162,11 +162,11 @@ Split 8 rows into 3 files in split_rows/
 Verify the counts:
 
 ```console
-$ pq count split_rows/products_0000.parquet -f table
+$ pq count split_rows/products_0000.parquet
 3
-$ pq count split_rows/products_0001.parquet -f table
+$ pq count split_rows/products_0001.parquet
 3
-$ pq count split_rows/products_0002.parquet -f table
+$ pq count split_rows/products_0002.parquet
 2
 ```
 
@@ -182,7 +182,7 @@ $ pq split products.parquet --partition-by category -o split_category/
 Each partition directory contains only the matching rows:
 
 ```console
-$ pq cat split_category/category=electronics/products.parquet -f table
+$ pq cat split_category/category=electronics/products.parquet
 ╭─────────────┬────┬──────────┬────────┬───────╮
 │ category    ┆ id ┆ name     ┆ price  ┆ stock │
 ╞═════════════╪════╪══════════╪════════╪═══════╡
@@ -195,7 +195,7 @@ $ pq cat split_category/category=electronics/products.parquet -f table
 ```
 
 ```console
-$ pq cat split_category/category=tools/products.parquet -f table
+$ pq cat split_category/category=tools/products.parquet
 ╭──────────┬────┬───────────┬───────┬───────╮
 │ category ┆ id ┆ name      ┆ price ┆ stock │
 ╞══════════╪════╪═══════════╪═══════╪═══════╡

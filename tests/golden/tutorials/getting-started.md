@@ -31,7 +31,7 @@ Converted 5 rows to users.parquet
 Use `info` to see a summary of the file:
 
 ```console
-$ pq info users.parquet -f table
+$ pq info users.parquet
 File:         users.parquet
 Size:         1.8 KB
 Rows:         5
@@ -54,7 +54,7 @@ Metadata:
 The `schema` command shows column names and types:
 
 ```console
-$ pq schema users.parquet -f table
+$ pq schema users.parquet
 Schema (5 columns):
 ├── active: boolean (nullable)
 ├── age: int64 (nullable)
@@ -68,7 +68,7 @@ Schema (5 columns):
 Show the first 3 rows:
 
 ```console
-$ pq head users.parquet -n 3 -f table
+$ pq head users.parquet -n 3
 ╭────────┬─────┬─────────────┬─────────┬───────╮
 │ active ┆ age ┆ city        ┆ name    ┆ score │
 ╞════════╪═════╪═════════════╪═════════╪═══════╡
@@ -83,7 +83,7 @@ $ pq head users.parquet -n 3 -f table
 Show the last 2 rows:
 
 ```console
-$ pq tail users.parquet -n 2 -f table
+$ pq tail users.parquet -n 2
 ╭────────┬─────┬─────────────┬───────┬───────╮
 │ active ┆ age ┆ city        ┆ name  ┆ score │
 ╞════════╪═════╪═════════════╪═══════╪═══════╡
@@ -96,7 +96,7 @@ $ pq tail users.parquet -n 2 -f table
 ## Count rows
 
 ```console
-$ pq count users.parquet -f table
+$ pq count users.parquet
 5
 ```
 
@@ -105,7 +105,7 @@ $ pq count users.parquet -f table
 Use `cat` with `--limit` to control how many rows are shown:
 
 ```console
-$ pq cat users.parquet --limit 3 -f table
+$ pq cat users.parquet --limit 3
 ╭────────┬─────┬─────────────┬─────────┬───────╮
 │ active ┆ age ┆ city        ┆ name    ┆ score │
 ╞════════╪═════╪═════════════╪═════════╪═══════╡
@@ -122,7 +122,7 @@ $ pq cat users.parquet --limit 3 -f table
 Use `--seed` for reproducible results:
 
 ```console
-$ pq sample users.parquet -n 2 --seed 42 -f table
+$ pq sample users.parquet -n 2 --seed 42
 ╭────────┬─────┬─────────────┬─────────┬───────╮
 │ active ┆ age ┆ city        ┆ name    ┆ score │
 ╞════════╪═════╪═════════════╪═════════╪═══════╡
@@ -138,7 +138,7 @@ Use the `sql` command to run SQL queries. Reference Parquet files in the FROM
 clause with `./` paths:
 
 ```console
-$ pq sql "SELECT name, age FROM './users.parquet' WHERE age > 28 ORDER BY age" -f table
+$ pq sql "SELECT name, age FROM './users.parquet' WHERE age > 28 ORDER BY age"
 ╭─────────┬─────╮
 │ name    ┆ age │
 ╞═════════╪═════╡

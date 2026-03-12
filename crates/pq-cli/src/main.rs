@@ -44,7 +44,8 @@ fn main() {
     let mode = OutputMode::detect(cli.output_format.as_ref());
     let format = Format::from_cli(cli.output_format.as_ref(), mode);
 
-    let result = run(cli, format);
+    let explicit_format = cli.output_format.is_some();
+    let result = run(cli, format, explicit_format);
 
     if let Err(e) = result {
         eprintln!("Error: {e:#}");
@@ -58,7 +59,7 @@ fn is_known_subcommand(arg: &str) -> bool {
         .any(|cmd| cmd.get_name() == arg)
 }
 
-fn run(cli: Cli, format: Format) -> anyhow::Result<()> {
+fn run(cli: Cli, format: Format, explicit_format: bool) -> anyhow::Result<()> {
     match cli.command {
         Command::Info { ref files } => {
             let resolved = files::resolve_files(files)?;
@@ -120,6 +121,8 @@ fn run(cli: Cli, format: Format) -> anyhow::Result<()> {
             } else {
                 limit
             };
+            // When --jq is used, default to compact JSONL like the jq command
+            let cat_format = if jq.is_some() && !explicit_format { Format::JsonLines } else { format };
             commands::cat::run(
                 &resolved,
                 effective_limit,
@@ -127,7 +130,7 @@ fn run(cli: Cli, format: Format) -> anyhow::Result<()> {
                 columns.clone(),
                 where_clause.as_deref(),
                 jq.as_deref(),
-                format,
+                cat_format,
             )
         }
 
@@ -219,7 +222,9 @@ fn run(cli: Cli, format: Format) -> anyhow::Result<()> {
             raw_output,
         } => {
             let resolved = files::resolve_files(files)?;
-            commands::jq::run(&resolved, filter, slurp, raw_output, format)
+            // jq defaults to compact JSONL (like real jq), unless user explicitly picks a format
+            let jq_format = if explicit_format { format } else { Format::JsonLines };
+            commands::jq::run(&resolved, filter, slurp, raw_output, jq_format)
         }
 
         Command::Export {

@@ -19,7 +19,9 @@ impl OutputMode {
         if override_format.is_some() {
             return OutputMode::Machine;
         }
-        if console::Term::stdout().is_term() {
+        if console::Term::stdout().is_term()
+            || std::env::var_os("PQ_FORCE_TTY").is_some_and(|v| v == "1")
+        {
             OutputMode::Interactive
         } else {
             OutputMode::Machine

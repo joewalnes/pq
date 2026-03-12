@@ -33,7 +33,7 @@ This means `pq count` on a 925 MB file transfers under 600 KB. Use `--debug`
 to see exactly what's fetched:
 
 ```console
-$ pq count "https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2024-01.parquet" -f table
+$ pq count "https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2024-01.parquet"
 2964624
 ```
 
@@ -48,7 +48,7 @@ Parquet files. Each file is ~50 MB with ~3 million rows.
 Check the file metadata without downloading anything:
 
 ```console
-$ pq schema "https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2024-01.parquet" -f table
+$ pq schema "https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2024-01.parquet"
 Schema (19 columns):
 ├── VendorID: int32 (nullable)
 ├── tpep_pickup_datetime: timestamp(us) (nullable)
@@ -74,7 +74,7 @@ Schema (19 columns):
 Preview the first few rows (only fetches the first row group):
 
 ```console
-$ pq head "https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2024-01.parquet" -n 3 -c passenger_count,trip_distance,fare_amount,tip_amount,total_amount -f table
+$ pq head "https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2024-01.parquet" -n 3 -c passenger_count,trip_distance,fare_amount,tip_amount,total_amount
 ╭─────────────────┬───────────────┬─────────────┬────────────┬──────────────╮
 │ passenger_count ┆ trip_distance ┆ fare_amount ┆ tip_amount ┆ total_amount │
 ╞═════════════════╪═══════════════╪═════════════╪════════════╪══════════════╡
@@ -90,7 +90,7 @@ Run SQL directly against the remote file — DataFusion pushes predicates
 down, so only matching row groups are fetched:
 
 ```console
-$ pq sql "SELECT passenger_count, ROUND(AVG(trip_distance), 2) as avg_distance, ROUND(AVG(total_amount), 2) as avg_total, COUNT(*) as trips FROM 'https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2024-01.parquet' WHERE passenger_count IS NOT NULL GROUP BY passenger_count ORDER BY passenger_count LIMIT 6" -f table
+$ pq sql "SELECT passenger_count, ROUND(AVG(trip_distance), 2) as avg_distance, ROUND(AVG(total_amount), 2) as avg_total, COUNT(*) as trips FROM 'https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2024-01.parquet' WHERE passenger_count IS NOT NULL GROUP BY passenger_count ORDER BY passenger_count LIMIT 6"
 ╭─────────────────┬──────────────┬───────────┬─────────╮
 │ passenger_count ┆ avg_distance ┆ avg_total ┆ trips   │
 ╞═════════════════╪══════════════╪═══════════╪═════════╡
@@ -117,7 +117,7 @@ schemas (structs, lists, maps).
 Inspect the schema — pq reads only the file footer (~550 KB of a 925 MB file):
 
 ```console
-$ pq schema "https://overturemapswestus2.blob.core.windows.net/release/2026-02-18.0/theme=places/type=place/part-00000-308cb36d-c529-4dc2-83bb-fe6b282a2b1a-c000.zstd.parquet" -f table
+$ pq schema "https://overturemapswestus2.blob.core.windows.net/release/2026-02-18.0/theme=places/type=place/part-00000-308cb36d-c529-4dc2-83bb-fe6b282a2b1a-c000.zstd.parquet"
 Schema (17 columns):
 ├── id: string (nullable)
 ├── geometry: binary (nullable)
@@ -190,14 +190,14 @@ Schema (17 columns):
 Get the row count (metadata-only, no data downloaded):
 
 ```console
-$ pq count "https://overturemapswestus2.blob.core.windows.net/release/2026-02-18.0/theme=places/type=place/part-00000-308cb36d-c529-4dc2-83bb-fe6b282a2b1a-c000.zstd.parquet" -f table
+$ pq count "https://overturemapswestus2.blob.core.windows.net/release/2026-02-18.0/theme=places/type=place/part-00000-308cb36d-c529-4dc2-83bb-fe6b282a2b1a-c000.zstd.parquet"
 9152540
 ```
 
 Use SQL to query specific columns — only the needed column chunks are fetched:
 
 ```console
-$ pq sql "SELECT id, basic_category, confidence FROM 'https://overturemapswestus2.blob.core.windows.net/release/2026-02-18.0/theme=places/type=place/part-00000-308cb36d-c529-4dc2-83bb-fe6b282a2b1a-c000.zstd.parquet' WHERE confidence > 0.95 LIMIT 5" -f table
+$ pq sql "SELECT id, basic_category, confidence FROM 'https://overturemapswestus2.blob.core.windows.net/release/2026-02-18.0/theme=places/type=place/part-00000-308cb36d-c529-4dc2-83bb-fe6b282a2b1a-c000.zstd.parquet' WHERE confidence > 0.95 LIMIT 5"
 ```
 
 Use `cat --jq` to flatten nested structs into a simpler shape:
@@ -211,7 +211,7 @@ $ pq cat "https://overturemapswestus2.blob.core.windows.net/release/2026-02-18.0
 Pass `--debug` to see every HTTP request, including byte ranges:
 
 ```
-$ pq count "https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2024-01.parquet" -f table --debug
+$ pq count "https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2024-01.parquet" --debug
 [debug] HEAD trip-data/yellow_tripdata_2024-01.parquet  range=full  file_size=50.0 MB  ...
 [debug] GET trip-data/yellow_tripdata_2024-01.parquet  range=Bounded(49961633..49961641)  file_size=50.0 MB  ...
 [debug] GET trip-data/yellow_tripdata_2024-01.parquet  range=Bounded(49955276..49961633)  file_size=50.0 MB  ...

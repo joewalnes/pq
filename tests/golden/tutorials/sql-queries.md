@@ -46,7 +46,7 @@ Converted 8 rows to orders.parquet
 Filter and sort rows:
 
 ```console
-$ pq sql "SELECT customer, product, quantity FROM './orders.parquet' WHERE quantity > 1 ORDER BY quantity DESC" -f table
+$ pq sql "SELECT customer, product, quantity FROM './orders.parquet' WHERE quantity > 1 ORDER BY quantity DESC"
 ╭──────────┬─────────┬──────────╮
 │ customer ┆ product ┆ quantity │
 ╞══════════╪═════════╪══════════╡
@@ -65,7 +65,7 @@ $ pq sql "SELECT customer, product, quantity FROM './orders.parquet' WHERE quant
 Return only the top results:
 
 ```console
-$ pq sql "SELECT product, SUM(quantity) as total_qty FROM './orders.parquet' GROUP BY product ORDER BY total_qty DESC LIMIT 2" -f table
+$ pq sql "SELECT product, SUM(quantity) as total_qty FROM './orders.parquet' GROUP BY product ORDER BY total_qty DESC LIMIT 2"
 ╭─────────┬───────────╮
 │ product ┆ total_qty │
 ╞═════════╪═══════════╡
@@ -80,7 +80,7 @@ $ pq sql "SELECT product, SUM(quantity) as total_qty FROM './orders.parquet' GRO
 Summarize orders per customer:
 
 ```console
-$ pq sql "SELECT customer, COUNT(*) as num_orders, SUM(quantity * price) as total_spent FROM './orders.parquet' GROUP BY customer ORDER BY total_spent DESC" -f table
+$ pq sql "SELECT customer, COUNT(*) as num_orders, SUM(quantity * price) as total_spent FROM './orders.parquet' GROUP BY customer ORDER BY total_spent DESC"
 ╭──────────┬────────────┬─────────────╮
 │ customer ┆ num_orders ┆ total_spent │
 ╞══════════╪════════════╪═════════════╡
@@ -101,7 +101,7 @@ $ pq sql "SELECT customer, COUNT(*) as num_orders, SUM(quantity * price) as tota
 Compute min, max, average, and sum across all orders:
 
 ```console
-$ pq sql "SELECT MIN(price) as min_price, MAX(price) as max_price, ROUND(AVG(price), 2) as avg_price, SUM(quantity) as total_items FROM './orders.parquet'" -f table
+$ pq sql "SELECT MIN(price) as min_price, MAX(price) as max_price, ROUND(AVG(price), 2) as avg_price, SUM(quantity) as total_items FROM './orders.parquet'"
 ╭───────────┬───────────┬───────────┬─────────────╮
 │ min_price ┆ max_price ┆ avg_price ┆ total_items │
 ╞═══════════╪═══════════╪═══════════╪═════════════╡
@@ -114,7 +114,7 @@ $ pq sql "SELECT MIN(price) as min_price, MAX(price) as max_price, ROUND(AVG(pri
 Join users with their orders to see order counts by city:
 
 ```console
-$ pq sql "SELECT u.name, u.city, COUNT(o.order_id) as num_orders FROM './users.parquet' u JOIN './orders.parquet' o ON u.name = o.customer GROUP BY u.name, u.city ORDER BY num_orders DESC" -f table
+$ pq sql "SELECT u.name, u.city, COUNT(o.order_id) as num_orders FROM './users.parquet' u JOIN './orders.parquet' o ON u.name = o.customer GROUP BY u.name, u.city ORDER BY num_orders DESC"
 ╭─────────┬─────────────┬────────────╮
 │ name    ┆ city        ┆ num_orders │
 ╞═════════╪═════════════╪════════════╡

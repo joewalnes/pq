@@ -175,6 +175,7 @@ def run_file(md_path, pq_binary, update=False):
         env["NO_COLOR"] = "1"
         env["COLUMNS"] = "200"
         env["TERM"] = "dumb"
+        env["PQ_FORCE_TTY"] = "1"
         # Put pq binary dir on PATH so `pq` works directly
         env["PATH"] = str(Path(pq_binary).parent) + ":" + env.get("PATH", "")
 
