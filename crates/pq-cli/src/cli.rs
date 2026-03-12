@@ -447,7 +447,16 @@ pub enum Command {
     Capabilities,
 
     /// Generate shell completions
-    #[command(hide = true)]
+    ///
+    /// Add to your ~/.zshrc (zsh):
+    ///   eval "$(pq completions zsh)"
+    ///
+    /// Add to your ~/.bashrc (bash):
+    ///   eval "$(pq completions bash)"
+    ///
+    /// Add to your ~/.config/fish/config.fish (fish):
+    ///   pq completions fish | source
+    #[command(hide = true, verbatim_doc_comment)]
     Completions {
         /// Shell to generate completions for
         shell: clap_complete::Shell,

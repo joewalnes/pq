@@ -131,7 +131,7 @@ def parse_blocks(lines):
     return blocks
 
 
-def run_command(cmd, cwd, env):
+def run_command(cmd, cwd, env, timeout=30):
     """Execute a shell command and return (output, exit_code)."""
     result = subprocess.run(
         ["sh", "-c", cmd],
@@ -139,7 +139,7 @@ def run_command(cmd, cwd, env):
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         env=env,
-        timeout=30,
+        timeout=timeout,
     )
     output = result.stdout.decode("utf-8", errors="replace")
     # Strip trailing newline for comparison
@@ -160,6 +160,10 @@ def run_file(md_path, pq_binary, update=False):
 
     # Normalize: keep newlines for rewriting but strip for parsing
     raw_lines = [line.rstrip("\n") for line in lines]
+
+    # Detect if this is a network test (longer timeouts for remote files)
+    full_text = "\n".join(raw_lines[:20])
+    cmd_timeout = 120 if "<!-- requires: network -->" in full_text else 30
 
     blocks = parse_blocks(raw_lines)
     passed = 0
@@ -185,7 +189,9 @@ def run_file(md_path, pq_binary, update=False):
                 for ci, command in enumerate(block["commands"]):
                     cmd = command["cmd"]
                     try:
-                        actual_output, actual_exit = run_command(cmd, tmpdir, env)
+                        actual_output, actual_exit = run_command(
+                            cmd, tmpdir, env, timeout=cmd_timeout,
+                        )
                     except subprocess.TimeoutExpired:
                         line_num = block["line"] + 2  # approximate
                         print(f"  TIMEOUT: {md_path}:{line_num}: $ {cmd}")
@@ -331,6 +337,11 @@ def main():
         action="store_true",
         help="Update expected output in markdown files to match actual output",
     )
+    parser.add_argument(
+        "--network",
+        action="store_true",
+        help="Include tests that require network access (<!-- requires: network -->)",
+    )
     args = parser.parse_args()
 
     pq_binary = find_pq_binary()
@@ -350,6 +361,7 @@ def main():
 
     total_passed = 0
     total_failed = 0
+    total_skipped = 0
 
     for md_file in md_files:
         rel = md_file
@@ -357,13 +369,26 @@ def main():
             rel = md_file.relative_to(Path.cwd())
         except ValueError:
             pass
+
+        # Check for <!-- requires: network --> tag
+        if not args.network:
+            with open(md_file, "r") as f:
+                header = f.read(1024)
+            if "<!-- requires: network -->" in header:
+                print(f"Skipping {rel} (needs --network)")
+                total_skipped += 1
+                continue
+
         print(f"Running {rel}...")
         p, f = run_file(str(md_file), pq_binary, update=args.update)
         total_passed += p
         total_failed += f
 
     print()
-    print(f"{total_passed} passed, {total_failed} failed")
+    summary = f"{total_passed} passed, {total_failed} failed"
+    if total_skipped:
+        summary += f", {total_skipped} skipped"
+    print(summary)
 
     if total_failed > 0:
         sys.exit(1)
