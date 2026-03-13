@@ -7,6 +7,9 @@ Content-Security-Policy: script-src 'self'. This script extracts all
 inline scripts into external .js files and replaces them with <script src="...">
 references.
 
+Scripts that appear in <head> and <body> are kept separate so that
+body-dependent code doesn't run before the DOM is ready.
+
 Usage:
     python3 docs/csp-fixup.py          # processes docs/book/
     python3 docs/csp-fixup.py [DIR]    # processes DIR/
@@ -28,32 +31,43 @@ def process_file(html_path: str, book_root: str) -> int:
     if not scripts:
         return 0
 
-    # Combine all inline scripts into one external file per page.
-    combined = "\n".join(m.group(1) for m in scripts)
-    digest = hashlib.sha256(combined.encode()).hexdigest()[:12]
+    # Split scripts into head vs body based on position relative to <body>.
+    body_start = html.find("<body")
+    head_scripts = []
+    body_scripts = []
+    for m in scripts:
+        if m.start() < body_start:
+            head_scripts.append(m)
+        else:
+            body_scripts.append(m)
 
     rel = os.path.relpath(html_path, book_root)
     base = rel.replace(os.sep, "-").removesuffix(".html")
-    js_name = f"_csp/{base}-{digest}.js"
-    js_path = os.path.join(book_root, js_name)
-
-    os.makedirs(os.path.dirname(js_path), exist_ok=True)
-    with open(js_path, "w") as f:
-        f.write(combined)
-
-    # Compute relative path from this HTML file to the JS file.
     html_dir = os.path.dirname(html_path)
-    rel_js = os.path.relpath(js_path, html_dir)
+    os.makedirs(os.path.join(book_root, "_csp"), exist_ok=True)
 
-    # Replace: first inline script becomes the external reference,
-    # remaining inline scripts are removed.
-    first = True
+    js_files = {}  # match object -> (js_path, rel_js)
 
+    for label, group in [("head", head_scripts), ("body", body_scripts)]:
+        if not group:
+            continue
+        combined = "\n".join(m.group(1) for m in group)
+        digest = hashlib.sha256(combined.encode()).hexdigest()[:12]
+        js_name = f"_csp/{base}-{label}-{digest}.js"
+        js_path = os.path.join(book_root, js_name)
+        rel_js = os.path.relpath(js_path, html_dir)
+
+        with open(js_path, "w") as f:
+            f.write(combined)
+
+        # Tag the first match in this group with the external reference.
+        js_files[group[0].start()] = rel_js
+
+    # Replace inline scripts: first in each group becomes external ref,
+    # rest are removed.
     def replacer(m: re.Match) -> str:
-        nonlocal first
-        if first:
-            first = False
-            return f'<script src="{rel_js}"></script>'
+        if m.start() in js_files:
+            return f'<script src="{js_files[m.start()]}"></script>'
         return ""
 
     html = INLINE_SCRIPT.sub(replacer, html)
