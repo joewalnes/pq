@@ -25,6 +25,7 @@ install: build
 docs: build
 	PQ=target/release/pq ./docs/generate-cli-reference.sh
 	mdbook build docs
+	python3 docs/csp-fixup.py
 
 docs-serve: build
 	PQ=target/release/pq ./docs/generate-cli-reference.sh
