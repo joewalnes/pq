@@ -1,4 +1,4 @@
-.PHONY: all build test test-golden test-integration lint install docs docs-serve docs-deploy
+.PHONY: all build test test-golden test-integration lint install docs docs-serve
 
 all: build test lint
 
@@ -30,21 +30,6 @@ docs-serve: build
 	PQ=target/release/pq ./docs/generate-cli-reference.sh
 	mdbook serve docs --open
 
-docs-deploy: docs
-	@echo "Deploying docs to gh-pages branch..."
-	@tmp=$$(mktemp -d) && \
-	git clone --no-checkout . "$$tmp" && \
-	cd "$$tmp" && \
-	  git checkout --orphan gh-pages && \
-	  git rm -rf . >/dev/null 2>&1 || true && \
-	  cp -r "$(CURDIR)/docs/book/." . && \
-	  git add -A && \
-	  git commit -m "Deploy docs" && \
-	  git push "$(CURDIR)" gh-pages && \
-	cd "$(CURDIR)" && \
-	rm -rf "$$tmp" && \
-	git push origin gh-pages && \
-	echo "Done. Enable GitHub Pages for the gh-pages branch in repo settings."
 
 # -- Sample data -----------------------------------------------------------
 # Downloads a variety of public parquet files for manual testing.
