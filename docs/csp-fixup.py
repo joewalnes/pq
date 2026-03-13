@@ -52,6 +52,16 @@ def process_file(html_path: str, book_root: str) -> int:
         if not group:
             continue
         combined = "\n".join(m.group(1) for m in group)
+        # Body scripts may reference DOM elements that haven't been parsed
+        # yet (the external <script> tag sits early in <body>, before the
+        # elements it references). Wrap them in a DOMContentLoaded listener
+        # so they run after the full DOM is available.
+        if label == "body":
+            combined = (
+                "document.addEventListener('DOMContentLoaded', function() {\n"
+                + combined
+                + "\n});\n"
+            )
         digest = hashlib.sha256(combined.encode()).hexdigest()[:12]
         js_name = f"_csp/{base}-{label}-{digest}.js"
         js_path = os.path.join(book_root, js_name)
