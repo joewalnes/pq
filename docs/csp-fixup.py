@@ -7,8 +7,10 @@ Content-Security-Policy: script-src 'self'. This script extracts all
 inline scripts into external .js files and replaces them with <script src="...">
 references.
 
-Scripts that appear in <head> and <body> are kept separate so that
-body-dependent code doesn't run before the DOM is ready.
+Scripts that appear in <head> stay in <head>. Scripts that appear in
+<body> are extracted and their single <script src> reference is moved to
+just before </body> — by that point all DOM elements exist and the
+globals they set are available to mdBook's own book.js.
 
 Usage:
     python3 docs/csp-fixup.py          # processes docs/book/
@@ -46,22 +48,13 @@ def process_file(html_path: str, book_root: str) -> int:
     html_dir = os.path.dirname(html_path)
     os.makedirs(os.path.join(book_root, "_csp"), exist_ok=True)
 
-    js_files = {}  # match object -> (js_path, rel_js)
+    js_files = {}  # match start position -> rel_js path
 
+    body_rel_js = None
     for label, group in [("head", head_scripts), ("body", body_scripts)]:
         if not group:
             continue
         combined = "\n".join(m.group(1) for m in group)
-        # Body scripts may reference DOM elements that haven't been parsed
-        # yet (the external <script> tag sits early in <body>, before the
-        # elements it references). Wrap them in a DOMContentLoaded listener
-        # so they run after the full DOM is available.
-        if label == "body":
-            combined = (
-                "document.addEventListener('DOMContentLoaded', function() {\n"
-                + combined
-                + "\n});\n"
-            )
         digest = hashlib.sha256(combined.encode()).hexdigest()[:12]
         js_name = f"_csp/{base}-{label}-{digest}.js"
         js_path = os.path.join(book_root, js_name)
@@ -70,17 +63,31 @@ def process_file(html_path: str, book_root: str) -> int:
         with open(js_path, "w") as f:
             f.write(combined)
 
-        # Tag the first match in this group with the external reference.
-        js_files[group[0].start()] = rel_js
+        if label == "head":
+            # Head: replace the first inline script with the external ref.
+            js_files[group[0].start()] = rel_js
+        else:
+            # Body: we'll inject the tag before </body> instead.
+            body_rel_js = rel_js
 
-    # Replace inline scripts: first in each group becomes external ref,
-    # rest are removed.
+    # Replace inline scripts: head gets external ref in-place,
+    # all body scripts are simply removed.
     def replacer(m: re.Match) -> str:
         if m.start() in js_files:
             return f'<script src="{js_files[m.start()]}"></script>'
         return ""
 
     html = INLINE_SCRIPT.sub(replacer, html)
+
+    # Inject body script right before book-*.js so globals like
+    # default_theme are set before book.js references them, and all DOM
+    # elements preceding this point in the HTML are available.
+    if body_rel_js:
+        book_js = re.search(r'<script src="[^"]*book-[^"]*\.js"></script>', html)
+        if book_js:
+            html = html[:book_js.start()] + f'<script src="{body_rel_js}"></script>\n' + html[book_js.start():]
+        else:
+            html = html.replace("</body>", f'<script src="{body_rel_js}"></script>\n</body>')
 
     with open(html_path, "w") as f:
         f.write(html)
