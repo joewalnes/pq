@@ -84,20 +84,48 @@ nav {{
   align-items: center;
   gap: 0.15rem;
 }}
-nav a {{
+nav .brand {{
+  font-weight: 700;
+  color: var(--fg);
+  text-decoration: none;
+  font-size: 1rem;
+  margin-right: 0.5rem;
+}}
+nav .toggle {{ display: none; }}
+nav .burger {{
+  display: none;
+  cursor: pointer;
+  margin-left: auto;
+  font-size: 1.4rem;
+  color: var(--muted);
+  user-select: none;
+  line-height: 1;
+}}
+nav .links {{ display: contents; }}
+nav .links a {{
   color: var(--muted);
   text-decoration: none;
   padding: 0.3rem 0.5rem;
   border-radius: 4px;
   font-size: 0.9rem;
 }}
-nav a:hover {{ color: var(--fg); }}
-nav a.active {{ color: var(--nav-active); font-weight: 600; }}
-nav .brand {{
-  font-weight: 700;
-  color: var(--fg);
-  margin-right: 0.5rem;
-  font-size: 1rem;
+nav .links a:hover {{ color: var(--fg); }}
+nav .links a.active {{ color: var(--nav-active); font-weight: 600; }}
+@media (max-width: 700px) {{
+  nav {{ flex-wrap: nowrap; }}
+  nav .burger {{ display: block; }}
+  nav .links {{
+    display: none;
+    flex-basis: 100%;
+    flex-direction: column;
+    padding: 0.4rem 0;
+  }}
+  nav .links a {{
+    padding: 0.45rem 0.5rem;
+  }}
+  nav .toggle:checked ~ .links {{
+    display: flex;
+  }}
 }}
 main {{
   max-width: 52rem;
@@ -153,8 +181,12 @@ blockquote {{
 </head>
 <body>
 <nav>
-<span class="brand">pq</span>
+<a class="brand" href=".">pq</a>
+<input type="checkbox" id="nav-toggle" class="toggle">
+<label for="nav-toggle" class="burger" aria-label="Menu">&#9776;</label>
+<div class="links">
 {nav}
+</div>
 </nav>
 <main>
 {content}
