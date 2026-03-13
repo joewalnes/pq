@@ -24,12 +24,11 @@ install: build
 
 docs: build
 	PQ=target/release/pq ./docs/generate-cli-reference.sh
-	mdbook build docs
-	python3 docs/csp-fixup.py
+	python3 docs/build.py
 
 docs-serve: build
 	PQ=target/release/pq ./docs/generate-cli-reference.sh
-	mdbook serve docs --open
+	python3 docs/build.py --serve
 
 
 # -- Sample data -----------------------------------------------------------

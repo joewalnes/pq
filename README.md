@@ -128,11 +128,9 @@ make test-seaweed-down  # stop container
 
 ### Documentation
 
-The docs site is built with [mdBook](https://rust-lang.github.io/mdBook/).
-
 ```sh
-make docs         # build site to docs/book/
-make docs-serve   # build + open in browser with live reload
+make docs         # build site to docs/build/
+make docs-serve   # build + start local server on :8000
 ```
 
 The CLI reference page is auto-generated from `pq --help` output, so it
