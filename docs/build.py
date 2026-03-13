@@ -79,13 +79,15 @@ nav {{
   background: var(--nav-bg);
   border-bottom: 1px solid var(--border);
   padding: 0.5rem 1rem;
-  overflow-x: auto;
-  white-space: nowrap;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.15rem;
 }}
 nav a {{
   color: var(--muted);
   text-decoration: none;
-  padding: 0.4rem 0.6rem;
+  padding: 0.3rem 0.5rem;
   border-radius: 4px;
   font-size: 0.9rem;
 }}
@@ -94,7 +96,7 @@ nav a.active {{ color: var(--nav-active); font-weight: 600; }}
 nav .brand {{
   font-weight: 700;
   color: var(--fg);
-  margin-right: 1rem;
+  margin-right: 0.5rem;
   font-size: 1rem;
 }}
 main {{
