@@ -13,7 +13,9 @@ Usage:
 import http.server
 import os
 import shutil
+import struct
 import sys
+import zlib
 
 import re
 
@@ -42,6 +44,7 @@ TEMPLATE = """\
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title} - pq</title>
+<link rel="icon" type="image/png" href="favicon.png">
 <style>
 :root {{
   --bg: #fff;
@@ -265,6 +268,95 @@ BUILD_DIR = os.path.join(os.path.dirname(__file__), "build")
 MD = markdown.Markdown(extensions=["fenced_code", "tables"])
 
 
+def generate_favicon(path: str) -> None:
+    """Generate a 32x32 pixel-art terminal favicon as PNG."""
+    W, H = 32, 32
+
+    # Colours (RGBA) matching the site palette.
+    T  = (0, 0, 0, 0)                        # transparent (corners)
+    BG = (0x1E, 0x1E, 0x1E, 0xFF)            # window body  (--pre-bg)
+    TB = (0x2D, 0x2D, 0x2D, 0xFF)            # title bar
+    RD = (0xFF, 0x5F, 0x57, 0xFF)            # close dot
+    YL = (0xFE, 0xBC, 0x2E, 0xFF)            # minimise dot
+    GN = (0x28, 0xC8, 0x40, 0xFF)            # maximise dot
+    TX = (0x25, 0x63, 0xEB, 0xFF)            # text  (--link)
+
+    img = [[BG] * W for _ in range(H)]
+
+    # ── Title bar (rows 0-7) ──────────────────────────────────────────────
+    for y in range(8):
+        for x in range(W):
+            img[y][x] = TB
+
+    # Rounded corners (top).
+    for x, y in [(0, 0), (1, 0), (0, 1), (30, 0), (31, 0), (31, 1)]:
+        img[y][x] = T
+    # Rounded corners (bottom).
+    for x, y in [(0, 30), (0, 31), (1, 31), (30, 31), (31, 31), (31, 30)]:
+        img[y][x] = T
+
+    # Traffic-light dots (4x4 rounded).
+    dot = [(1, 0), (2, 0),
+           (0, 1), (1, 1), (2, 1), (3, 1),
+           (0, 2), (1, 2), (2, 2), (3, 2),
+           (1, 3), (2, 3)]
+    for color, bx in [(RD, 3), (YL, 9), (GN, 15)]:
+        for dx, dy in dot:
+            img[2 + dy][bx + dx] = color
+
+    # ── Slab-serif "pq" ──────────────────────────────────────────────────
+    # Each letter: 11px wide x 22px tall, built from filled rectangles.
+    # 3px strokes, geometric bowls, slab serifs on descender terminals.
+    # Rectangles are (x, y, w, h) relative to the letter origin.
+    p_rects = [
+        (0, 0, 11, 2),    # bowl top bar
+        (0, 2, 3, 8),     # bowl left side (= stem upper)
+        (8, 2, 3, 8),     # bowl right side
+        (0, 10, 11, 2),   # bowl bottom bar
+        (0, 12, 3, 8),    # stem lower
+        (-2, 20, 7, 2),   # slab serif (extends into margin)
+    ]
+    q_rects = [
+        (0, 0, 11, 2),    # bowl top bar
+        (0, 2, 3, 8),     # bowl left side
+        (8, 2, 3, 8),     # bowl right side (= stem upper)
+        (0, 10, 11, 2),   # bowl bottom bar
+        (8, 12, 3, 8),    # stem lower
+        (6, 20, 7, 2),    # slab serif (extends into margin)
+    ]
+
+    def fill(rects, ox, oy):
+        for rx, ry, rw, rh in rects:
+            for dy in range(rh):
+                for dx in range(rw):
+                    px, py = ox + rx + dx, oy + ry + dy
+                    if 0 <= px < W and 0 <= py < H:
+                        img[py][px] = TX
+
+    fill(p_rects, 3, 9)     # p: 3px left margin
+    fill(q_rects, 18, 9)    # q: 3+11+4=18  (4px inter-letter gap)
+
+    # ── Encode as PNG (stdlib only, no Pillow) ────────────────────────────
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        c = tag + data
+        crc = zlib.crc32(c) & 0xFFFFFFFF
+        return struct.pack(">I", len(data)) + c + struct.pack(">I", crc)
+
+    raw = b""
+    for row in img:
+        raw += b"\x00"                        # filter byte: None
+        for r, g, b, a in row:
+            raw += bytes((r, g, b, a))
+
+    png = b"\x89PNG\r\n\x1a\n"
+    png += chunk(b"IHDR", struct.pack(">IIBBBBB", W, H, 8, 6, 0, 0, 0))
+    png += chunk(b"IDAT", zlib.compress(raw))
+    png += chunk(b"IEND", b"")
+
+    with open(path, "wb") as f:
+        f.write(png)
+
+
 def md_to_html(src_path: str) -> tuple[str, str]:
     """Convert a markdown file to HTML. Returns (title, html_body)."""
     with open(src_path, "r") as f:
@@ -323,9 +415,13 @@ def build_nav(active_md: str) -> str:
 
 
 def build() -> None:
+    # Remove old HTML files but preserve img/ (demo GIFs are built separately)
     if os.path.exists(BUILD_DIR):
-        shutil.rmtree(BUILD_DIR)
-    os.makedirs(BUILD_DIR)
+        for f in os.listdir(BUILD_DIR):
+            path = os.path.join(BUILD_DIR, f)
+            if os.path.isfile(path):
+                os.remove(path)
+    os.makedirs(BUILD_DIR, exist_ok=True)
 
     for md_name, _label in PAGES:
         src_path = os.path.join(SRC_DIR, md_name)
@@ -340,6 +436,9 @@ def build() -> None:
         out_path = os.path.join(BUILD_DIR, html_path(md_name))
         with open(out_path, "w") as f:
             f.write(html)
+
+    # Generate pixel-art favicon.
+    generate_favicon(os.path.join(BUILD_DIR, "favicon.png"))
 
     print(f"Built {len(PAGES)} pages in {BUILD_DIR}/")
 
