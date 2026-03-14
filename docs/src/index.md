@@ -24,7 +24,7 @@ $ pq head events.parquet -n 3
 │  3 ┆ click ┆     892 ┆ 2025-01-15T08:23:19Z ┆ Denver   │
 ╰────┴───────┴─────────┴──────────────────────┴──────────╯
 
-# SQL queries — reference files directly in FROM
+# SQL queries - reference files directly in FROM
 $ pq sql "SELECT city, count(*) n FROM 'events.parquet' GROUP BY city ORDER BY n DESC LIMIT 3"
 ╭──────────┬───────╮
 │ city     ┆ n     │
@@ -41,7 +41,7 @@ $ pq jq events.parquet '{city, event}' | head -2
 {"city":"Seattle","event":"click"}
 {"city":"Portland","event":"view"}
 
-# Works with remote files too — only fetches the bytes it needs
+# Works with remote files too - lazily fetches only the bytes it needs
 $ pq count "https://example.com/big-dataset.parquet"
 2964624
 ```
@@ -95,7 +95,7 @@ $ pq count "https://example.com/big-dataset.parquet"
 <div class="feature-icon">&#x1F310;</div>
 <div class="feature-body">
 <h3>Remote Files</h3>
-<p>HTTPS, S3, GCS, and Azure URLs work everywhere — only fetches the bytes it needs</p>
+<p>HTTPS, S3, GCS, and Azure URLs work everywhere, lazily fetching only the bytes it needs</p>
 </div></div>
 <div class="feature">
 <div class="feature-icon">&#x1F4CB;</div>
@@ -121,6 +121,6 @@ make install    # builds release binary, copies to ~/.local/bin/pq
 
 ## What's next
 
-- [Interactive Viewer](./viewer.md) — navigate data with the TUI
-- [Getting Started tutorial](./tutorials/getting-started.md) — import, inspect, query, export
-- [CLI Reference](./cli-reference.md) — every command and flag
+- [Interactive Viewer](./viewer.md) - navigate data with the TUI
+- [Getting Started tutorial](./tutorials/getting-started.md) - import, inspect, query, export
+- [CLI Reference](./cli-reference.md) - every command and flag

@@ -25,7 +25,7 @@ $ pq head events.parquet
 │  … │       │         │                      │          │          │        │          │
 └────┴───────┴─────────┴──────────────────────┴──────────┴──────────┴────────┴──────────┘
 
-# SQL queries — reference files directly in FROM
+# SQL queries - reference files directly in FROM
 $ pq sql "SELECT city, count(*) n FROM 'events.parquet' WHERE active GROUP BY city ORDER BY n DESC LIMIT 3"
 ┌──────────┬────────┐
 │ city     │ n      │
@@ -68,33 +68,33 @@ make install    # builds release binary, copies to ~/.local/bin/pq
 ## Features
 
 **Inspection**
-- `pq info` — file summary (size, rows, schema, compression, key-value metadata)
-- `pq schema` — schema in multiple formats (tree, json-schema, arrow, DDL)
-- `pq stats` — column statistics (min, max, null count, distinct count)
-- `pq layout` — physical layout (row groups, column chunks, pages)
+- `pq info` - file summary (size, rows, schema, compression, key-value metadata)
+- `pq schema` - schema in multiple formats (tree, json-schema, arrow, DDL)
+- `pq stats` - column statistics (min, max, null count, distinct count)
+- `pq layout` - physical layout (row groups, column chunks, pages)
 
 **Data access**
-- `pq cat` — dump rows with `--limit`, `--offset`, `--columns`, `--where`, `--jq`
-- `pq head` / `pq tail` — first or last N rows
-- `pq sample` — random sample with optional `--seed` for reproducibility
-- `pq count` — fast row count (reads metadata only, no full scan)
-- `pq sql` — full SQL queries via [Apache DataFusion](https://datafusion.apache.org/)
-- `pq jq` — jq expressions with `--slurp` and `--raw-output`
-- `pq view` — interactive TUI data viewer (default when a file is given without a subcommand)
+- `pq cat` - dump rows with `--limit`, `--offset`, `--columns`, `--where`, `--jq`
+- `pq head` / `pq tail` - first or last N rows
+- `pq sample` - random sample with optional `--seed` for reproducibility
+- `pq count` - fast row count (reads metadata only, no full scan)
+- `pq sql` - full SQL queries via [Apache DataFusion](https://datafusion.apache.org/)
+- `pq jq` - jq expressions with `--slurp` and `--raw-output`
+- `pq view` - interactive TUI data viewer (default when a file is given without a subcommand)
 
 **Transformation**
-- `pq select` — project columns and filter rows into a new Parquet file
-- `pq slice` — extract a row range into a new Parquet file
-- `pq merge` — combine multiple files (strict, union, or intersect schema modes)
-- `pq convert` — create Parquet from JSON, JSONL, or CSV (schema inferred automatically)
+- `pq select` - project columns and filter rows into a new Parquet file
+- `pq slice` - extract a row range into a new Parquet file
+- `pq merge` - combine multiple files (strict, union, or intersect schema modes)
+- `pq convert` - create Parquet from JSON, JSONL, or CSV (schema inferred automatically)
 
-**Output modes** — every command supports all of these:
-- `-O table` — pretty Unicode tables (default in a terminal)
-- `-O jsonl` — one JSON object per line (default when piped)
-- `-O json` — pretty-printed JSON array
-- `-O csv` — RFC 4180 CSV
-- `-O plain` — tab-separated values
-- `pq capabilities` — machine-readable tool description for AI agents
+**Output modes** - every command supports all of these:
+- `-O table` - pretty Unicode tables (default in a terminal)
+- `-O jsonl` - one JSON object per line (default when piped)
+- `-O json` - pretty-printed JSON array
+- `-O csv` - RFC 4180 CSV
+- `-O plain` - tab-separated values
+- `pq capabilities` - machine-readable tool description for AI agents
 
 ## Building from source
 
@@ -136,7 +136,7 @@ make docs-serve   # build + start local server on :8000
 The CLI reference page is auto-generated from `pq --help` output, so it
 stays in sync with the code. The generator runs as part of `make docs`.
 
-The tutorials double as integration tests — each one is a markdown file in
+The tutorials double as integration tests - each one is a markdown file in
 `tests/golden/tutorials/` that the test harness executes, comparing actual
 output against the expected output embedded in the doc. This means tutorials
 can't go stale: if the CLI output changes, the tests fail.

@@ -49,21 +49,21 @@ required. Use `--debug` to see the exact HTTP requests.
 
 ## What cloud storage is supported?
 
-- **S3** — `s3://bucket/path.parquet` (uses `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_DEFAULT_REGION`)
-- **GCS** — `gs://bucket/path.parquet` (uses `GOOGLE_APPLICATION_CREDENTIALS`)
-- **Azure** — `az://container/path.parquet` (uses `AZURE_STORAGE_ACCOUNT_NAME`, `AZURE_STORAGE_ACCESS_KEY`)
-- **HTTPS** — any public URL, no auth needed
+- **S3** - `s3://bucket/path.parquet` (uses `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_DEFAULT_REGION`)
+- **GCS** - `gs://bucket/path.parquet` (uses `GOOGLE_APPLICATION_CREDENTIALS`)
+- **Azure** - `az://container/path.parquet` (uses `AZURE_STORAGE_ACCOUNT_NAME`, `AZURE_STORAGE_ACCESS_KEY`)
+- **HTTPS** - any public URL, no auth needed
 
 ## How do I generate shell completions?
 
 ```sh
-# zsh — add to ~/.zshrc
+# zsh - add to ~/.zshrc
 eval "$(pq completions zsh)"
 
-# bash — add to ~/.bashrc
+# bash - add to ~/.bashrc
 eval "$(pq completions bash)"
 
-# fish — add to ~/.config/fish/config.fish
+# fish - add to ~/.config/fish/config.fish
 pq completions fish | source
 ```
 

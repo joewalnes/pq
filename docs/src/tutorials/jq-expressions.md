@@ -102,7 +102,7 @@ $ pq jq employees.parquet '{name: .name, num_skills: (.skills | length)}'
 {"name":"Hank","num_skills":2}
 ```
 
-Explode arrays — `.skills[]` emits one output per element:
+Explode arrays: `.skills[]` emits one output per element:
 
 ```text
 $ pq jq employees.parquet '.skills[]' -r

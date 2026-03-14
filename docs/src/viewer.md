@@ -19,7 +19,7 @@ pq view data.parquet     # same thing
 
 ## When to use it
 
-The viewer is useful when you want to explore a file interactively — scroll through rows, check column values, and get a feel for the data. For scripted or piped workflows, use `cat`, `head`, or `sql` instead.
+The viewer is useful when you want to explore a file interactively: scroll through rows, check column values, and get a feel for the data. For scripted or piped workflows, use `cat`, `head`, or `sql` instead.
 
 ## Remote files
 

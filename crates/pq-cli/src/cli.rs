@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 #[derive(Parser)]
 #[command(
     name = "pq",
-    about = "A Parquet Swiss Army Knife — inspect, query, transform, and view Parquet files",
+    about = "A Parquet Swiss Army Knife - inspect, query, transform, and view Parquet files",
     version,
     after_help = "Examples:\n  pq data.parquet                              # open in TUI viewer\n  pq info data.parquet\n  pq cat data.parquet --limit 100\n  pq sql \"SELECT count(*) FROM 'data.parquet'\"\n  pq jq data.parquet '.name'",
     help_template = "\

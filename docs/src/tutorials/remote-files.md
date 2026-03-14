@@ -1,7 +1,7 @@
 # Remote Files
 
-pq can read Parquet files directly from URLs — no download needed. It uses
-HTTP range requests to fetch only the bytes it needs, so metadata commands
+pq can read Parquet files directly from URLs - no download needed. It lazily
+fetches only the bytes it needs via HTTP range requests, so metadata commands
 like `count`, `schema`, and `info` complete in milliseconds even on
 multi-gigabyte files.
 
@@ -23,12 +23,12 @@ GCS, Azure) read credentials from standard environment variables
 Parquet stores its metadata in the file footer. When pq opens a remote file,
 it issues just 2-3 small HTTP requests:
 
-1. **HEAD** — get the file size
-2. **GET** (last 8 bytes) — read the footer length
-3. **GET** (footer range) — read the schema, row counts, and column offsets
+1. **HEAD** - get the file size
+2. **GET** (last 8 bytes) - read the footer length
+3. **GET** (footer range) - read the schema, row counts, and column offsets
 
 This means `pq count` on a 925 MB file transfers under 600 KB. Data commands
-like `head` and `sql` then fetch only the row groups and columns they need —
+like `head` and `sql` then fetch only the row groups and columns they need,
 never the entire file.
 
 ## Example: NYC Taxi Data (HTTPS)
@@ -78,7 +78,7 @@ $ pq head "https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2024-
 ╰─────────────────┴───────────────┴─────────────┴────────────┴──────────────╯
 ```
 
-Run SQL directly against the remote file — DataFusion pushes predicates
+Run SQL directly against the remote file - DataFusion pushes predicates
 down, so only matching row groups are fetched:
 
 ```text
@@ -144,5 +144,5 @@ export AZURE_STORAGE_ACCESS_KEY=...
 pq sql "SELECT * FROM 'az://container/data.parquet' LIMIT 10"
 ```
 
-All commands work identically whether the file is local or remote — the same
+All commands work identically whether the file is local or remote - the same
 range-request optimization applies to S3, GCS, and Azure.

@@ -41,7 +41,7 @@ TEMPLATE = """\
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{title} — pq</title>
+<title>{title} - pq</title>
 <style>
 :root {{
   --bg: #fff;
@@ -149,6 +149,11 @@ h1 .anchor, h2 .anchor {{
 }}
 h1:hover .anchor, h2:hover .anchor {{ opacity: 1; }}
 .cmds a {{ text-decoration: none; }}
+.cmds a code:hover {{
+  background: #3a3a3a;
+  color: #fff;
+  transition: background 0.15s;
+}}
 a {{ color: var(--link); }}
 code {{
   font-family: "SF Mono", Menlo, Consolas, monospace;

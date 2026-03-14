@@ -32,7 +32,7 @@ subcommands=(
     cat <<'HEADER'
 # CLI Reference
 
-> **Auto-generated** — do not edit by hand.
+> **Auto-generated** - do not edit by hand.
 > Run `./docs/generate-cli-reference.sh` to regenerate.
 
 ## pq

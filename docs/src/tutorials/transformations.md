@@ -107,7 +107,7 @@ $ pq count all_products.parquet
 
 ### Schema modes
 
-By default, `merge` uses strict mode — all files must have identical schemas.
+By default, `merge` uses strict mode: all files must have identical schemas.
 Use `--schema-mode` to handle schema differences:
 
 | Mode | Behavior |

@@ -1,12 +1,12 @@
 # CLI Reference
 
-> **Auto-generated** — do not edit by hand.
+> **Auto-generated** - do not edit by hand.
 > Run `./docs/generate-cli-reference.sh` to regenerate.
 
 ## pq
 
 ```text
-A Parquet Swiss Army Knife — inspect, query, transform, and view Parquet files
+A Parquet Swiss Army Knife - inspect, query, transform, and view Parquet files
 
 Usage: pq [OPTIONS] <COMMAND>
 
@@ -42,8 +42,7 @@ I/O:
   import        Import CSV/JSON/JSONL to Parquet
   export        Export Parquet to CSV/JSON/JSONL
 
-  -f, --format <OUTPUT_FORMAT>  Output format (table, json, jsonl, csv, plain) [possible values:
-                                json, jsonl, csv, table, plain]
+  -f, --format <OUTPUT_FORMAT>  Output format (table, json, jsonl, csv, plain) [possible values: json, jsonl, csv, table, plain]
       --color <COLOR>           Color output [default: auto] [possible values: auto, always, never]
   -q, --quiet                   Suppress non-essential output
   -v, --verbose                 Increase verbosity
@@ -71,8 +70,7 @@ Arguments:
   <FILE>  Parquet file path
 
 Options:
-  -f, --format <OUTPUT_FORMAT>  Output format (table, json, jsonl, csv, plain) [possible values:
-                                json, jsonl, csv, table, plain]
+  -f, --format <OUTPUT_FORMAT>  Output format (table, json, jsonl, csv, plain) [possible values: json, jsonl, csv, table, plain]
       --color <COLOR>           Color output [default: auto] [possible values: auto, always, never]
   -q, --quiet                   Suppress non-essential output
   -v, --verbose                 Increase verbosity
@@ -90,8 +88,7 @@ Arguments:
   <FILES>...  Parquet file path(s)
 
 Options:
-  -f, --format <OUTPUT_FORMAT>  Output format (table, json, jsonl, csv, plain) [possible values:
-                                json, jsonl, csv, table, plain]
+  -f, --format <OUTPUT_FORMAT>  Output format (table, json, jsonl, csv, plain) [possible values: json, jsonl, csv, table, plain]
       --color <COLOR>           Color output [default: auto] [possible values: auto, always, never]
   -q, --quiet                   Suppress non-essential output
   -v, --verbose                 Increase verbosity
@@ -163,16 +160,11 @@ Arguments:
   <FILES>...  Parquet file path(s)
 
 Options:
-      --describe                   Include data-level statistics (min, max, mean, stddev, distinct,
-                                   top-K)
-      --top <TOP>                  Number of top frequent values to show per column (with
-                                   --describe) [default: 5]
-      --sample-size <SAMPLE_SIZE>  Maximum rows to read for --describe (0 = all rows) [default:
-                                   100000]
-  -f, --format <OUTPUT_FORMAT>     Output format (table, json, jsonl, csv, plain) [possible values:
-                                   json, jsonl, csv, table, plain]
-      --color <COLOR>              Color output [default: auto] [possible values: auto, always,
-                                   never]
+      --describe                   Include data-level statistics (min, max, mean, stddev, distinct, top-K)
+      --top <TOP>                  Number of top frequent values to show per column (with --describe) [default: 5]
+      --sample-size <SAMPLE_SIZE>  Maximum rows to read for --describe (0 = all rows) [default: 100000]
+  -f, --format <OUTPUT_FORMAT>     Output format (table, json, jsonl, csv, plain) [possible values: json, jsonl, csv, table, plain]
+      --color <COLOR>              Color output [default: auto] [possible values: auto, always, never]
   -q, --quiet                      Suppress non-essential output
   -v, --verbose                    Increase verbosity
   -h, --help                       Print help
@@ -189,8 +181,7 @@ Arguments:
   <FILES>...  Parquet file path(s)
 
 Options:
-  -f, --format <OUTPUT_FORMAT>  Output format (table, json, jsonl, csv, plain) [possible values:
-                                json, jsonl, csv, table, plain]
+  -f, --format <OUTPUT_FORMAT>  Output format (table, json, jsonl, csv, plain) [possible values: json, jsonl, csv, table, plain]
       --color <COLOR>           Color output [default: auto] [possible values: auto, always, never]
   -q, --quiet                   Suppress non-essential output
   -v, --verbose                 Increase verbosity
@@ -208,8 +199,7 @@ Arguments:
   <FILES>...  Parquet file path(s)
 
 Options:
-  -f, --format <OUTPUT_FORMAT>  Output format (table, json, jsonl, csv, plain) [possible values:
-                                json, jsonl, csv, table, plain]
+  -f, --format <OUTPUT_FORMAT>  Output format (table, json, jsonl, csv, plain) [possible values: json, jsonl, csv, table, plain]
       --color <COLOR>           Color output [default: auto] [possible values: auto, always, never]
   -q, --quiet                   Suppress non-essential output
   -v, --verbose                 Increase verbosity
@@ -232,10 +222,8 @@ Options:
   -c, --columns <COLUMNS>       Columns to include (comma-separated)
   -w, --where <WHERE_CLAUSE>    SQL WHERE clause to filter rows
       --jq <JQ>                 jq expression to apply to each row
-  -O, --output <OUTPUT>         Write output to a file (format auto-detected from extension:
-                                .parquet, .json, .jsonl, .csv)
-  -f, --format <OUTPUT_FORMAT>  Output format (table, json, jsonl, csv, plain) [possible values:
-                                json, jsonl, csv, table, plain]
+  -O, --output <OUTPUT>         Write output to a file (format auto-detected from extension: .parquet, .json, .jsonl, .csv)
+  -f, --format <OUTPUT_FORMAT>  Output format (table, json, jsonl, csv, plain) [possible values: json, jsonl, csv, table, plain]
       --color <COLOR>           Color output [default: auto] [possible values: auto, always, never]
   -q, --quiet                   Suppress non-essential output
   -v, --verbose                 Increase verbosity
@@ -255,8 +243,7 @@ Arguments:
 Options:
   -n, --lines <LINES>           Number of rows to show [default: 10]
   -c, --columns <COLUMNS>       Columns to include (comma-separated)
-  -f, --format <OUTPUT_FORMAT>  Output format (table, json, jsonl, csv, plain) [possible values:
-                                json, jsonl, csv, table, plain]
+  -f, --format <OUTPUT_FORMAT>  Output format (table, json, jsonl, csv, plain) [possible values: json, jsonl, csv, table, plain]
       --color <COLOR>           Color output [default: auto] [possible values: auto, always, never]
   -q, --quiet                   Suppress non-essential output
   -v, --verbose                 Increase verbosity
@@ -276,8 +263,7 @@ Arguments:
 Options:
   -n, --lines <LINES>           Number of rows to show [default: 10]
   -c, --columns <COLUMNS>       Columns to include (comma-separated)
-  -f, --format <OUTPUT_FORMAT>  Output format (table, json, jsonl, csv, plain) [possible values:
-                                json, jsonl, csv, table, plain]
+  -f, --format <OUTPUT_FORMAT>  Output format (table, json, jsonl, csv, plain) [possible values: json, jsonl, csv, table, plain]
       --color <COLOR>           Color output [default: auto] [possible values: auto, always, never]
   -q, --quiet                   Suppress non-essential output
   -v, --verbose                 Increase verbosity
@@ -298,8 +284,7 @@ Options:
   -n, --lines <LINES>           Number of rows to sample [default: 10]
       --seed <SEED>             Random seed for reproducibility
   -c, --columns <COLUMNS>       Columns to include (comma-separated)
-  -f, --format <OUTPUT_FORMAT>  Output format (table, json, jsonl, csv, plain) [possible values:
-                                json, jsonl, csv, table, plain]
+  -f, --format <OUTPUT_FORMAT>  Output format (table, json, jsonl, csv, plain) [possible values: json, jsonl, csv, table, plain]
       --color <COLOR>           Color output [default: auto] [possible values: auto, always, never]
   -q, --quiet                   Suppress non-essential output
   -v, --verbose                 Increase verbosity
@@ -317,8 +302,7 @@ Arguments:
   [FILES]...  Parquet file paths
 
 Options:
-  -f, --format <OUTPUT_FORMAT>  Output format (table, json, jsonl, csv, plain) [possible values:
-                                json, jsonl, csv, table, plain]
+  -f, --format <OUTPUT_FORMAT>  Output format (table, json, jsonl, csv, plain) [possible values: json, jsonl, csv, table, plain]
       --color <COLOR>           Color output [default: auto] [possible values: auto, always, never]
   -q, --quiet                   Suppress non-essential output
   -v, --verbose                 Increase verbosity
@@ -403,8 +387,7 @@ Arguments:
 
 Options:
   -o, --output <OUTPUT>
-          Write output to a file (format auto-detected from extension: .parquet, .json, .jsonl,
-          .csv)
+          Write output to a file (format auto-detected from extension: .parquet, .json, .jsonl, .csv)
 
   -f, --format <OUTPUT_FORMAT>
           Output format (table, json, jsonl, csv, plain)
@@ -461,8 +444,7 @@ Options:
           Output raw strings without JSON quoting
 
   -o, --output <OUTPUT>
-          Write output to a file (format auto-detected from extension: .parquet, .json, .jsonl,
-          .csv)
+          Write output to a file (format auto-detected from extension: .parquet, .json, .jsonl, .csv)
 
   -f, --format <OUTPUT_FORMAT>
           Output format (table, json, jsonl, csv, plain)
@@ -542,8 +524,7 @@ Options:
       --offset <OFFSET>         Start offset [default: 0]
       --limit <LIMIT>           Number of rows to extract
   -o, --output <OUTPUT>         Output file path
-  -f, --format <OUTPUT_FORMAT>  Output format (table, json, jsonl, csv, plain) [possible values:
-                                json, jsonl, csv, table, plain]
+  -f, --format <OUTPUT_FORMAT>  Output format (table, json, jsonl, csv, plain) [possible values: json, jsonl, csv, table, plain]
       --color <COLOR>           Color output [default: auto] [possible values: auto, always, never]
   -q, --quiet                   Suppress non-essential output
   -v, --verbose                 Increase verbosity
@@ -562,12 +543,9 @@ Arguments:
 
 Options:
   -o, --output <OUTPUT>            Output file path
-      --schema-mode <SCHEMA_MODE>  Schema reconciliation mode [default: strict] [possible values:
-                                   strict, union, intersect]
-  -f, --format <OUTPUT_FORMAT>     Output format (table, json, jsonl, csv, plain) [possible values:
-                                   json, jsonl, csv, table, plain]
-      --color <COLOR>              Color output [default: auto] [possible values: auto, always,
-                                   never]
+      --schema-mode <SCHEMA_MODE>  Schema reconciliation mode [default: strict] [possible values: strict, union, intersect]
+  -f, --format <OUTPUT_FORMAT>     Output format (table, json, jsonl, csv, plain) [possible values: json, jsonl, csv, table, plain]
+      --color <COLOR>              Color output [default: auto] [possible values: auto, always, never]
   -q, --quiet                      Suppress non-essential output
   -v, --verbose                    Increase verbosity
   -h, --help                       Print help
@@ -587,10 +565,8 @@ Options:
       --rows <ROWS>                  Number of rows per output file
       --partition-by <PARTITION_BY>  Column(s) to partition by (comma-separated, Hive-style output)
   -o, --output <OUTPUT>              Output directory
-  -f, --format <OUTPUT_FORMAT>       Output format (table, json, jsonl, csv, plain) [possible
-                                     values: json, jsonl, csv, table, plain]
-      --color <COLOR>                Color output [default: auto] [possible values: auto, always,
-                                     never]
+  -f, --format <OUTPUT_FORMAT>       Output format (table, json, jsonl, csv, plain) [possible values: json, jsonl, csv, table, plain]
+      --color <COLOR>                Color output [default: auto] [possible values: auto, always, never]
   -q, --quiet                        Suppress non-essential output
   -v, --verbose                      Increase verbosity
   -h, --help                         Print help
@@ -608,12 +584,9 @@ Arguments:
 
 Options:
   -o, --output <OUTPUT>              Output Parquet file path
-  -F, --input-format <INPUT_FORMAT>  Input format (auto-detected from extension if not specified)
-                                     [possible values: json, jsonl, csv]
-  -f, --format <OUTPUT_FORMAT>       Output format (table, json, jsonl, csv, plain) [possible
-                                     values: json, jsonl, csv, table, plain]
-      --color <COLOR>                Color output [default: auto] [possible values: auto, always,
-                                     never]
+  -F, --input-format <INPUT_FORMAT>  Input format (auto-detected from extension if not specified) [possible values: json, jsonl, csv]
+  -f, --format <OUTPUT_FORMAT>       Output format (table, json, jsonl, csv, plain) [possible values: json, jsonl, csv, table, plain]
+      --color <COLOR>                Color output [default: auto] [possible values: auto, always, never]
   -q, --quiet                        Suppress non-essential output
   -v, --verbose                      Increase verbosity
   -h, --help                         Print help
@@ -632,8 +605,7 @@ Arguments:
 Options:
   -o, --output <OUTPUT>         Output file path (default: stdout)
   -l, --limit <LIMIT>           Maximum number of rows to export
-  -f, --format <OUTPUT_FORMAT>  Output format (table, json, jsonl, csv, plain) [possible values:
-                                json, jsonl, csv, table, plain]
+  -f, --format <OUTPUT_FORMAT>  Output format (table, json, jsonl, csv, plain) [possible values: json, jsonl, csv, table, plain]
       --color <COLOR>           Color output [default: auto] [possible values: auto, always, never]
   -q, --quiet                   Suppress non-essential output
   -v, --verbose                 Increase verbosity
