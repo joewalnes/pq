@@ -134,9 +134,21 @@ main {{
   margin: 2rem auto;
   padding: 0 1.5rem;
 }}
+h1, h2 {{ position: relative; }}
 h1 {{ font-size: 1.8rem; margin-top: 0; border-bottom: 1px solid var(--border); padding-bottom: 0.4rem; }}
 h2 {{ font-size: 1.4rem; margin-top: 2rem; }}
 h3 {{ font-size: 1.15rem; margin-top: 1.5rem; }}
+h1 .anchor, h2 .anchor {{
+  color: var(--muted);
+  text-decoration: none;
+  font-weight: 400;
+  margin-left: 0.3rem;
+  opacity: 0;
+  font-size: 0.75em;
+  transition: opacity 0.15s;
+}}
+h1:hover .anchor, h2:hover .anchor {{ opacity: 1; }}
+.cmds a {{ text-decoration: none; }}
 a {{ color: var(--link); }}
 code {{
   font-family: "SF Mono", Menlo, Consolas, monospace;
@@ -262,6 +274,16 @@ def md_to_html(src_path: str) -> tuple[str, str]:
         if line.startswith("# "):
             title = line[2:].strip()
             break
+
+    # Add id anchors to h1 and h2 headings with a discoverable link icon.
+    def add_anchor(m: re.Match) -> str:
+        tag = m.group(1)
+        text = m.group(2)
+        slug = re.sub(r"[^\w\s-]", "", text.lower())
+        slug = re.sub(r"[\s]+", "-", slug).strip("-")
+        return f'<{tag} id="{slug}">{text} <a class="anchor" href="#{slug}">#</a></{tag}>'
+
+    body = re.sub(r"<(h[12])>(.*?)</\1>", add_anchor, body)
 
     # Rewrite .md links to .html and flatten paths (tutorials/foo.md -> tutorials-foo.html)
     # so links work in the built site while keeping .md links valid on GitHub.

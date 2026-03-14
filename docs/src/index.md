@@ -46,48 +46,50 @@ $ pq count "https://example.com/big-dataset.parquet"
 2964624
 ```
 
+## Features
+
 <div class="features">
 <div class="feature">
 <div class="feature-icon">&#x1F50D;</div>
 <div class="feature-body">
 <h3>Inspect</h3>
 <p>File summary, schema, column statistics, physical layout, and validation</p>
-<div class="cmds"><code>info</code> <code>schema</code> <code>stats</code> <code>layout</code> <code>validate</code></div>
+<div class="cmds"><a href="cli-reference.html#pq-info"><code>info</code></a> <a href="cli-reference.html#pq-schema"><code>schema</code></a> <a href="cli-reference.html#pq-stats"><code>stats</code></a> <a href="cli-reference.html#pq-layout"><code>layout</code></a> <a href="cli-reference.html#pq-validate"><code>validate</code></a></div>
 </div></div>
 <div class="feature">
 <div class="feature-icon">&#x1F4CA;</div>
 <div class="feature-body">
 <h3>Read</h3>
 <p>Dump rows, preview head/tail, random sample, fast count, regex search</p>
-<div class="cmds"><code>cat</code> <code>head</code> <code>tail</code> <code>sample</code> <code>count</code> <code>grep</code></div>
+<div class="cmds"><a href="cli-reference.html#pq-cat"><code>cat</code></a> <a href="cli-reference.html#pq-head"><code>head</code></a> <a href="cli-reference.html#pq-tail"><code>tail</code></a> <a href="cli-reference.html#pq-sample"><code>sample</code></a> <a href="cli-reference.html#pq-count"><code>count</code></a> <a href="cli-reference.html#pq-grep"><code>grep</code></a></div>
 </div></div>
 <div class="feature">
 <div class="feature-icon">&#x26A1;</div>
 <div class="feature-body">
 <h3>Query</h3>
 <p>Full SQL via Apache DataFusion and jq expressions via jaq</p>
-<div class="cmds"><code>sql</code> <code>jq</code></div>
+<div class="cmds"><a href="cli-reference.html#pq-sql"><code>sql</code></a> <a href="cli-reference.html#pq-jq"><code>jq</code></a></div>
 </div></div>
 <div class="feature">
 <div class="feature-icon">&#x1F527;</div>
 <div class="feature-body">
 <h3>Transform</h3>
 <p>Project columns, extract row ranges, combine files, partition splits</p>
-<div class="cmds"><code>select</code> <code>slice</code> <code>merge</code> <code>split</code></div>
+<div class="cmds"><a href="cli-reference.html#pq-select"><code>select</code></a> <a href="cli-reference.html#pq-slice"><code>slice</code></a> <a href="cli-reference.html#pq-merge"><code>merge</code></a> <a href="cli-reference.html#pq-split"><code>split</code></a></div>
 </div></div>
 <div class="feature">
 <div class="feature-icon">&#x1F4E6;</div>
 <div class="feature-body">
 <h3>Import &amp; Export</h3>
 <p>Convert between Parquet, CSV, JSON, and JSONL</p>
-<div class="cmds"><code>import</code> <code>export</code></div>
+<div class="cmds"><a href="cli-reference.html#pq-import"><code>import</code></a> <a href="cli-reference.html#pq-export"><code>export</code></a></div>
 </div></div>
 <div class="feature">
 <div class="feature-icon">&#x1F5A5;</div>
 <div class="feature-body">
 <h3>Interactive Viewer</h3>
 <p>Full-screen TUI with scrolling, column navigation, and remote file support</p>
-<div class="cmds"><code>view</code></div>
+<div class="cmds"><a href="cli-reference.html#pq-view"><code>view</code></a></div>
 </div></div>
 <div class="feature">
 <div class="feature-icon">&#x1F310;</div>
