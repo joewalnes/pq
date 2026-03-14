@@ -15,6 +15,8 @@ import os
 import shutil
 import sys
 
+import re
+
 import markdown
 
 # ── Page registry (defines nav order) ────────────────────────────────────────
@@ -217,6 +219,17 @@ def md_to_html(src_path: str) -> tuple[str, str]:
         if line.startswith("# "):
             title = line[2:].strip()
             break
+
+    # Rewrite .md links to .html and flatten paths (tutorials/foo.md -> tutorials-foo.html)
+    # so links work in the built site while keeping .md links valid on GitHub.
+    def rewrite_link(m: re.Match) -> str:
+        url = m.group(1)
+        url = url.removeprefix("./")
+        url = url.replace("/", "-")
+        url = url.removesuffix(".md") + ".html"
+        return f'href="{url}"'
+
+    body = re.sub(r'href="([^"]*?\.md)"', rewrite_link, body)
 
     return title, body
 
