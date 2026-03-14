@@ -1,5 +1,5 @@
 .PHONY: all build test test-golden test-integration lint install docs docs-serve \
-       release release-darwin-arm64 release-linux-amd64 release-linux-arm64 clean-release
+       release clean-release
 
 all: build test lint
 
@@ -61,29 +61,30 @@ docs/build/img/%.gif: demos/%.py $(DEMO_DRIVER) target/release/pq
 
 DIST_DIR := dist
 CROSS := $(HOME)/.cargo/bin/cross
+RUST_SOURCES := $(shell find crates Cargo.toml Cargo.lock -name '*.rs' -o -name 'Cargo.toml' -o -name 'Cargo.lock' 2>/dev/null)
 
-.PHONY: release release-darwin-arm64 release-linux-amd64 release-linux-arm64 clean-release
+.PHONY: release clean-release
 
-release: release-darwin-arm64 release-linux-amd64 release-linux-arm64
+release: $(DIST_DIR)/pq-darwin-arm64/pq $(DIST_DIR)/pq-linux-amd64/pq $(DIST_DIR)/pq-linux-arm64/pq
 
 $(CROSS):
 	cargo install cross --git https://github.com/cross-rs/cross
 
-release-darwin-arm64:
+$(DIST_DIR)/pq-darwin-arm64/pq: $(RUST_SOURCES)
 	rustup target add aarch64-apple-darwin
 	cargo build --release --target aarch64-apple-darwin
-	@mkdir -p $(DIST_DIR)
-	cp target/aarch64-apple-darwin/release/pq $(DIST_DIR)/pq-darwin-arm64
+	@mkdir -p $(DIST_DIR)/pq-darwin-arm64
+	cp target/aarch64-apple-darwin/release/pq $@
 
-release-linux-amd64: $(CROSS)
+$(DIST_DIR)/pq-linux-amd64/pq: $(RUST_SOURCES) | $(CROSS)
 	$(CROSS) build --release --target x86_64-unknown-linux-musl
-	@mkdir -p $(DIST_DIR)
-	cp target/x86_64-unknown-linux-musl/release/pq $(DIST_DIR)/pq-linux-amd64
+	@mkdir -p $(DIST_DIR)/pq-linux-amd64
+	cp target/x86_64-unknown-linux-musl/release/pq $@
 
-release-linux-arm64: $(CROSS)
+$(DIST_DIR)/pq-linux-arm64/pq: $(RUST_SOURCES) | $(CROSS)
 	$(CROSS) build --release --target aarch64-unknown-linux-musl
-	@mkdir -p $(DIST_DIR)
-	cp target/aarch64-unknown-linux-musl/release/pq $(DIST_DIR)/pq-linux-arm64
+	@mkdir -p $(DIST_DIR)/pq-linux-arm64
+	cp target/aarch64-unknown-linux-musl/release/pq $@
 
 clean-release:
 	rm -rf $(DIST_DIR)
