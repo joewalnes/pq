@@ -177,28 +177,50 @@ blockquote {{
 }}
 .features {{
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+  grid-template-columns: 1fr 1fr;
   gap: 0.75rem;
   margin: 1.5rem 0;
 }}
 .feature {{
-  background: var(--code-bg);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 0.9rem 1rem;
+  border-radius: 8px;
+  padding: 1rem 1rem 0.9rem;
+  display: flex;
+  gap: 0.8rem;
+  align-items: flex-start;
 }}
-.feature h3 {{
-  margin: 0 0 0.3rem 0;
+.feature-icon {{
+  font-size: 1.5rem;
+  line-height: 1;
+  flex-shrink: 0;
+  padding-top: 0.1rem;
+}}
+.feature-body h3 {{
+  margin: 0 0 0.2rem 0;
   font-size: 0.95rem;
-  color: var(--link);
 }}
-.feature code {{
-  font-size: 0.82rem;
+.feature-body p {{
+  margin: 0 0 0.4rem 0;
+  font-size: 0.85rem;
+  color: var(--muted);
+  line-height: 1.45;
+}}
+.feature-body .cmds {{
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}}
+.feature-body .cmds code {{
+  font-size: 0.78rem;
+  background: var(--pre-bg);
+  color: var(--pre-fg);
+  padding: 0.15em 0.5em;
+  border-radius: 3px;
 }}
 @media (max-width: 600px) {{
   main {{ padding: 0 1rem; }}
   pre {{ font-size: 0.8rem; padding: 0.75rem; }}
-  .features {{ grid-template-columns: 1fr 1fr; }}
+  .features {{ grid-template-columns: 1fr; }}
 }}
 </style>
 </head>

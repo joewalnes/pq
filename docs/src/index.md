@@ -48,39 +48,59 @@ $ pq count "https://example.com/big-dataset.parquet"
 
 <div class="features">
 <div class="feature">
-<h3>Inspection</h3>
-<code>info</code> <code>schema</code> <code>stats</code> <code>layout</code> <code>validate</code>
-</div>
+<div class="feature-icon">&#x1F50D;</div>
+<div class="feature-body">
+<h3>Inspect</h3>
+<p>File summary, schema, column statistics, physical layout, and validation</p>
+<div class="cmds"><code>info</code> <code>schema</code> <code>stats</code> <code>layout</code> <code>validate</code></div>
+</div></div>
 <div class="feature">
-<h3>Data Access</h3>
-<code>cat</code> <code>head</code> <code>tail</code> <code>sample</code> <code>count</code> <code>grep</code>
-</div>
+<div class="feature-icon">&#x1F4CA;</div>
+<div class="feature-body">
+<h3>Read</h3>
+<p>Dump rows, preview head/tail, random sample, fast count, regex search</p>
+<div class="cmds"><code>cat</code> <code>head</code> <code>tail</code> <code>sample</code> <code>count</code> <code>grep</code></div>
+</div></div>
 <div class="feature">
+<div class="feature-icon">&#x26A1;</div>
+<div class="feature-body">
 <h3>Query</h3>
-<code>sql</code> via Apache DataFusion<br>
-<code>jq</code> via jaq
-</div>
+<p>Full SQL via Apache DataFusion and jq expressions via jaq</p>
+<div class="cmds"><code>sql</code> <code>jq</code></div>
+</div></div>
 <div class="feature">
+<div class="feature-icon">&#x1F527;</div>
+<div class="feature-body">
 <h3>Transform</h3>
-<code>select</code> <code>slice</code> <code>merge</code> <code>split</code>
-</div>
+<p>Project columns, extract row ranges, combine files, partition splits</p>
+<div class="cmds"><code>select</code> <code>slice</code> <code>merge</code> <code>split</code></div>
+</div></div>
 <div class="feature">
-<h3>I/O</h3>
-<code>import</code> CSV/JSON/JSONL to Parquet<br>
-<code>export</code> Parquet back out
-</div>
+<div class="feature-icon">&#x1F4E6;</div>
+<div class="feature-body">
+<h3>Import &amp; Export</h3>
+<p>Convert between Parquet, CSV, JSON, and JSONL</p>
+<div class="cmds"><code>import</code> <code>export</code></div>
+</div></div>
 <div class="feature">
+<div class="feature-icon">&#x1F5A5;</div>
+<div class="feature-body">
 <h3>Interactive Viewer</h3>
-TUI data viewer with scrolling and column navigation
-</div>
+<p>Full-screen TUI with scrolling, column navigation, and remote file support</p>
+<div class="cmds"><code>view</code></div>
+</div></div>
 <div class="feature">
+<div class="feature-icon">&#x1F310;</div>
+<div class="feature-body">
 <h3>Remote Files</h3>
-HTTPS, S3, GCS, and Azure URLs work everywhere — only fetches the bytes it needs
-</div>
+<p>HTTPS, S3, GCS, and Azure URLs work everywhere — only fetches the bytes it needs</p>
+</div></div>
 <div class="feature">
+<div class="feature-icon">&#x1F4CB;</div>
+<div class="feature-body">
 <h3>Output Formats</h3>
-Pretty tables in a terminal, JSONL when piped. Also: <code>json</code> <code>csv</code> <code>plain</code>
-</div>
+<p>Pretty tables in a terminal, JSONL when piped, plus JSON, CSV, and plain TSV</p>
+</div></div>
 </div>
 
 ## Install
