@@ -3,3 +3,5 @@
 *.parquet
 !tests/fixtures/test_data.parquet
 /docs/build
+__pycache__/
+/dist
