@@ -1,4 +1,5 @@
-.PHONY: all build test test-golden test-integration lint install docs docs-serve
+.PHONY: all build test test-golden test-integration lint install docs docs-serve \
+       release release-darwin-arm64 release-linux-amd64 release-linux-arm64 clean-release
 
 all: build test lint
 
@@ -22,14 +23,70 @@ install: build
 
 # -- Documentation ------------------------------------------------------------
 
-docs: build
+docs: build demos
 	PQ=target/release/pq ./docs/generate-cli-reference.sh
 	python3 docs/build.py
 
-docs-serve: build
+docs-serve: build demos
 	PQ=target/release/pq ./docs/generate-cli-reference.sh
 	python3 docs/build.py --serve
 
+
+# -- Demo GIFs -------------------------------------------------------------
+# Each demos/*.py script produces a GIF in docs/build/img/.
+# Incremental: only re-records when the script, driver, or binary changes.
+
+DEMO_SCRIPTS := $(wildcard demos/*.py)
+DEMO_DRIVER  := demos/driver.py demos/record.sh
+DEMO_GIFS    := $(patsubst demos/%.py,docs/build/img/%.gif,$(filter-out demos/driver.py,$(DEMO_SCRIPTS)))
+
+.PHONY: demos
+
+demos: build $(DEMO_GIFS)
+	@echo "$(words $(DEMO_GIFS)) demo GIF(s) up to date"
+
+docs/build/img/%.gif: demos/%.py $(DEMO_DRIVER) target/release/pq
+	@mkdir -p docs/build/img
+	./demos/record.sh $< $@
+
+# -- Release binaries ------------------------------------------------------
+# Produces static binaries in dist/.
+#   make release                - all platforms
+#   make release-darwin-arm64   - macOS Apple Silicon only
+#   make release-linux-amd64    - Linux x86_64 only
+#   make release-linux-arm64    - Linux ARM64 (Graviton) only
+#
+# Linux targets use musl for fully static binaries. cross is installed
+# automatically if missing. Docker must be running for Linux builds.
+
+DIST_DIR := dist
+CROSS := $(HOME)/.cargo/bin/cross
+
+.PHONY: release release-darwin-arm64 release-linux-amd64 release-linux-arm64 clean-release
+
+release: release-darwin-arm64 release-linux-amd64 release-linux-arm64
+
+$(CROSS):
+	cargo install cross --git https://github.com/cross-rs/cross
+
+release-darwin-arm64:
+	rustup target add aarch64-apple-darwin
+	cargo build --release --target aarch64-apple-darwin
+	@mkdir -p $(DIST_DIR)
+	cp target/aarch64-apple-darwin/release/pq $(DIST_DIR)/pq-darwin-arm64
+
+release-linux-amd64: $(CROSS)
+	$(CROSS) build --release --target x86_64-unknown-linux-musl
+	@mkdir -p $(DIST_DIR)
+	cp target/x86_64-unknown-linux-musl/release/pq $(DIST_DIR)/pq-linux-amd64
+
+release-linux-arm64: $(CROSS)
+	$(CROSS) build --release --target aarch64-unknown-linux-musl
+	@mkdir -p $(DIST_DIR)
+	cp target/aarch64-unknown-linux-musl/release/pq $(DIST_DIR)/pq-linux-arm64
+
+clean-release:
+	rm -rf $(DIST_DIR)
 
 # -- Sample data -----------------------------------------------------------
 # Downloads a variety of public parquet files for manual testing.

@@ -7,6 +7,8 @@ pq data.parquet          # opens the viewer
 pq view data.parquet     # same thing
 ```
 
+![TUI viewer demo](img/tui-viewer.gif)
+
 ## Navigation
 
 | Key | Action |
@@ -28,4 +30,10 @@ The viewer works with remote URLs too. pq fetches row groups on demand as you sc
 ```sh
 pq "https://example.com/data.parquet"
 pq "s3://my-bucket/data.parquet"
+```
+
+Try it with a real dataset — this [Overture Maps](https://overturemaps.org/) places file is ~200 MB, but pq only fetches the bytes it needs:
+
+```sh
+pq "https://overturemapswestus2.blob.core.windows.net/release/2026-02-18.0/theme=places/type=place/part-00000-308cb36d-c529-4dc2-83bb-fe6b282a2b1a-c000.zstd.parquet"
 ```

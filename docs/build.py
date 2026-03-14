@@ -171,7 +171,7 @@ pre {{
   padding: 1rem;
   border-radius: 6px;
   overflow-x: auto;
-  line-height: 1.4;
+  line-height: 1.3;
 }}
 pre code {{
   background: none;
@@ -237,6 +237,16 @@ blockquote {{
   padding: 0.15em 0.5em;
   border-radius: 3px;
 }}
+img {{ max-width: 100%; height: auto; }}
+footer {{
+  max-width: 52rem;
+  margin: 3rem auto 2rem;
+  padding: 1.5rem 1.5rem 0;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 0.85rem;
+}}
+footer a {{ color: var(--muted); }}
 @media (max-width: 600px) {{
   main {{ padding: 0 1rem; }}
   pre {{ font-size: 0.8rem; padding: 0.75rem; }}
@@ -256,6 +266,10 @@ blockquote {{
 <main>
 {content}
 </main>
+<footer>
+Built in Rust by Joe Walnes.
+<a href="https://git.corp.stripe.com/joejoejoe/pq">Source on GitHub</a>.
+</footer>
 </body>
 </html>
 """

@@ -12,6 +12,20 @@ Row Groups:   12
 Columns:      8
 Compression:  ZSTD
 
+# What columns does it have?
+$ pq schema events.parquet
+Schema (8 columns):
+├── id: int64
+├── event: string
+├── user_id: int32
+├── ts: timestamp(us)
+├── city: string
+├── device: string
+├── duration_ms: int32
+╰── payload: struct
+    ├── action: string
+    ╰── metadata: map<string, string>
+
 # Peek at the data
 $ pq head events.parquet -n 3
 ╭────┬───────┬─────────┬──────────────────────┬──────────╮
@@ -89,7 +103,7 @@ $ pq count "https://example.com/big-dataset.parquet"
 <div class="feature-body">
 <h3>Interactive Viewer</h3>
 <p>Full-screen TUI with scrolling, column navigation, and remote file support</p>
-<div class="cmds"><a href="cli-reference.html#pq-view"><code>view</code></a></div>
+<div class="cmds"><a href="viewer.html"><code>view</code></a></div>
 </div></div>
 <div class="feature">
 <div class="feature-icon">&#x1F310;</div>
@@ -105,6 +119,10 @@ $ pq count "https://example.com/big-dataset.parquet"
 </div></div>
 </div>
 
+## Interactive viewer
+
+![TUI viewer demo](img/tui-viewer.gif)
+
 ## Install
 
 ```sh
@@ -119,7 +137,7 @@ cd pq
 make install    # builds release binary, copies to ~/.local/bin/pq
 ```
 
-## What's next
+## Getting started
 
 - [Interactive Viewer](./viewer.md) - navigate data with the TUI
 - [Getting Started tutorial](./tutorials/getting-started.md) - import, inspect, query, export
