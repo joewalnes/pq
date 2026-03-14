@@ -175,9 +175,30 @@ blockquote {{
   padding: 0.5rem 1rem;
   color: var(--muted);
 }}
+.features {{
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+  gap: 0.75rem;
+  margin: 1.5rem 0;
+}}
+.feature {{
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.9rem 1rem;
+}}
+.feature h3 {{
+  margin: 0 0 0.3rem 0;
+  font-size: 0.95rem;
+  color: var(--link);
+}}
+.feature code {{
+  font-size: 0.82rem;
+}}
 @media (max-width: 600px) {{
   main {{ padding: 0 1rem; }}
   pre {{ font-size: 0.8rem; padding: 0.75rem; }}
+  .features {{ grid-template-columns: 1fr 1fr; }}
 }}
 </style>
 </head>
