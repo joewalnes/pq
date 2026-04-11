@@ -275,6 +275,31 @@ footer a {{ color: var(--muted); }}
 Built in Rust by Joe Walnes.
 <a href="https://github.com/joewalnes/pq">Source on GitHub</a>.
 </footer>
+<script>
+(function(){{
+  var fired={{}};
+  function trackOnce(event,props){{
+    var key=event+':'+(props&&props.props&&props.props.method||'');
+    if(fired[key])return;
+    fired[key]=true;
+    if(window.plausible)plausible(event,props);
+  }}
+  document.querySelectorAll('pre').forEach(function(pre){{
+    var text=pre.textContent;
+    var method;
+    if(text.match(/brew install/))method='brew';
+    else if(text.match(/curl.*pq-darwin/))method='curl-darwin';
+    else if(text.match(/curl.*pq-linux-amd64/))method='curl-linux-amd64';
+    else if(text.match(/curl.*pq-linux-arm64/))method='curl-linux-arm64';
+    else if(text.match(/git clone/))method='source';
+    else if(text.match(/cargo install/))method='cargo';
+    if(!method)return;
+    pre.addEventListener('copy',function(){{
+      trackOnce('Install Copy',{{props:{{method:method}}}});
+    }});
+  }});
+}})();
+</script>
 </body>
 </html>
 """
