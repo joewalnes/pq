@@ -21,6 +21,7 @@
 ## Bugs
 
 - [x] TUI: row number unreadable on selected row — Fixed: row number now uses `fg(White)` on selected row, `fg(DarkGray)` otherwise.
+- [ ] P2: Interactive viewer demo GIF missing from docs site — The homepage and viewer page reference `img/tui-viewer.gif` but the GIF has never been committed. `make demos` generates it via `demos/tui-viewer.py` + asciinema + agg, but the docs CI workflow doesn't run this step. Either generate and commit the GIF, or add asciinema/agg to the docs workflow.
 
 ## Infrastructure
 
