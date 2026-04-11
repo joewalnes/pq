@@ -191,6 +191,86 @@ $ pq sql "SELECT u.name, u.city, COUNT(o.order_id) as num_orders
 ╰─────────┴─────────────┴────────────╯
 ```
 
+## Querying nested fields
+
+Parquet files often contain structs, lists, and maps. DataFusion supports
+bracket notation to reach into nested columns.
+
+Create a file with nested data:
+
+**events.json**
+```json
+[
+  {"event": "click", "user_id": 402, "city": "Seattle", "payload": {"action": "buy", "metadata": {"source": "ad", "campaign": "summer"}}},
+  {"event": "view", "user_id": 117, "city": "Portland", "payload": {"action": "browse", "metadata": {"source": "organic", "campaign": null}}},
+  {"event": "click", "user_id": 892, "city": "Denver", "payload": {"action": "buy", "metadata": {"source": "ad", "campaign": "winter"}}},
+  {"event": "view", "user_id": 402, "city": "Seattle", "payload": {"action": "browse", "metadata": {"source": "referral", "campaign": null}}},
+  {"event": "click", "user_id": 117, "city": "Portland", "payload": {"action": "signup", "metadata": {"source": "ad", "campaign": "summer"}}}
+]
+```
+
+```text
+$ pq import events.json -o events.parquet
+Converted 5 rows to events.parquet
+```
+
+Access struct fields with bracket notation:
+
+```text
+$ pq sql "SELECT event, payload['action'] as action, city
+           FROM './events.parquet'
+           WHERE payload['action'] = 'buy'"
+╭───────┬────────┬─────────╮
+│ event ┆ action ┆ city    │
+╞═══════╪════════╪═════════╡
+│ click ┆ buy    ┆ Seattle │
+├╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌┤
+│ click ┆ buy    ┆ Denver  │
+╰───────┴────────┴─────────╯
+```
+
+Reach into deeply nested structs by chaining brackets:
+
+```text
+$ pq sql "SELECT payload['action'] as action,
+                 payload['metadata']['source'] as source,
+                 COUNT(*) as n
+           FROM './events.parquet'
+           GROUP BY payload['action'], payload['metadata']['source']
+           ORDER BY n DESC"
+╭────────┬──────────┬───╮
+│ action ┆ source   ┆ n │
+╞════════╪══════════╪═══╡
+│ buy    ┆ ad       ┆ 2 │
+├╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌┼╌╌╌┤
+│ browse ┆ organic  ┆ 1 │
+├╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌┼╌╌╌┤
+│ browse ┆ referral ┆ 1 │
+├╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌┼╌╌╌┤
+│ signup ┆ ad       ┆ 1 │
+╰────────┴──────────┴───╯
+```
+
+Filter on nested values and join with flat data:
+
+```text
+$ pq sql "SELECT e.city, COUNT(*) as ad_clicks
+           FROM './events.parquet' e
+           WHERE e.event = 'click'
+             AND e.payload['metadata']['source'] = 'ad'
+           GROUP BY e.city
+           ORDER BY ad_clicks DESC"
+╭──────────┬────────────╮
+│ city     ┆ ad_clicks  │
+╞══════════╪════════════╡
+│ Portland ┆ 1          │
+├╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌┤
+│ Denver   ┆ 1          │
+├╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌┤
+│ Seattle  ┆ 1          │
+╰──────────┴────────────╯
+```
+
 ## SQL reference
 
 pq uses [Apache DataFusion](https://datafusion.apache.org/) for SQL execution.
