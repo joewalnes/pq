@@ -196,10 +196,10 @@ $(EXAMPLE_LARGE):
 	python3 generate_test_parquet.py -n 100000000 -o $@
 
 upload-examples: example-data
-	npx wrangler r2 object put $(R2_BUCKET)/orders-100k.parquet --file $(EXAMPLE_SMALL) --content-type application/octet-stream
-	npx wrangler r2 object put $(R2_BUCKET)/orders-100m.parquet --file $(EXAMPLE_LARGE) --content-type application/octet-stream
+	npx wrangler r2 object put $(R2_BUCKET)/orders-100k.parquet --file $(EXAMPLE_SMALL) --content-type application/octet-stream --remote
+	npx wrangler r2 object put $(R2_BUCKET)/orders-100m.parquet --file $(EXAMPLE_LARGE) --content-type application/octet-stream --remote
 	@echo ""
 	@echo "Uploaded to R2 bucket '$(R2_BUCKET)'."
-	@echo "Public URLs (once r2.dev or custom domain is enabled):"
-	@echo "  orders-100k.parquet  (~small, fast download)"
-	@echo "  orders-100m.parquet  (~10GB+, lazy loading demo)"
+	@echo "Public URL: https://pub-ddf4712beead4115ae8b2f653f388b74.r2.dev/"
+	@echo "  orders-100k.parquet  (~20 MB, fast download)"
+	@echo "  orders-100m.parquet  (~10 GB, lazy loading demo)"
