@@ -185,7 +185,7 @@ EXAMPLE_TINY   := $(EXAMPLE_DIR)/orders-10k.parquet
 EXAMPLE_SMALL  := $(EXAMPLE_DIR)/orders-100k.parquet
 EXAMPLE_LARGE  := $(EXAMPLE_DIR)/orders-100m.parquet
 R2_BUCKET      := pq-example-data
-R2_URL         := https://pub-ddf4712beead4115ae8b2f653f388b74.r2.dev
+R2_URL         := https://data.pqtool.dev
 
 example-data: $(EXAMPLE_TINY) $(EXAMPLE_SMALL) $(EXAMPLE_LARGE)
 
