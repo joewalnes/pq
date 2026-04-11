@@ -52,30 +52,16 @@ TEMPLATE = """\
 </script>
 <style>
 :root {{
-  --bg: #fff;
-  --fg: #1a1a1a;
-  --muted: #6b7280;
-  --border: #e5e7eb;
-  --code-bg: #f3f4f6;
-  --pre-bg: #1e1e1e;
+  --bg: #111827;
+  --fg: #e5e7eb;
+  --muted: #9ca3af;
+  --border: #374151;
+  --code-bg: #1f2937;
+  --pre-bg: #0d1117;
   --pre-fg: #d4d4d4;
-  --link: #2563eb;
-  --nav-bg: #f9fafb;
-  --nav-active: #2563eb;
-}}
-@media (prefers-color-scheme: dark) {{
-  :root {{
-    --bg: #111827;
-    --fg: #e5e7eb;
-    --muted: #9ca3af;
-    --border: #374151;
-    --code-bg: #1f2937;
-    --pre-bg: #0d1117;
-    --pre-fg: #d4d4d4;
-    --link: #60a5fa;
-    --nav-bg: #1f2937;
-    --nav-active: #60a5fa;
-  }}
+  --link: #60a5fa;
+  --nav-bg: #1f2937;
+  --nav-active: #60a5fa;
 }}
 *, *::before, *::after {{ box-sizing: border-box; }}
 body {{
