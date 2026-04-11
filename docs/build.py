@@ -268,7 +268,7 @@ footer a {{ color: var(--muted); }}
 </main>
 <footer>
 Built in Rust by Joe Walnes.
-<a href="https://git.corp.stripe.com/joejoejoe/pq">Source on GitHub</a>.
+<a href="https://github.com/joewalnes/pq">Source on GitHub</a>.
 </footer>
 </body>
 </html>
