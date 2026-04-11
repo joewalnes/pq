@@ -45,6 +45,11 @@ TEMPLATE = """\
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title} - pq</title>
 <link rel="icon" type="image/png" href="favicon.png">
+<script async src="https://plausible.io/js/pa-0ZAV_aGzsSe4Lu91CnOCu.js"></script>
+<script>
+  window.plausible=window.plausible||function(){{(plausible.q=plausible.q||[]).push(arguments)}},plausible.init=plausible.init||function(i){{plausible.o=i||{{}}}};
+  plausible.init()
+</script>
 <style>
 :root {{
   --bg: #fff;
