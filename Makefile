@@ -1,7 +1,7 @@
 BUILD_VERSION = $(shell date -u +'%Y-%m-%d %H:%M') $(shell git rev-parse --abbrev-ref HEAD) $(shell git rev-parse --short HEAD) dev
 
 .PHONY: all build test test-golden test-integration lint install docs docs-serve \
-       release clean-release
+       release clean-release example-data upload-examples
 
 all: build test lint
 
@@ -174,3 +174,32 @@ test-integration: test-seaweed-up
 	status=$$?; \
 	$(MAKE) test-seaweed-down; \
 	exit $$status
+
+# -- Example data for public download (R2) ------------------------------------
+# Generates two parquet files and uploads to Cloudflare R2.
+#   make example-data      - generate files locally
+#   make upload-examples   - generate + upload to R2
+
+EXAMPLE_DIR    := data/examples
+EXAMPLE_SMALL  := $(EXAMPLE_DIR)/orders-100k.parquet
+EXAMPLE_LARGE  := $(EXAMPLE_DIR)/orders-100m.parquet
+R2_BUCKET      := pq-example-data
+
+example-data: $(EXAMPLE_SMALL) $(EXAMPLE_LARGE)
+
+$(EXAMPLE_SMALL):
+	@mkdir -p $(EXAMPLE_DIR)
+	python3 generate_test_parquet.py -n 100000 -o $@
+
+$(EXAMPLE_LARGE):
+	@mkdir -p $(EXAMPLE_DIR)
+	python3 generate_test_parquet.py -n 100000000 -o $@
+
+upload-examples: example-data
+	npx wrangler r2 object put $(R2_BUCKET)/orders-100k.parquet --file $(EXAMPLE_SMALL) --content-type application/octet-stream
+	npx wrangler r2 object put $(R2_BUCKET)/orders-100m.parquet --file $(EXAMPLE_LARGE) --content-type application/octet-stream
+	@echo ""
+	@echo "Uploaded to R2 bucket '$(R2_BUCKET)'."
+	@echo "Public URLs (once r2.dev or custom domain is enabled):"
+	@echo "  orders-100k.parquet  (~small, fast download)"
+	@echo "  orders-100m.parquet  (~10GB+, lazy loading demo)"
