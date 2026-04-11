@@ -119,9 +119,8 @@ $ pq count "https://example.com/big-dataset.parquet"
 </div></div>
 </div>
 
-## Interactive viewer
-
-![TUI viewer demo](img/tui-viewer.gif)
+<!-- ## Interactive viewer -->
+<!-- ![TUI viewer demo](img/tui-viewer.gif) -->
 
 ## Install
 

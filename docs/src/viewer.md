@@ -7,7 +7,7 @@ pq data.parquet          # opens the viewer
 pq view data.parquet     # same thing
 ```
 
-![TUI viewer demo](img/tui-viewer.gif)
+<!-- ![TUI viewer demo](img/tui-viewer.gif) -->
 
 ## Navigation
 
