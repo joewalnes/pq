@@ -1,10 +1,12 @@
+BUILD_VERSION = $(shell date -u +'%Y-%m-%d %H:%M') $(shell git rev-parse --abbrev-ref HEAD) $(shell git rev-parse --short HEAD) dev
+
 .PHONY: all build test test-golden test-integration lint install docs docs-serve \
        release clean-release
 
 all: build test lint
 
 build:
-	cargo build --release
+	BUILD_VERSION="$(BUILD_VERSION)" cargo build --release
 
 test:
 	cargo test --workspace

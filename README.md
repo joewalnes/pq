@@ -53,14 +53,38 @@ $ pq view events.parquet
 
 ## Install
 
+### Homebrew (macOS/Linux)
+
 ```sh
-cargo install --path crates/pq-cli
+brew install joewalnes/tap/pq
 ```
 
-Or clone and use the Makefile:
+### Download binary
 
 ```sh
-git clone git@git.corp.stripe.com:joejoejoe/pq.git
+# macOS (Apple Silicon)
+curl -Lo pq https://github.com/joewalnes/pq/releases/latest/download/pq-darwin-arm64
+
+# Linux (x86_64)
+curl -Lo pq https://github.com/joewalnes/pq/releases/latest/download/pq-linux-amd64
+
+# Linux (ARM)
+curl -Lo pq https://github.com/joewalnes/pq/releases/latest/download/pq-linux-arm64
+```
+
+Then make it executable and move it to your PATH:
+
+```sh
+chmod +x pq
+sudo mv pq /usr/local/bin/
+```
+
+### From source
+
+Requires Rust 1.75+:
+
+```sh
+git clone https://github.com/joewalnes/pq.git
 cd pq
 make install    # builds release binary, copies to ~/.local/bin/pq
 ```
@@ -101,7 +125,7 @@ make install    # builds release binary, copies to ~/.local/bin/pq
 Requires Rust 1.75+ and Cargo.
 
 ```sh
-git clone git@git.corp.stripe.com:joejoejoe/pq.git
+git clone https://github.com/joewalnes/pq.git
 cd pq
 make          # build + test + lint
 make build    # cargo build --release
