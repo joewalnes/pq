@@ -282,6 +282,15 @@ impl App {
 
     fn draw(&mut self, frame: &mut Frame) {
         let area = frame.area();
+
+        // Paint the entire background so cells without explicit bg don't
+        // inherit the terminal default (often black), causing a patchwork
+        // of black/grey on some terminals.
+        frame.render_widget(
+            Block::default().style(Style::default().bg(Color::Rgb(30, 30, 30))),
+            area,
+        );
+
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([

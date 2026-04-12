@@ -177,7 +177,7 @@ impl DataTableState {
                 let style = if actual_idx == self.selected_row {
                     Style::default().bg(Color::DarkGray).fg(Color::White)
                 } else {
-                    Style::default()
+                    Style::default().fg(Color::White)
                 };
                 Row::new(cells).style(style)
             })
