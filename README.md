@@ -49,7 +49,30 @@ $ pq convert data.jsonl -o data.parquet
 
 # Interactive TUI viewer (or just: pq events.parquet)
 $ pq view events.parquet
+
+# Works with remote files - lazily fetches only the bytes it needs
+$ pq count "https://data.pqtool.dev/orders-100m.parquet"
+100000000
 ```
+
+## Try it now
+
+No local files needed - public example data is hosted at `data.pqtool.dev`:
+
+```sh
+# Inspect a remote file (fetches only metadata)
+pq schema "https://data.pqtool.dev/orders-10k.parquet"
+
+# SQL query against a remote file
+pq sql "SELECT status, count(*) n
+         FROM 'https://data.pqtool.dev/orders-100k.parquet'
+         GROUP BY status ORDER BY n DESC"
+
+# Count 100 million rows without downloading the 16 GB file
+pq count "https://data.pqtool.dev/orders-100m.parquet"
+```
+
+See [Example Data](https://pqtool.dev/example-data.html) for the full list of files and schema.
 
 ## Install
 

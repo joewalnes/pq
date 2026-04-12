@@ -31,6 +31,7 @@ PAGES = [
     ("tutorials/jq-expressions.md",     "jq Expressions"),
     ("tutorials/transformations.md",    "Transformations"),
     ("tutorials/remote-files.md",       "Remote Files"),
+    ("example-data.md",                 "Example Data"),
     ("cli-reference.md",                "CLI Reference"),
     ("faq.md",                          "FAQ"),
 ]

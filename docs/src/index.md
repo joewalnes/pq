@@ -56,8 +56,8 @@ $ pq jq events.parquet '{city, event}' | head -2
 {"city":"Portland","event":"view"}
 
 # Works with remote files too - lazily fetches only the bytes it needs
-$ pq count "https://example.com/big-dataset.parquet"
-2964624
+$ pq count "https://data.pqtool.dev/orders-100m.parquet"
+100000000
 ```
 
 ## Features
@@ -164,6 +164,7 @@ make install    # builds release binary, copies to ~/.local/bin/pq
 
 ## Getting started
 
+- [Example Data](./example-data.md) - public Parquet files to try pq with (no download needed)
 - [Interactive Viewer](./viewer.md) - navigate data with the TUI
 - [Getting Started tutorial](./tutorials/getting-started.md) - import, inspect, query, export
 - [CLI Reference](./cli-reference.md) - every command and flag

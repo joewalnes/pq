@@ -31,6 +31,28 @@ This means `pq count` on a 925 MB file transfers under 600 KB. Data commands
 like `head` and `sql` then fetch only the row groups and columns they need,
 never the entire file.
 
+## Example: pq example data
+
+Public example files are hosted at `data.pqtool.dev` for trying out pq
+(see [Example Data](./example-data.md) for the full list). The 16 GB file
+is perfect for demonstrating lazy loading:
+
+```text
+$ pq count "https://data.pqtool.dev/orders-100m.parquet"
+100000000
+```
+
+That returns instantly - pq reads only the file footer (~600 bytes), not the
+full 16 GB. You can run SQL against it too:
+
+```sh
+pq sql "SELECT shipping_address['city'] as city, count(*) n
+         FROM 'https://data.pqtool.dev/orders-100k.parquet'
+         GROUP BY shipping_address['city']
+         ORDER BY n DESC
+         LIMIT 5"
+```
+
 ## Example: NYC Taxi Data (HTTPS)
 
 The NYC Taxi & Limousine Commission publishes monthly trip data as public
