@@ -1,0 +1,32 @@
+#!/usr/bin/env node
+const { execFileSync } = require("child_process");
+const path = require("path");
+
+const PLATFORMS = {
+  "darwin arm64": "@pqtool/darwin-arm64",
+  "linux x64": "@pqtool/linux-x64",
+  "linux arm64": "@pqtool/linux-arm64",
+};
+
+const key = `${process.platform} ${process.arch}`;
+const pkg = PLATFORMS[key];
+
+if (!pkg) {
+  console.error(`pq: unsupported platform ${key}`);
+  console.error(`Supported: ${Object.keys(PLATFORMS).join(", ")}`);
+  process.exit(1);
+}
+
+let bin;
+try {
+  bin = path.join(path.dirname(require.resolve(`${pkg}/package.json`)), "bin", "pq");
+} catch {
+  console.error(`pq: platform package ${pkg} is not installed.`);
+  console.error("Try reinstalling: npm install -g pqtool");
+  process.exit(1);
+}
+
+const result = require("child_process").spawnSync(bin, process.argv.slice(2), {
+  stdio: "inherit",
+});
+process.exit(result.status ?? 1);

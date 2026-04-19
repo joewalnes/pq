@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 jobs:
   build:
@@ -82,3 +83,88 @@ jobs:
             --title "Latest" \
             --notes "Built from main at $(git rev-parse --short HEAD)" \
             --latest
+
+  publish-npm:
+    needs: [build, release]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Set version
+        run: |
+          VERSION="0.1.$(date +%Y%m%d%H%M)"
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+
+      - name: Prepare and publish platform packages
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          chmod +x dist/*
+
+          # darwin-arm64
+          cp dist/pq-darwin-arm64 npm/darwin-arm64/bin/pq
+          jq --arg v "$VERSION" '.version = $v' npm/darwin-arm64/package.json > tmp.json && mv tmp.json npm/darwin-arm64/package.json
+          cd npm/darwin-arm64 && npm publish --provenance --access public && cd ../..
+
+          # linux-x64
+          cp dist/pq-linux-amd64 npm/linux-x64/bin/pq
+          jq --arg v "$VERSION" '.version = $v' npm/linux-x64/package.json > tmp.json && mv tmp.json npm/linux-x64/package.json
+          cd npm/linux-x64 && npm publish --provenance --access public && cd ../..
+
+          # linux-arm64
+          cp dist/pq-linux-arm64 npm/linux-arm64/bin/pq
+          jq --arg v "$VERSION" '.version = $v' npm/linux-arm64/package.json > tmp.json && mv tmp.json npm/linux-arm64/package.json
+          cd npm/linux-arm64 && npm publish --provenance --access public && cd ../..
+
+      - name: Publish main package
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          cd npm/pqtool
+          jq --arg v "$VERSION" \
+            '.version = $v | .optionalDependencies["@pqtool/darwin-arm64"] = $v | .optionalDependencies["@pqtool/linux-x64"] = $v | .optionalDependencies["@pqtool/linux-arm64"] = $v' \
+            package.json > tmp.json && mv tmp.json package.json
+          npm publish --provenance --access public
+
+  publish-pypi:
+    needs: [build, release]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    environment: pypi
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Set version
+        run: |
+          VERSION="0.1.$(date +%Y%m%d%H%M)"
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+
+      - name: Build wheels
+        run: |
+          chmod +x dist/*
+          python3 pypi/build_wheels.py --version "$VERSION" --binaries-dir dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: pypi/dist/

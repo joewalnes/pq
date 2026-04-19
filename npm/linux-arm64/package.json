@@ -1,0 +1,9 @@
+{
+  "name": "@pqtool/linux-arm64",
+  "version": "0.0.0",
+  "description": "pq binary for Linux ARM64",
+  "license": "MIT",
+  "os": ["linux"],
+  "cpu": ["arm64"],
+  "preferUnplugged": true
+}
