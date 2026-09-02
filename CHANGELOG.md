@@ -19,6 +19,16 @@
   confirmed to fail against the pre-fix code; `sql_error_chains_are_not_doubled_or_tripled`
   still passes unchanged.
 
+- Fix README's front-page `pq sql` example: `FROM 'events.parquet'` (no
+  `/`) is parsed by DataFusion as `schema.table` and fails to resolve — the
+  exact bug a same-day fix already corrected in `cli.rs`, the CLI
+  reference, and `docs/src/index.md`, but that fix's own guard
+  (`help_examples_tests.rs`) only runs examples extracted from `--help`
+  text and cannot see a markdown file, so `README.md:29` kept the broken
+  form. Changed to `'./events.parquet'`. Considered extending the guard to
+  execute README code blocks too; logged instead of half-building it — see
+  TODO.md.
+
 - Release workflow: close the partial-publish hazard. `publish-npm` and
   `publish-pypi` ran in parallel, so a failure in either left the version
   live on one registry, absent from the other, and reusable on neither.
