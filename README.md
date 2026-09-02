@@ -13,27 +13,28 @@ Rows:         48,291,037
 Row Groups:   12
 Columns:      8
 Compression:  ZSTD
-Created by:   pq 0.1.0
 
 # Peek at the data (pretty tables in a terminal, JSONL when piped)
 $ pq head events.parquet
-┌────┬───────┬─────────┬──────────────────────┬──────────┬──────────┬────────┬──────────┐
-│ id │ event │ user_id │ ts                   │ page     │ duration │ active │ city     │
-├────┼───────┼─────────┼──────────────────────┼──────────┼──────────┼────────┼──────────┤
-│  1 │ click │     402 │ 2025-01-15T08:23:11Z │ /home    │     0.23 │ true   │ Seattle  │
-│  2 │ view  │     117 │ 2025-01-15T08:23:14Z │ /pricing │     1.07 │ true   │ Portland │
-│  … │       │         │                      │          │          │        │          │
-└────┴───────┴─────────┴──────────────────────┴──────────┴──────────┴────────┴──────────┘
+╭────┬───────┬─────────┬─────────────────────┬──────────┬──────────┬────────┬──────────╮
+│ id ┆ event ┆ user_id ┆ ts                  ┆ page     ┆ duration ┆ active ┆ city     │
+╞════╪═══════╪═════════╪═════════════════════╪══════════╪══════════╪════════╪══════════╡
+│ 1  ┆ click ┆ 402     ┆ 2025-01-15T08:23:11 ┆ /home    ┆ 0.23     ┆ true   ┆ Seattle  │
+├╌╌╌╌┼╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌┤
+│ 2  ┆ view  ┆ 117     ┆ 2025-01-15T08:23:14 ┆ /pricing ┆ 1.07     ┆ true   ┆ Portland │
+╰────┴───────┴─────────┴─────────────────────┴──────────┴──────────┴────────┴──────────╯
 
 # SQL queries - reference files directly in FROM
 $ pq sql "SELECT city, count(*) n FROM 'events.parquet' WHERE active GROUP BY city ORDER BY n DESC LIMIT 3"
-┌──────────┬────────┐
-│ city     │ n      │
-├──────────┼────────┤
-│ Seattle  │ 12,485 │
-│ Portland │  9,712 │
-│ Denver   │  8,033 │
-└──────────┴────────┘
+╭──────────┬───────╮
+│ city     ┆ n     │
+╞══════════╪═══════╡
+│ Seattle  ┆ 12485 │
+├╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌┤
+│ Portland ┆ 9712  │
+├╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌┤
+│ Denver   ┆ 8033  │
+╰──────────┴───────╯
 
 # jq expressions
 $ pq jq events.parquet '{city, event}' | head -2
@@ -45,7 +46,7 @@ $ pq cat events.parquet --columns city,event --where "duration > 1.0" | wc -l
 23917
 
 # Create parquet from JSON
-$ pq convert data.jsonl -o data.parquet
+$ pq import data.jsonl -o data.parquet
 
 # Interactive TUI viewer (or just: pq events.parquet)
 $ pq view events.parquet
@@ -125,22 +126,40 @@ make install    # builds release binary, copies to ~/.local/bin/pq
 - `pq head` / `pq tail` - first or last N rows
 - `pq sample` - random sample with optional `--seed` for reproducibility
 - `pq count` - fast row count (reads metadata only, no full scan)
+- `pq grep` - search rows matching a regex across all (or selected) columns
 - `pq sql` - full SQL queries via [Apache DataFusion](https://datafusion.apache.org/)
 - `pq jq` - jq expressions with `--slurp` and `--raw-output`
 - `pq view` - interactive TUI data viewer (default when a file is given without a subcommand)
 
 **Transformation**
-- `pq select` - project columns and filter rows into a new Parquet file
+- `pq select` - project columns into a new Parquet file
 - `pq slice` - extract a row range into a new Parquet file
 - `pq merge` - combine multiple files (strict, union, or intersect schema modes)
-- `pq convert` - create Parquet from JSON, JSONL, or CSV (schema inferred automatically)
+- `pq split` - split a file by row count or partition column (Hive-style output)
 
-**Output modes** - every command supports all of these:
-- `-O table` - pretty Unicode tables (default in a terminal)
-- `-O jsonl` - one JSON object per line (default when piped)
-- `-O json` - pretty-printed JSON array
-- `-O csv` - RFC 4180 CSV
-- `-O plain` - tab-separated values
+**I/O**
+- `pq import` - create Parquet from JSON, JSONL, or CSV (schema inferred automatically)
+- `pq export` - export Parquet to CSV, JSON, or JSONL
+
+**Validation**
+- `pq validate` - check file integrity (footer, schema, statistics, data readability)
+
+**Output modes** - the inspection, data-access, query, and `export` commands
+above render via `-f`/`--format`:
+- `-f table` - pretty Unicode tables (default in a terminal)
+- `-f jsonl` - one JSON object per line (default when piped)
+- `-f json` - pretty-printed JSON array
+- `-f csv` - RFC 4180 CSV
+- `-f plain` - tab-separated values
+
+Commands that write a *file* (`-o` on `sql`/`jq`/`export`, `-O` on `cat`)
+instead of stdout pick the format from the output file's extension by
+default; an explicit `-f` overrides that (see the
+[FAQ](https://pqtool.dev/faq.html)). The transformation commands
+(`select`, `slice`, `merge`, `split`) and `import` always write an actual
+Parquet file and ignore `-f`.
+
+**Other**
 - `pq capabilities` - machine-readable tool description for AI agents
 
 ## Building from source

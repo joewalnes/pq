@@ -37,63 +37,71 @@ pq count "https://data.pqtool.dev/orders-100m.parquet"
 
 ```text
 Schema (30 columns):
-├── order_id: int64
-├── user_id: int32
-├── order_date: date32
-├── created_at: timestamp(us)
+├── order_id: int64 (nullable)
+├── user_id: int32 (nullable)
+├── order_date: date (nullable)
+├── created_at: timestamp(us) (nullable)
 ├── updated_at: timestamp(us) (nullable)
-├── status: string
-├── is_priority: boolean
-├── is_returning_customer: boolean
-├── subtotal: float64
-├── tax_amount: float32
-├── discount_pct: float64
-├── total_amount: float64
-├── currency: string
-├── item_count: int16
-├── customer_name: string
-├── email: string
+├── status: string (nullable)
+├── is_priority: boolean (nullable)
+├── is_returning_customer: boolean (nullable)
+├── subtotal: float64 (nullable)
+├── tax_amount: float32 (nullable)
+├── discount_pct: float64 (nullable)
+├── total_amount: float64 (nullable)
+├── currency: string (nullable)
+├── item_count: int16 (nullable)
+├── customer_name: string (nullable)
+├── email: string (nullable)
 ├── age: int8 (nullable)
 ├── loyalty_points: uint32 (nullable)
-├── weight_kg: decimal128(10,3)
-├── session_token: binary(16)
-├── shipping_address: struct
-│   ├── street: string
-│   ├── city: string
-│   ├── state: string
-│   ├── zip: string
-│   └── country: string
+├── weight_kg: decimal(10,3) (nullable)
+├── session_token: fixed_binary(16) (nullable)
+├── shipping_address: struct (nullable)
+│   ├── street: string (nullable)
+│   ├── city: string (nullable)
+│   ├── state: string (nullable)
+│   ├── zip: string (nullable)
+│   └── country: string (nullable)
 ├── billing_address: struct (nullable)
-│   ├── street: string
-│   ├── city: string
-│   ├── state: string
-│   ├── zip: string
-│   └── country: string
+│   ├── street: string (nullable)
+│   ├── city: string (nullable)
+│   ├── state: string (nullable)
+│   ├── zip: string (nullable)
+│   └── country: string (nullable)
 ├── tags: list<string> (nullable)
 ├── ratings: list<int8> (nullable)
-├── line_items: list<struct>
-│   ├── product_id: int32
-│   ├── product_name: string
-│   ├── quantity: int16
-│   ├── unit_price: float64
-│   └── category: string
-├── payment: struct
-│   ├── method: string
+├── line_items: list<struct> (nullable)
+│   ├── product_id: int32 (nullable)
+│   ├── product_name: string (nullable)
+│   ├── quantity: int16 (nullable)
+│   ├── unit_price: float64 (nullable)
+│   └── category: string (nullable)
+├── payment: struct (nullable)
+│   ├── method: string (nullable)
 │   ├── card_last_four: string (nullable)
-│   └── processor_response: struct
-│       ├── code: string
-│       ├── message: string
-│       └── risk_score: float32
-├── metadata: map<string, string>
+│   └── processor_response: struct (nullable)
+│       ├── code: string (nullable)
+│       ├── message: string (nullable)
+│       └── risk_score: float32 (nullable)
+├── metadata: map (nullable)
+│   ├── key: string
+│   └── value: string (nullable)
 ├── notes: string (nullable)
 ├── referral_source: string (nullable)
-└── session_duration_ms: int64
+└── session_duration_ms: int64 (nullable)
 ```
+
+Verified against `pq schema orders-10k.parquet -f table` (`generate_test_parquet.py`
+marks every top-level and nested field nullable, regardless of its actual null
+rate — the Arrow schema itself doesn't encode "5%-80%", only the data does).
 
 The dataset includes primitives (int, float, bool, string), temporal types
 (date, timestamp), nested structs (including 3-level nesting via
-`payment.processor_response`), lists of scalars and structs, maps, decimals,
-fixed-size binary, and columns with varying null rates (5%-80%).
+`payment.processor_response`), lists of scalars and structs, a map, a
+decimal, fixed-size binary, and columns with varying null rates (5%-80%) —
+the null *rate* varies per column, but the schema marks every column
+nullable.
 
 ## Download locally
 

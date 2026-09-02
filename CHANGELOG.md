@@ -14,6 +14,23 @@
   `stats --describe`); the `union` command item was already satisfied by
   `merge --schema-mode union`, not a separate TODO; one stale `convert`
   reference updated to `import`
+- Correct README.md: `-O` was documented as the output-*format* flag (real
+  flag is `-f`; `-O` on `cat` means `--output <FILE>`), `pq convert` was
+  documented instead of the real `pq import`, `pq select` was documented
+  as filtering rows (it only projects columns), `grep`/`split`/`validate`/
+  `import`/`export` were missing from the feature list entirely, and the
+  flagship example used a table-rendering style (`┌┬┐`/`│`, no row
+  separators, comma-formatted counts, a fabricated `…` truncation row, a
+  `Created by: pq 0.1.0` line the tool never emits) that hasn't matched
+  the real renderer's output (`╭╮╰╯`/`┆`, per-row separators, no comma
+  formatting) since it was written
+- Correct `docs/src/example-data.md` and `docs/src/index.md`: their
+  `pq schema` tree output was fabricated (wrong Unicode box-drawing glyph
+  for the last branch, wrong/missing `(nullable)` markers, invented type
+  names like `date32`/`decimal128`/`binary` instead of the real
+  `date`/`decimal`/`fixed_binary`); replaced with real, verified output.
+  `docs/src/faq.md` updated to describe the new `-f`-vs-extension
+  semantics on `export`/`sql -o`
 
 ## 2026-09-02 (3)
 
