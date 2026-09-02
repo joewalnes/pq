@@ -54,8 +54,47 @@ jobs:
           # string on PyPI than on npm - the exact divergence this job exists
           # to prevent. Supporting pre-releases means normalising per registry
           # first; until then, reject them loudly.
-          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-            echo "::error::Tag '$REF' does not yield a plain X.Y.Z version (got '$version')."
+          #
+          # Canonical only - no leading zeros, digits capped, matched as one
+          # whole string, not line-by-line:
+          # - No leading zeros: npm silently rewrites "01.2.3" to "1.2.3"
+          #   (verified via `npm publish --dry-run`: "version" was cleaned
+          #   and set to "1.2.3"), and PyPI's own PEP 440 reference
+          #   implementation does the same - `packaging.version.Version
+          #   ("01.2.3")` also normalises to "1.2.3" (verified locally
+          #   against pip's vendored copy of `packaging`). A leading-zero
+          #   tag would ship one release under three version strings: the
+          #   git tag, `pq --version`, and whatever each registry stores
+          #   under - exactly the divergence this job exists to prevent.
+          # - Digit cap (9 per component, up to 999,999,999): an oversized
+          #   component passes a bare `[0-9]+` shape but fails downstream
+          #   instead of here - npm hard-rejects it with "Invalid version"
+          #   (verified via dry-run), which would happen *after* `release`
+          #   has already cut an immutable GitHub release: the
+          #   burned-version scenario this job exists to prevent. PyPI's
+          #   PEP 440 parser has no such ceiling (a 22-digit major parses
+          #   and normalises without complaint - verified locally against
+          #   pip's vendored `packaging.version`), so this cap is pq's own
+          #   choice, not a registry's. 9 digits is far beyond any real
+          #   version and comfortably inside every registry's and
+          #   language's integer handling.
+          # - `[[ "$version" =~ $re ]]` instead of `grep -Eq '^...$'`:
+          #   grep's `^`/`$` anchor per *line*, so a version containing an
+          #   embedded newline would pass if any one line matched, and two
+          #   `version=` lines would land in $GITHUB_OUTPUT (last one wins
+          #   for whatever reads it). Bash's `=~` anchors to the whole
+          #   string. Git refuses newlines in ref names today, so there is
+          #   no path in via $REF right now - fixed anyway, since the idiom
+          #   is unsound and nothing guarantees the input stays a ref name.
+          version_re='^(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$'
+          if [[ ! "$version" =~ $version_re ]]; then
+            echo "::error::Tag '$REF' does not yield a canonical X.Y.Z version (got '$version')."
+            echo "::error::Each of X, Y, Z must be '0' or a nonzero digit followed by up"
+            echo "::error::to 8 more digits - no leading zeros, 9 digits max. Leading"
+            echo "::error::zeros are rejected because npm and PyPI both silently rewrite"
+            echo "::error::them (e.g. 01.2.3 -> 1.2.3), which would publish this release"
+            echo "::error::under different version strings on each registry. Retag as"
+            echo "::error::vX.Y.Z, e.g. v0.1.0."
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"

@@ -4,6 +4,41 @@ Latest entries first. Record significant decisions, architecture changes, and no
 
 ---
 
+## 2026-09-02 — The preflight version check guarded the credential, not the version
+
+`preflight`'s job comment says "one source, one value," but its actual check —
+`grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'` — validated shape, not value. Extracted the
+`run:` block with a YAML parser and ran it under bash against creatable git tags:
+`v01.2.3` passed as `01.2.3`, and `v999999999999999999999.0.0` passed as-is.
+Neither is where the bug shows up — it shows up one job downstream. npm's
+`publish --dry-run` on `01.2.3` silently rewrites it to `1.2.3` ("version was
+cleaned and set to"); on the 22-digit major it hard-fails with "Invalid version".
+Since `publish-npm` runs after `release`, the second case is the exact scenario
+the job exists to prevent: an immutable GitHub release cut on a version number no
+registry will ever let you reuse. The first case is worse in a different way —
+nothing fails, so nothing gets noticed, and the release ships under three
+strings (the git tag, `pq --version`, and npm's silently-corrected one).
+
+I checked whether PyPI does the same leading-zero normalization rather than
+inferring it — no `packaging` module in this environment, but `pip` vendors its
+own copy, and `pip._vendor.packaging.version.Version("01.2.3")` also prints as
+`1.2.3`. Same divergence, both registries. The oversized major is the opposite
+story: PEP 440's reference parser accepts a 22-digit component without
+complaint (Python bignums don't care), so there's no registry-side ceiling to
+lean on there — the 9-digit cap in the new regex is pq's own choice, not a
+mirror of anyone else's limit.
+
+The other thing worth recording: `grep -Eq '^...$'` anchors per *line*, not per
+string. A version value with an embedded newline could satisfy the pattern on
+one line while carrying a second `version=` line into `$GITHUB_OUTPUT`, and
+whichever line lands last wins for every consumer downstream. Git currently
+refuses newlines in ref names, so `$REF` can't carry one today — but the
+anchoring bug is independent of that fact, and I don't want to be relying on
+git's ref-name rules to keep a `$GITHUB_OUTPUT` injection closed. Bash's
+`[[ "$x" =~ $re ]]` anchors to the whole string; switched to it and confirmed a
+literal `$'v1.2.3\nversion=9.9.9'` REF is now rejected outright rather than
+partially matched.
+
 ## 2026-09-02 — A rename you can see beats a column you can't reach
 
 Parquet lets two top-level columns share a name. `pq cat` and `pq export` carried
