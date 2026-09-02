@@ -2,6 +2,7 @@
 
 ## 2026-09-01
 
+- Fix data loss: `-o` pointing at an input file no longer destroys it. `merge`, `select`, `slice`, `export` and CSV `import` now stage their output in a sibling temp file and rename it into place, so in-place transforms work and a failed write leaves the destination untouched
 - Add project process docs: CLAUDE.md, engineering diary, changelog
 - Ignore .wrangler/ directory
 

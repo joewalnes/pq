@@ -35,19 +35,23 @@ pub fn slice_rows(input: &Path, opts: &SliceOptions) -> Result<u64> {
     })?;
 
     let schema = reader.schema();
-    let out_file = File::create(&opts.output)?;
-    let props = WriterProperties::builder()
-        .set_compression(opts.compression)
-        .build();
-    let mut writer = ArrowWriter::try_new(out_file, schema, Some(props))?;
 
-    let mut total_rows = 0u64;
-    for batch_result in reader {
-        let batch = batch_result?;
-        total_rows += batch.num_rows() as u64;
-        writer.write(&batch)?;
-    }
+    // Staged write — see `output_guard`. `reader` is lazy.
+    crate::output_guard::with_atomic_output(&opts.output, move |out_path| {
+        let out_file = File::create(out_path)?;
+        let props = WriterProperties::builder()
+            .set_compression(opts.compression)
+            .build();
+        let mut writer = ArrowWriter::try_new(out_file, schema, Some(props))?;
 
-    writer.close()?;
-    Ok(total_rows)
+        let mut total_rows = 0u64;
+        for batch_result in reader {
+            let batch = batch_result?;
+            total_rows += batch.num_rows() as u64;
+            writer.write(&batch)?;
+        }
+
+        writer.close()?;
+        Ok(total_rows)
+    })
 }

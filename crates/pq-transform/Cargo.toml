@@ -11,3 +11,6 @@ serde_json.workspace = true
 thiserror.workspace = true
 csv.workspace = true
 indicatif.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
