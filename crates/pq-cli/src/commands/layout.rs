@@ -39,12 +39,16 @@ pub fn run(file: &str, format: Format) -> anyhow::Result<()> {
             )?;
             writeln!(writer)?;
 
+            let mut row_offset: i64 = 0;
             for rg in &layout.row_groups {
-                let row_end = rg.num_rows.saturating_sub(1);
+                let row_start = row_offset;
+                let row_end = row_start + rg.num_rows.saturating_sub(1).max(0);
+                row_offset += rg.num_rows;
                 writeln!(
                     writer,
-                    "Row Group {} (rows 0\u{2013}{}, {}):",
+                    "Row Group {} (rows {}\u{2013}{}, {}):",
                     rg.index,
+                    format_number(row_start),
                     format_number(row_end),
                     bytesize::ByteSize(rg.total_byte_size as u64),
                 )?;
@@ -68,7 +72,11 @@ pub fn run(file: &str, format: Format) -> anyhow::Result<()> {
                 )?;
 
                 for col in &rg.columns {
-                    let byte_start = col.data_page_offset;
+                    // A dictionary page, when present, precedes the data page
+                    // in the column chunk and is included in
+                    // `compressed_size` — so the chunk's true start is the
+                    // dictionary page offset, not the data page offset.
+                    let byte_start = col.dictionary_page_offset.unwrap_or(col.data_page_offset);
                     let byte_end = byte_start + col.compressed_size;
                     writeln!(
                         writer,

@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-09-02 (5)
+
+- Fix `pq layout`: row group ranges never accumulated an offset (every
+  group reported "rows 0–N"), and a column chunk's byte range started at
+  its data page even when a dictionary page preceded it, understating the
+  chunk. Verified against pyarrow (independent instrument) on a 3-row-group,
+  dictionary-encoded fixture — pq's row starts were 0/0/0 (should be
+  0/100/200) and its first column's byte start was 432 (should be 4, the
+  dictionary page offset). Both now match pyarrow exactly.
+- Fix `tail`/`sample`/`count`/`merge` silently mishandling multiple files:
+  `tail` used only the last file, `sample` only the first, and
+  `count`/`merge` never expanded globs (`resolve_files` was skipped).
+  `tail` now returns the last N rows of the file concatenation (matching
+  `head`'s existing multi-file treatment); `sample` draws N rows uniformly
+  across all files; `count`/`merge` now expand globs like every other
+  multi-file command. A glob matching zero files and a literal missing
+  path now produce distinct errors.
+
 ## 2026-09-02 (4)
 
 - Fix `export`/`sql -o`: an explicit `-f`/`--format` was silently ignored
