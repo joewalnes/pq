@@ -150,64 +150,20 @@ pub fn json_values_to_file(path: &str, values: &[serde_json::Value]) -> anyhow::
 }
 
 /// Run `write` against a staging file and rename it over `dest` on success,
-/// via `pq_transform::output_guard::with_atomic_output` — except when `dest`
-/// names an already-open file descriptor, in which case `write` is handed the
-/// path itself.
+/// via `pq_transform::output_guard::with_atomic_output`.
 ///
-/// **Why the exception exists, and why it is a classification and not a
-/// fallback.** `/dev/stdout`, `/dev/stderr`, `/dev/fd/N` and the `/dev/fd/63`
-/// paths a shell hands to `>(...)` process substitution are aliases for a
-/// descriptor the process already holds, not names of files in a directory.
-/// When that descriptor happens to be redirected to a regular file
-/// (`pq cat x -O /dev/stdout > out.jsonl`), `fs::metadata` on it reports a
-/// regular file, so `output_guard` tries to stage a sibling inside `/dev/fd`
-/// — which devfs refuses — and the whole command fails with
-/// "cannot create a temporary file next to /dev/stdout". That is a real
-/// defect and it already affects `export`, `select`, `sql`, `slice` and
-/// `merge`; fixing it inside `output_guard` was out of scope for the change
-/// that staged `cat`/`jq`, so it is compensated for here and recorded in
-/// `TODO.md`. Piped `/dev/stdout` and plain fifos are already handled by the
-/// guard's own `can_stage` check and do not come through here.
-///
-/// The distinction that keeps this safe: the decision is made up front from
-/// what the destination *is*, never from a staging attempt that failed. An
-/// `Err(_) => write(dest)` fallback is the exact shape that kept the original
-/// data-loss bug reachable (see `output_guard`'s module docs); nothing here
-/// resumes the destructive path after an error.
+/// This used to also classify `dest` as a file-descriptor alias
+/// (`/dev/stdout`, `/dev/stderr`, `/dev/fd/N`) itself and bypass the guard
+/// for those, compensating for a bug in `output_guard::can_stage`: resolving
+/// `/dev/stdout` to `/dev/fd/1` and finding a regular file there (because the
+/// shell had redirected fd 1 to one) made the guard try to stage a sibling
+/// inside `/dev/fd`, which devfs refuses. That compensation lived in the
+/// wrong layer — every other caller of `with_atomic_output` still had the
+/// bug — and has been deleted now that `can_stage` recognises descriptor
+/// aliases itself. See `output_guard`'s module docs (correction 3) for the
+/// measurement and the fix.
 fn staged<T>(dest: &str, write: impl FnOnce(&Path) -> anyhow::Result<T>) -> anyhow::Result<T> {
-    if names_an_open_descriptor(Path::new(dest)) {
-        return write(Path::new(dest));
-    }
     pq_transform::output_guard::with_atomic_output(dest, write)
-}
-
-/// Follow `path`'s symlink chain and report whether it lands in `/dev/fd`.
-///
-/// macOS `/dev/stdout` is a relative symlink to `fd/1`; `/dev/fd/1` itself is
-/// not a symlink, so the chain stops there. On Linux `/dev/stdout` points at
-/// `/proc/self/fd/1`, which the kernel resolves the rest of the way to the
-/// real file — so there the chain leaves `/dev` entirely and staging works,
-/// which is the behaviour we want and which this check does not disturb.
-fn names_an_open_descriptor(path: &Path) -> bool {
-    let mut current = path.to_path_buf();
-    // Same bound the kernel uses for ELOOP.
-    for _ in 0..40 {
-        if current.starts_with("/dev/fd") {
-            return true;
-        }
-        let Ok(target) = std::fs::read_link(&current) else {
-            return false;
-        };
-        current = if target.is_absolute() {
-            target
-        } else {
-            match current.parent() {
-                Some(parent) => parent.join(target),
-                None => target,
-            }
-        };
-    }
-    false
 }
 
 /// Write JSON values to `path` in an **already-resolved** format.
@@ -711,29 +667,5 @@ mod tests {
             "id,name\n1,a\n",
             "json_values_as re-sniffed a .parquet staging name and wrote Parquet"
         );
-    }
-
-    #[test]
-    fn descriptor_aliases_are_recognised_but_ordinary_paths_are_not() {
-        // Only meaningful where these exist; every unix pq supports has them.
-        assert!(names_an_open_descriptor(Path::new("/dev/fd/1")));
-        assert!(names_an_open_descriptor(Path::new("/dev/fd/63")));
-        if std::fs::read_link("/dev/stdout").is_ok() {
-            assert!(
-                names_an_open_descriptor(Path::new("/dev/stdout")),
-                "/dev/stdout must resolve to a descriptor alias, or `-O /dev/stdout > file` \
-                 breaks with 'cannot create a temporary file next to /dev/stdout'"
-            );
-        }
-        // Everything a user would actually stage must go through the guard.
-        let dir = tempfile::TempDir::new().unwrap();
-        let real = dir.path().join("out.jsonl");
-        std::fs::write(&real, "x").unwrap();
-        assert!(!names_an_open_descriptor(&real));
-        let link = dir.path().join("link.jsonl");
-        std::os::unix::fs::symlink(&real, &link).unwrap();
-        assert!(!names_an_open_descriptor(&link));
-        assert!(!names_an_open_descriptor(Path::new("/dev/null")));
-        assert!(!names_an_open_descriptor(Path::new("/dev/shm/out.jsonl")));
     }
 }
