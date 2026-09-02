@@ -5,10 +5,10 @@ use serde_json::Value;
 /// Convert a single row from a RecordBatch to a JSON object
 pub fn batch_row_to_json(batch: &RecordBatch, row_idx: usize) -> Value {
     let schema = batch.schema();
+    let columns = resolve_columns(batch);
     let mut obj = serde_json::Map::new();
     for (col_idx, field) in schema.fields().iter().enumerate() {
-        let col = batch.column(col_idx);
-        let value = array_value_to_json(col.as_ref(), row_idx);
+        let value = array_value_to_json(columns[col_idx].as_ref(), row_idx);
         obj.insert(field.name().clone(), value);
     }
     Value::Object(obj)
@@ -18,17 +18,43 @@ pub fn batch_row_to_json(batch: &RecordBatch, row_idx: usize) -> Value {
 pub fn batch_to_json_rows(batch: &RecordBatch) -> Vec<Value> {
     let mut rows = Vec::with_capacity(batch.num_rows());
     let schema = batch.schema();
+    // Resolve each column once per batch (not once per row). Dictionary
+    // columns in particular require an `arrow::compute::cast` over the
+    // whole array to unpack; doing that inside the per-row loop turns an
+    // O(rows) conversion into O(rows^2) — one full-array cast per row.
+    let columns = resolve_columns(batch);
 
     for row_idx in 0..batch.num_rows() {
         let mut obj = serde_json::Map::new();
         for (col_idx, field) in schema.fields().iter().enumerate() {
-            let col = batch.column(col_idx);
-            let value = array_value_to_json(col.as_ref(), row_idx);
+            let value = array_value_to_json(columns[col_idx].as_ref(), row_idx);
             obj.insert(field.name().clone(), value);
         }
         rows.push(Value::Object(obj));
     }
     rows
+}
+
+/// Resolve each top-level column of a batch once, unpacking dictionary
+/// columns to their value type. This is the hoisted, once-per-batch
+/// counterpart of the per-row dictionary handling in `array_value_to_json`
+/// (which remains as a fallback for dictionaries nested inside lists,
+/// structs, or maps, where it runs once per element rather than once per
+/// row of the whole batch).
+fn resolve_columns(batch: &RecordBatch) -> Vec<ArrayRef> {
+    batch
+        .columns()
+        .iter()
+        .map(|col| match col.data_type() {
+            DataType::Dictionary(_, value_type) => {
+                match arrow::compute::kernels::cast::cast(col.as_ref(), value_type.as_ref()) {
+                    Ok(unpacked) => unpacked,
+                    Err(_) => col.clone(),
+                }
+            }
+            _ => col.clone(),
+        })
+        .collect()
 }
 
 fn array_value_to_json(array: &dyn Array, idx: usize) -> Value {
@@ -301,6 +327,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     // ---- format_decimal_string: exercises the class of bug directly, on
     // the exact function that replaced the broken one-liner. Ground truth
@@ -467,6 +494,45 @@ mod tests {
         match v {
             Value::String(s) => assert_eq!(s, "12345678901234567.89"),
             other => panic!("expected exact string, got {other:?} (lossy number?)"),
+        }
+    }
+
+    // ---- Dictionary column: correctness after hoisting the cast out of
+    // the per-row loop. (The O(n^2) -> O(n) improvement itself is measured
+    // at the CLI level with a real binary and wall-clock/instruction
+    // counts, not asserted here -- a unit test can't establish a
+    // performance claim.)
+
+    #[test]
+    fn dictionary_column_decodes_correctly_via_batch_to_json_rows() {
+        let dict: DictionaryArray<Int32Type> = vec!["red", "green", "red", "blue", "green"]
+            .into_iter()
+            .collect();
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "color",
+            dict.data_type().clone(),
+            false,
+        )]));
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(dict)]).unwrap();
+
+        let rows = batch_to_json_rows(&batch);
+        let colors: Vec<&str> = rows.iter().map(|r| r["color"].as_str().unwrap()).collect();
+        assert_eq!(colors, vec!["red", "green", "red", "blue", "green"]);
+    }
+
+    #[test]
+    fn dictionary_column_decodes_correctly_via_batch_row_to_json() {
+        let dict: DictionaryArray<Int32Type> = vec!["red", "green", "blue"].into_iter().collect();
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "color",
+            dict.data_type().clone(),
+            false,
+        )]));
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(dict)]).unwrap();
+
+        for (i, expected) in ["red", "green", "blue"].iter().enumerate() {
+            let row = batch_row_to_json(&batch, i);
+            assert_eq!(row["color"].as_str().unwrap(), *expected);
         }
     }
 }
