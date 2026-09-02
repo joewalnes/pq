@@ -146,6 +146,19 @@ fn format_flag_name(format: Format) -> &'static str {
     }
 }
 
+/// Write the query results to `staged`, in the format implied by
+/// `display_path` — the destination the *user* named.
+///
+/// The two arguments are deliberately different strings and that is the
+/// whole point. `staged` is a temporary sibling created by
+/// `pq_transform::output_guard`, whose name is derived from the destination
+/// *after* symlink resolution; `display_path` is what the user typed. The
+/// format must come from the latter, decided exactly once, and be handed
+/// down. This used to call `write_batches_to_file(staged, ...)`, which
+/// re-derived the format by sniffing `staged`'s extension — so
+/// `-o link.parquet` where `link.parquet -> target.csv` staged as `...csv`,
+/// the second sniff won, and `pq sql` wrote a CSV file under a `.parquet`
+/// name, exit 0, "Wrote N rows". Never re-sniff a path here.
 fn write_output_file(
     staged: &Path,
     display_path: &str,
@@ -154,9 +167,10 @@ fn write_output_file(
     explicit_format: bool,
 ) -> anyhow::Result<usize> {
     match resolve_output_format(display_path, global_format, explicit_format)? {
-        ResolvedFormat::Parquet => super::write_output::write_batches_to_file(
-            staged.to_str().unwrap_or(display_path),
+        ResolvedFormat::Parquet => super::write_output::write_batches_as(
+            staged,
             batches,
+            super::write_output::OutputFileFormat::Parquet,
         ),
         ResolvedFormat::Text(format) => write_text(staged, batches, format),
     }

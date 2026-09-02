@@ -4,6 +4,30 @@ Latest entries first. Record significant decisions, architecture changes, and no
 
 ---
 
+## 2026-09-02 — Decide the output format once, from the name the user typed
+
+Two features that each parse a filename collided. `sql -o DEST` resolves the
+format from `DEST`'s extension, then hands the writer the *staging* path from
+`output_guard`, and that writer re-sniffed the extension of the path it was
+given. The staging name is built from `resolve_symlinks(DEST)` — the symlink
+*target*'s name — so `-o link.parquet` where `link.parquet -> target.csv`
+staged as `....csv`, the second sniff won, and `pq sql` wrote a CSV file under
+a `.parquet` name with exit 0 and "Wrote 2 rows". Confirmed by magic bytes:
+`69 64 2c 6e` ("id,n") where a control run produced `50 41 52 31` ("PAR1").
+Extensionless and dangling targets produced JSONL and CSV the same way.
+
+The tempting fix — make the staging name mimic the *destination's* extension
+rather than the target's — is a patch on a symptom: it leaves two independent
+derivations of the same fact, and they will drift again the next time either
+side learns a new rule. So the format is decided exactly once, from the string
+the user typed, and passed down: `write_batches_as(path, batches, format)`
+obeys a format it is given, and `write_batches_to_file(path, ...)` (the
+sniffing entry point, still used by `cat -O`/`jq -o`, which pass the real
+destination) is documented as safe only for a path the user named.
+`staging_path`'s doc comment used to *justify* preserving the extension as "so
+callers which sniff the format still see what the user asked for"; that claim
+was false, and the correction now lives there.
+
 ## 2026-09-02 — Union headers align records by name; Arrow batches are positional
 
 The union-header CSV fix deduped field names through a `HashSet` and then

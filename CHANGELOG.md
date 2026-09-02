@@ -12,6 +12,13 @@
   and both columns' data survives. All four batch-to-CSV implementations
   were replaced by one shared implementation, which also makes `-f csv`
   agree cell-for-cell with `-f table`.
+- Fix `pq sql -o <file>` writing the wrong format when the destination is a
+  symlink whose target has a different extension: `-o link.parquet` where
+  `link.parquet -> target.csv` wrote CSV under a `.parquet` name, exit 0.
+  The format was being resolved twice from two different strings — once
+  from the destination the user named, then again by sniffing the staging
+  path (whose name comes from the resolved symlink target). It is now
+  resolved once and passed down.
 
 ## 2026-09-02 (4)
 

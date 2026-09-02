@@ -108,11 +108,22 @@ fn truncate_on_char_boundary(s: &str, max_bytes: usize) -> &str {
 
 /// Build a fresh staging path for `dest`.
 ///
-/// The original extension is preserved so that callers which sniff the output
-/// format from the file extension still see the format the user asked for.
 /// The name is bounded by [`NAME_MAX`]: a 254-character destination name used
 /// to produce a 270-character staging name, `create_new` failed with
 /// `ENAMETOOLONG`, and the old code then wrote straight to the destination.
+///
+/// **The extension here is cosmetic and must not be used to resolve a format.**
+/// An earlier version of this comment claimed the extension was preserved "so
+/// that callers which sniff the output format from the file extension still
+/// see the format the user asked for". That was wrong, and it cost a real bug:
+/// `dest` here is already the *resolved symlink target*, so for
+/// `-o link.parquet` where `link.parquet -> target.csv` the staging name ends
+/// in `.csv`. A caller that sniffed it wrote CSV under a `.parquet` name with
+/// exit 0. The fix is not to make this name mimic the destination — the two
+/// will drift again — but for the caller to resolve the format **once**, from
+/// the path the user typed, and pass it down; see
+/// `pq_cli::commands::write_output::write_batches_as`. The extension survives
+/// only so a leftover staging file is recognisable to a human.
 ///
 /// Returns `None` only for paths that have no parent or no file name (`/`,
 /// `..`), which are not writable destinations under any code path.
@@ -121,9 +132,7 @@ fn staging_path(dest: &Path) -> Option<PathBuf> {
     let name = dest.file_name()?.to_str()?;
     let token = format!("{:016x}", random_token());
     // The separator is a hyphen, not a dot, so that an extensionless
-    // destination yields an extensionless staging name. Callers such as
-    // `write_batches_to_file` pick the output format from the extension, and
-    // the staging file must sniff to exactly what the destination sniffs to.
+    // destination yields an extensionless staging name.
     let ext_part = match dest.extension().and_then(|e| e.to_str()) {
         Some(ext) if !ext.is_empty() && ext.len() <= EXT_BUDGET => format!(".{ext}"),
         _ => String::new(),

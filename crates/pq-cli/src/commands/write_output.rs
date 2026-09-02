@@ -25,26 +25,51 @@ pub fn format_from_extension(path: &str) -> OutputFileFormat {
     }
 }
 
-/// Write RecordBatches to a file, auto-detecting format from extension.
+/// Write RecordBatches to a file in an **already-resolved** format.
 /// Returns the number of rows written.
-pub fn write_batches_to_file(path: &str, batches: &[RecordBatch]) -> anyhow::Result<usize> {
+///
+/// This exists so that a caller which has decided the format from the
+/// destination the *user named* can hand that decision down instead of
+/// letting a second function re-derive it from a different string.
+/// `sql -o` used to resolve the format from the destination name and then
+/// call [`write_batches_to_file`] with the **staging** path; since
+/// `pq_transform::output_guard` builds the staging name from the resolved
+/// *symlink target*, `-o link.parquet` where `link.parquet -> target.csv`
+/// staged as `...csv`, the second sniff won, and CSV bytes landed under a
+/// `.parquet` name with exit 0. Format is decided once; here it is only
+/// obeyed.
+pub fn write_batches_as(
+    path: &Path,
+    batches: &[RecordBatch],
+    format: OutputFileFormat,
+) -> anyhow::Result<usize> {
     let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
 
-    match format_from_extension(path) {
+    match format {
         OutputFileFormat::Parquet => {
             if batches.is_empty() {
                 anyhow::bail!("No data to write");
             }
             let opts = pq_core::writer::WriteOptions::default();
-            pq_core::writer::write_batches(Path::new(path), batches, &opts)?;
+            pq_core::writer::write_batches(path, batches, &opts)?;
         }
-        format => {
+        text => {
             let mut file = std::fs::File::create(path)?;
-            write_batches_text(&mut file, batches, format)?;
+            write_batches_text(&mut file, batches, text)?;
         }
     }
 
     Ok(total_rows)
+}
+
+/// Write RecordBatches to a file, **sniffing** the format from `path`'s
+/// extension. Returns the number of rows written.
+///
+/// Only correct when `path` is the destination the user actually named.
+/// Never call this with a staging path — see [`write_batches_as`] for why
+/// that combination silently wrote the wrong format.
+pub fn write_batches_to_file(path: &str, batches: &[RecordBatch]) -> anyhow::Result<usize> {
+    write_batches_as(Path::new(path), batches, format_from_extension(path))
 }
 
 /// Write JSON values to a file, auto-detecting format from extension.
@@ -431,5 +456,20 @@ mod tests {
         // `val` must appear as its own column and `name` must be blank for
         // the row that has no `name` — not shifted, not dropped.
         assert_eq!(render(&[a, b]), "id,name,val\n1,alice,\n3,,30\n");
+    }
+
+    #[test]
+    fn format_is_taken_from_the_argument_not_the_path() {
+        // The `sql -o` defect at the unit level: a `.csv` path asked to
+        // write Parquet must produce Parquet, never re-sniff its own name.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("staged.csv");
+        write_batches_as(&path, &[dup_id_batch()], OutputFileFormat::Parquet).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(
+            &bytes[..4],
+            b"PAR1",
+            "write_batches_as re-sniffed the path instead of obeying its format argument"
+        );
     }
 }
