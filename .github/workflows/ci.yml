@@ -1,0 +1,73 @@
+name: CI
+
+# Runs the repo's verification recipe (Makefile `lint` and `test` targets).
+#
+# `workflow_call` is what makes this usable as a release gate: `needs:` only
+# resolves job names inside a single workflow file, so release.yml calls this
+# workflow as a job of its own and depends on that job. See release.yml.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install rustfmt and clippy
+        run: rustup component add rustfmt clippy
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-lint-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-lint-
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-test-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-test-
+
+      - name: Unit and integration tests
+        run: cargo test --workspace
+
+      # Reproduces the Makefile exactly:
+      #   test-golden: build
+      #   build:       BUILD_VERSION="..." cargo build --release
+      #   test-golden: PQ=target/release/pq python3 tests/golden/run.py
+      # Invoked through make so the release-build dependency cannot drift.
+      # `--update` must never be added here: it rewrites expectations from
+      # whatever the binary just produced.
+      - name: Golden tests
+        run: make test-golden

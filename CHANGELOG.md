@@ -2,6 +2,7 @@
 
 ## 2026-09-01
 
+- Add CI workflow: fmt, clippy, cargo test, and golden tests on PRs and pushes to main
 - Add project process docs: CLAUDE.md, engineering diary, changelog
 - Ignore .wrangler/ directory
 
