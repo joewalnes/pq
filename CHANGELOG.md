@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-09-02 (5)
+
+- Fix `stats --describe`: the panic-avoidance fix for cross-file schema
+  mismatches over-corrected by comparing whole `arrow::datatypes::Field`s,
+  whose equality also covers nullability and field metadata —
+  `arrow::compute::concat` (the operation being guarded) only cares about
+  `data_type()`. Two files that differed only in nullability (e.g. one
+  written `NOT NULL`, one not) were rejected even though `concat` handles
+  them fine. Now compares column count and `DataType` only. Also: when a
+  real mismatch remains, the error used to render both files' column lists
+  through the friendly `format_dtype`, which can collapse genuinely
+  different types onto the same string (every `Timestamp` unit prints as
+  "timestamp", every same-arity `Struct` prints as "struct<N fields>") and
+  could show two IDENTICAL-looking lists for a real, unmergeable mismatch.
+  The error now renders the exact `DataType` instead.
+
 ## 2026-09-02 (4)
 
 - Fix `export`/`sql -o`: an explicit `-f`/`--format` was silently ignored

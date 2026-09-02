@@ -60,6 +60,19 @@ pub fn run(
     // takes multiple files precisely to combine them, so a schema mismatch
     // across files is a real, easy-to-hit user input — not an edge case —
     // and needs a message that names the mismatched file, not a backtrace.
+    //
+    // The guard must reject exactly what the column-by-column
+    // `arrow::compute::concat` call below would reject, no more. An earlier
+    // version compared whole `arrow::datatypes::Field`s with `!=`, but
+    // `Field`'s `PartialEq` also compares `nullable` and per-field
+    // `metadata` (arrow-schema-53.4.1/src/field.rs:52-59) — properties
+    // `concat` never looks at (arrow-select-53.4.1/src/concat.rs:160-165
+    // compares only `data_type()`). That over-rejected files that `concat`
+    // handles fine: e.g. a file written with a NOT NULL column next to one
+    // without, or files from different writers that set field metadata
+    // differently. `schemas_concat_compatible` below checks only what
+    // `concat` actually requires: same column count, same `DataType` in
+    // each position.
     let mut reference_schema: Option<(&str, arrow::datatypes::SchemaRef)> = None;
     for f in files {
         let file_opts = pq_core::reader::ReadOptions {
@@ -70,12 +83,14 @@ pub fn run(
         match &reference_schema {
             None => reference_schema = Some((f.as_str(), schema)),
             Some((first_file, first_schema)) => {
-                if schema.fields() != first_schema.fields() {
+                if !schemas_concat_compatible(first_schema, &schema) {
                     anyhow::bail!(
                         "Cannot describe files with different schemas: \
                          '{first_file}' has columns [{}], but '{f}' has columns [{}]. \
                          `stats --describe` combines rows across files by column \
-                         position, so all files must share the same schema.",
+                         position, so every file must have the same number of \
+                         columns with matching types (nullability and field \
+                         metadata may differ).",
                         describe_columns(first_schema),
                         describe_columns(&schema),
                     );
@@ -239,12 +254,38 @@ pub fn run(
     Ok(())
 }
 
-/// Render a schema's fields as "name:type, name:type, ..." for error messages.
+/// True when `arrow::compute::concat` can combine these two schemas'
+/// columns position-by-position: same number of fields, and each pair
+/// sharing a `DataType`. This is deliberately narrower than `Schema`/`Field`
+/// equality — nullability and field metadata are irrelevant to `concat`
+/// (see the comment at its call site above) and must not cause a rejection
+/// here.
+fn schemas_concat_compatible(a: &Schema, b: &Schema) -> bool {
+    a.fields().len() == b.fields().len()
+        && a.fields()
+            .iter()
+            .zip(b.fields())
+            .all(|(fa, fb)| fa.data_type() == fb.data_type())
+}
+
+/// Render a schema's fields as "name:type, name:type, ..." for the
+/// different-schemas error.
+///
+/// Deliberately uses `DataType`'s `Debug` output rather than `format_dtype`
+/// (the friendly renderer used for stats display): `format_dtype` collapses
+/// distinct types onto the same string — every `Timestamp(_, _)` prints as
+/// "timestamp" regardless of unit or timezone, every `Struct` with the same
+/// field count prints as "struct<N fields>" regardless of what those fields
+/// are. This function only runs once `schemas_concat_compatible` has found
+/// a genuine `DataType` difference somewhere, and `DataType`'s `Debug` and
+/// `PartialEq` are both derived over the same fields, so two schemas that
+/// differ here are guaranteed to render differently — the error can never
+/// again show two identical-looking column lists for a real mismatch.
 fn describe_columns(schema: &Schema) -> String {
     schema
         .fields()
         .iter()
-        .map(|f| format!("{}:{}", f.name(), format_dtype(f.data_type())))
+        .map(|f| format!("{}:{:?}", f.name(), f.data_type()))
         .collect::<Vec<_>>()
         .join(", ")
 }
