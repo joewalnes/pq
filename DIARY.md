@@ -4,6 +4,39 @@ Latest entries first. Record significant decisions, architecture changes, and no
 
 ---
 
+## 2026-09-02 — TUI panic hook: chain, don't uninstall; verified with a real panic under a pty
+
+`pq view`'s terminal setup/teardown in `commands/view.rs` had no panic hook,
+so any panic inside `App::run` unwound straight past the "leave alt screen /
+disable raw mode / show cursor" cleanup, leaving the user's shell raw and
+blind until `reset`. Fix: `std::panic::take_hook()` the existing hook,
+install a new one that restores the terminal and then calls the old hook
+(so the panic message/backtrace still reaches the user, just on a sane
+terminal), and factor the restore into one `restore_terminal()` fn called
+from both the hook and the normal Ok/Err return path.
+
+Deliberately did **not** try to uninstall the hook and restore the previous
+one after `app.run()` returns normally — `pq view` is a single subcommand
+that returns straight to `main` and exits, so there's no later "real" TUI
+session for a lingering hook to interfere with, and restoring a `Box<dyn
+Fn>` you've already moved into a closure needs an `Arc` and a bit of
+plumbing that buys nothing here. Would need revisiting if `pq` ever grows a
+long-lived mode that opens/closes the TUI more than once per process.
+
+Verified this wasn't a paper fix: found a real, independent panic to drive
+it with (`schema_tree.rs`'s slice-index bug — see below) rather than
+injecting a fake one. Built a throwaway worktree with *only* the view.rs
+hook applied (schema_tree.rs left buggy), drove `pq view` on a genuine
+zero-column Parquet file through `demos/driver.py` in a 3-row pty, pressed
+Tab to hit the Schema pane, and diffed the captured raw bytes against the
+same run on unpatched `main`. Unpatched: panic fires, `\x1b[?1049l` (leave
+alternate screen) never appears in the output at all — the pty is left
+inside the TUI's frozen frame. Patched: the same panic fires, but
+`\x1b[?1049l` appears in the output *before* the "panicked at" text, i.e.
+the terminal is restored first and the panic message prints onto a normal
+screen. That ordering is the actual thing users need; a passing test that
+never made a real terminal look broken would not have proven it.
+
 ## 2026-09-01 — Remote-file tests stay `#[ignore]`d, not moved into the default suite
 
 `crates/pq-cli/tests/remote_tests.rs` (19 tests covering HTTP-range and S3
