@@ -4,6 +4,36 @@ Latest entries first. Record significant decisions, architecture changes, and no
 
 ---
 
+## 2026-09-01 — Remote-file tests stay `#[ignore]`d, not moved into the default suite
+
+`crates/pq-cli/tests/remote_tests.rs` (19 tests covering HTTP-range and S3
+access via SeaweedFS) had never run — every test used `-O <format>`, a
+flag that doesn't exist on most subcommands (clap: "unexpected argument
+'-O' found") and on `cat` specifically means `--output <file>`, so two
+tests silently wrote a stray file named `jsonl` and asserted on empty
+stdout. Fixed the flag (`-f`), fixed two nested-type assertions that
+checked only for a top-level key's presence — weak enough to keep
+passing even if remote nested-type decoding silently dropped
+struct/list fields, a real historical bug class in this codebase (see
+`pq-transform::schema_inference::tests::list_nested_in_struct_is_not_dropped`)
+— and fixed a latent cross-binary bug where `remote_tests.rs` assumed
+`nested_data.parquet` already existed in `tests/fixtures/` because
+`cli_tests.rs` happened to generate it there; `make test-integration`
+runs only `remote_tests`, so that file was never actually present on a
+clean `make test-integration` run. It now generates its own copy into a
+private `TempDir`.
+
+Decision: keep all 19 `#[ignore]`d, gated behind `make test-integration`
+/ `cargo test -- --ignored`, rather than moving them into the default
+`cargo test --workspace` suite. CI runs `cargo test --workspace` with no
+Docker available; un-ignoring would turn every PR red on a dependency
+CI can't satisfy. The trade-off this accepts: remote-access regressions
+are only caught when a human or agent explicitly runs the Docker-backed
+suite, not on every push. What was fixed instead is the failure mode
+when someone does run them without SeaweedFS up — confirmed each test
+now fails loudly (`s3 upload failed for ...`, assert panic, nonzero
+exit) rather than silently skipping or passing for the wrong reason.
+
 ## 2026-09-01 — Tagline drift: picked the ASCII hyphen, deduplicated to one constant
 
 `pq --help` (from `cli.rs`'s clap `about`) and `pq capabilities` (a
