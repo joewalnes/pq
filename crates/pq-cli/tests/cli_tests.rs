@@ -533,6 +533,27 @@ fn test_help() {
         .stdout(predicate::str::contains("Parquet Swiss Army Knife"));
 }
 
+/// `pq --help` and `pq capabilities` used to hand-duplicate the tagline and
+/// had drifted (one had an em-dash, the other an ASCII hyphen) — see
+/// crate::cli::TAGLINE, now the single source both consume. This locks the
+/// exact string so a future edit to only one of them fails loudly instead
+/// of shipping the same tool describing itself two different ways
+/// depending on which subcommand you hit.
+#[test]
+fn test_tagline_matches_between_help_and_capabilities() {
+    let tagline = "A Parquet Swiss Army Knife - inspect, query, transform, and view Parquet files";
+
+    pq().arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(tagline));
+
+    pq().args(["capabilities", "-f", "json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(tagline));
+}
+
 // ── Complex / nested type tests ─────────────────────────────────────────
 
 fn nested_fixture_path() -> String {

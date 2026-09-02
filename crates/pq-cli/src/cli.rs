@@ -1,9 +1,17 @@
 use clap::{Parser, Subcommand, ValueEnum};
 
+/// The one-line description of what `pq` is, shared verbatim between
+/// `pq --help` (via clap's `about`) and `pq capabilities` (machine-readable
+/// output). Previously hand-duplicated in both places and had drifted (one
+/// copy used an em-dash, the other an ASCII hyphen) — keep this the single
+/// source so it can't drift again.
+pub const TAGLINE: &str =
+    "A Parquet Swiss Army Knife - inspect, query, transform, and view Parquet files";
+
 #[derive(Parser)]
 #[command(
     name = "pq",
-    about = "A Parquet Swiss Army Knife - inspect, query, transform, and view Parquet files",
+    about = TAGLINE,
     version = env!("PQ_VERSION"),
     after_help = "Examples:\n  pq data.parquet                              # open in TUI viewer\n  pq info data.parquet\n  pq cat data.parquet --limit 100\n  pq sql \"SELECT count(*) FROM 'data.parquet'\"\n  pq jq data.parquet '.name'",
     help_template = "\

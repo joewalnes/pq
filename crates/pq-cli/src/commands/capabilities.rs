@@ -1,10 +1,11 @@
+use crate::cli::TAGLINE;
 use crate::output::Format;
 
 pub fn run(format: Format) -> anyhow::Result<()> {
     let capabilities = serde_json::json!({
         "tool": "pq",
         "version": env!("CARGO_PKG_VERSION"),
-        "description": "A Parquet Swiss Army Knife — inspect, query, transform, and view Parquet files",
+        "description": TAGLINE,
         "commands": [
             {
                 "name": "info",
