@@ -50,16 +50,14 @@ pub fn json_values_to_file(path: &str, values: &[serde_json::Value]) -> anyhow::
     match format_from_extension(path) {
         OutputFileFormat::Parquet => {
             // Filter to only object values for schema inference
-            let objects: Vec<serde_json::Value> = values
-                .iter()
-                .filter(|v| v.is_object())
-                .cloned()
-                .collect();
+            let objects: Vec<serde_json::Value> =
+                values.iter().filter(|v| v.is_object()).cloned().collect();
             if objects.is_empty() {
-                anyhow::bail!("No object data to write to Parquet (jq output must be JSON objects)");
+                anyhow::bail!(
+                    "No object data to write to Parquet (jq output must be JSON objects)"
+                );
             }
-            let schema =
-                pq_transform::schema_inference::infer_schema_from_json(&objects)?;
+            let schema = pq_transform::schema_inference::infer_schema_from_json(&objects)?;
             let batches =
                 pq_transform::schema_inference::json_values_to_batches(&objects, &schema)?;
             let opts = pq_core::writer::WriteOptions::default();
@@ -109,10 +107,7 @@ fn write_batches_text(
                 }
                 for row in &rows {
                     if let Some(obj) = row.as_object() {
-                        let vals: Vec<String> = obj
-                            .values()
-                            .map(|v| csv_escape(v))
-                            .collect();
+                        let vals: Vec<String> = obj.values().map(csv_escape).collect();
                         writeln!(writer, "{}", vals.join(","))?;
                     }
                 }
@@ -149,7 +144,7 @@ fn write_values_text(
                         writeln!(writer, "{}", keys.join(","))?;
                         wrote_header = true;
                     }
-                    let vals: Vec<String> = obj.values().map(|v| csv_escape(v)).collect();
+                    let vals: Vec<String> = obj.values().map(csv_escape).collect();
                     writeln!(writer, "{}", vals.join(","))?;
                 } else {
                     // Non-object values: write as single column

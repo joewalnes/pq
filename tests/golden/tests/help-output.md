@@ -7,7 +7,7 @@ arguments or descriptions change.
 
 ```console
 $ pq --help
-A Parquet Swiss Army Knife — inspect, query, transform, and view Parquet files
+A Parquet Swiss Army Knife - inspect, query, transform, and view Parquet files
 
 Usage: pq [OPTIONS] <COMMAND>
 

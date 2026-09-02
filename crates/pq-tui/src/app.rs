@@ -271,10 +271,10 @@ impl App {
                     self.data_table.scroll_to_top();
                 }
             }
-            KeyCode::End | KeyCode::Char('G') => {
-                if self.tab == AppTab::Data && self.data_focus == DataFocus::RowList {
-                    self.data_table.scroll_to_bottom();
-                }
+            KeyCode::End | KeyCode::Char('G')
+                if self.tab == AppTab::Data && self.data_focus == DataFocus::RowList =>
+            {
+                self.data_table.scroll_to_bottom();
             }
             _ => {}
         }

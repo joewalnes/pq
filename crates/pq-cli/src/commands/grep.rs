@@ -53,15 +53,14 @@ pub fn run(
             serde_json::to_writer_pretty(&mut writer, &matched_rows)?;
             writeln!(writer)?;
         }
+        // Convert back to record batches for table rendering
+        Format::Table if matched_rows.is_empty() => {
+            writeln!(writer, "No matches found")?;
+        }
         Format::Table => {
-            // Convert back to record batches for table rendering
-            if matched_rows.is_empty() {
-                writeln!(writer, "No matches found")?;
-            } else {
-                for row in &matched_rows {
-                    serde_json::to_writer(&mut writer, row)?;
-                    writeln!(writer)?;
-                }
+            for row in &matched_rows {
+                serde_json::to_writer(&mut writer, row)?;
+                writeln!(writer)?;
             }
         }
         _ => {
