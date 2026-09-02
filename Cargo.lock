@@ -2760,8 +2760,10 @@ name = "pq-query"
 version = "0.1.0"
 dependencies = [
  "arrow",
+ "async-trait",
  "chrono",
  "datafusion",
+ "futures",
  "jaq-core",
  "jaq-interpret",
  "jaq-parse",

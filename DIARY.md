@@ -70,6 +70,49 @@ concurrent load, so it's kept `#[ignore]`d for manual reproduction rather
 than shipped as a gate that reports the state of the dice; a same-bug,
 deterministic repro (`-o` naming an existing directory) carries the guard.
 
+## 2026-09-02 — Refusing a directory, because there is nothing to repair it to
+
+The duplicate-column fix below skipped directory tables on purpose — an earlier
+unconditional version broke them outright with "Is a directory (os error 21)".
+The skip left something worse than the original bug: the same bytes answered
+correctly as `dir.parquet/part0.parquet` and silently wrongly as `dir.parquet`,
+one column gone and the survivor carrying the second column's data under the
+first column's name, exit 0. A user who verified the file path had been taught
+to trust the directory path.
+
+I looked hard for a real fix and concluded there isn't one worth having. A
+directory's files are merged **by column name**; a duplicate name has no
+counterpart to merge with. Given `[id, id, x]` in one file and `[id, x, id]` in
+another, "the second `id`" is a different column in each, and any rule pq picked
+would be a guess presented as data. The only mechanism pq owns for preserving
+duplicates is reading the file and re-registering it under new names, which
+materializes it — and a directory table is precisely the thing that does not fit
+in memory. Trading silent wrong data for a silent OOM is not a fix. The lazy
+alternative (hand `ListingTable` a pre-disambiguated schema) was already tried
+and rejected on evidence for the single-file case: the reader still matches by
+name and substitutes NULLs. That failure belongs to the reader, so it carries
+over unchanged. pyarrow, the independent instrument, refuses the same input
+outright. So pq refuses too, naming the file.
+
+The interesting part was deciding *which* files to check. I nearly hand-rolled a
+recursive walk. Driving the release binary against a directory holding
+`top.parquet`, `k=1/hive.parquet` and `nested/deep.parquet` showed DataFusion
+reads the first two and not the third — `listing_table_ignore_subdirectory`
+defaults to true, but segments containing `=` survive it. A recursive walk would
+refuse queries that are perfectly fine; a flat one would miss the Hive partition
+that really is corrupted. So the check asks DataFusion for its own file list via
+`ListingTableUrl::list_all_files`, and both mistakes have a guard: I wrote each
+wrong walk in turn and watched the corresponding test fail.
+
+Separately, registering a duplicate-named file eagerly meant a path that appeared
+in a query *only as a string literal* was read into memory in full, with a rename
+note printed about a file the query never selects from — 168 MB peak against 6.9
+MB for a unique-named twin, measured with `/usr/bin/time -l`. The read now
+happens on first scan. That also makes the guard honest: the note is emitted
+exactly when the data is read, so "no note" means "not materialized" by
+construction, and the test additionally blanks the file's data pages while
+leaving its footer intact, so a read would have to fail loudly.
+
 ## 2026-09-02 — A rename you can see beats a column you can't reach
 
 Parquet lets two top-level columns share a name. `pq cat` and `pq export` carried

@@ -1,11 +1,19 @@
+use std::any::Any;
 use std::collections::HashSet;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use arrow::array::RecordBatch;
 use arrow::datatypes::{Field, Schema, SchemaRef};
+use async_trait::async_trait;
+use datafusion::catalog::{Session, TableProvider};
+use datafusion::datasource::listing::ListingTableUrl;
 use datafusion::datasource::MemTable;
+use datafusion::error::DataFusionError;
+use datafusion::logical_expr::{Expr, TableType};
+use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::*;
+use futures::TryStreamExt;
 use thiserror::Error;
 use url::Url;
 
@@ -218,10 +226,17 @@ fn is_parquet_ref(s: &str) -> bool {
 // — and it is not reversible in general, since a file may legitimately
 // contain both `id` and `id_1`.
 //
-// The cost, stated plainly: a duplicate-named file is read through
-// `MemTable`, so it is materialized in memory and gets no predicate or
-// projection pushdown. Files with unique names — everything anyone has unless
-// they went looking — take the unchanged `register_parquet` path.
+// The cost, stated plainly: a duplicate-named file that is scanned is read
+// through `MemTable`, so it is materialized in memory and gets no predicate
+// or projection pushdown. The read is deferred to the first scan
+// (`RenamedDuplicatesTable`), so a path that merely appears as a string
+// literal costs nothing beyond its footer. Files with unique names —
+// everything anyone has unless they went looking — take the unchanged
+// `register_parquet` path.
+//
+// A local *directory* is a third case and is handled separately: duplicates
+// there cannot be repaired, only refused. See
+// `reject_directory_with_duplicate_columns`.
 
 /// New names for `schema`'s top-level fields, or `None` if they are already
 /// unique. The first occurrence keeps its name; later ones get `_1`, `_2`,
@@ -271,14 +286,14 @@ fn schema_with_names(schema: &Schema, names: &[String]) -> SchemaRef {
     Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone()))
 }
 
-fn announce_renames(display: &str, schema: &Schema, names: &[String]) {
-    let changed: Vec<String> = schema
+fn announce_renames(display: &str, original: &Schema, renamed: &Schema) {
+    let changed: Vec<String> = original
         .fields()
         .iter()
-        .zip(names)
+        .zip(renamed.fields())
         .enumerate()
-        .filter(|(_, (f, n))| f.name() != *n)
-        .map(|(i, (f, n))| format!("column {} '{}' -> '{}'", i + 1, f.name(), n))
+        .filter(|(_, (a, b))| a.name() != b.name())
+        .map(|(i, (a, b))| format!("column {} '{}' -> '{}'", i + 1, a.name(), b.name()))
         .collect();
     eprintln!(
         "note: '{display}' has duplicate column names, which SQL cannot address; \
@@ -301,28 +316,249 @@ async fn arrow_schema_of(location: &str) -> std::result::Result<SchemaRef, SqlEr
     }
 }
 
-/// Whether the duplicate-name check can be applied to `location` at all.
-///
-/// A local *directory* is a legitimate DataFusion table: `ListingTable` reads
-/// every parquet file under it and merges their schemas. Reading such a path
-/// as a single parquet file fails with "Is a directory (os error 21)", so an
-/// unconditional check turned `SELECT * FROM 'somedir.parquet'` — which
-/// worked before — into an error. Found by driving the fixed binary against a
-/// directory and comparing with a pre-fix build; see DIARY.md.
-///
-/// This is keyed on a structural property (not a regular file), never on the
-/// check having failed. An unreadable *file* still propagates its error, as
-/// it did before, rather than falling back to the behaviour this code exists
-/// to remove. The consequence, stated so it is not mistaken for coverage: a
-/// directory whose parquet files carry duplicate column names is still
-/// collapsed by DataFusion, exactly as before. Logged in TODO.md.
-fn is_checkable(location: &str) -> bool {
+/// What kind of thing a table location is, because the three kinds need three
+/// different treatments and conflating them is what produced the two defects
+/// this module has now had.
+enum Target {
+    /// `s3://`, `https://`, ... — a single remote object.
+    Remote,
+    /// A local regular file.
+    File,
+    /// A local *directory*: a legitimate DataFusion table, where
+    /// `ListingTable` reads every parquet file under it and merges their
+    /// schemas. Reading such a path as a single parquet file fails with "Is a
+    /// directory (os error 21)", so the first version of the duplicate check
+    /// applied it unconditionally and turned `SELECT * FROM 'somedir.parquet'`
+    /// — which worked before — into an error.
+    Directory,
+    /// Anything else, including a path that does not exist: left entirely to
+    /// DataFusion, exactly as before this module grew a duplicate check.
+    Other,
+}
+
+fn classify(location: &str) -> Target {
     if source::is_url(location) {
-        return true;
+        return Target::Remote;
     }
-    std::fs::metadata(location)
-        .map(|m| m.is_file())
-        .unwrap_or(false)
+    match std::fs::metadata(location) {
+        Ok(m) if m.is_file() => Target::File,
+        Ok(m) if m.is_dir() => Target::Directory,
+        _ => Target::Other,
+    }
+}
+
+/// The parquet files DataFusion will actually read for the directory table
+/// `location`, as absolute-ish object-store paths paired with the store that
+/// can read them.
+///
+/// Obtained from DataFusion's own `ListingTableUrl::list_all_files` rather
+/// than a hand-rolled walk, because the file set is not obvious and a
+/// hand-rolled walk gets it wrong. Measured against the release binary on a
+/// directory containing `top.parquet`, `nested/deep.parquet` and
+/// `k=1/hive.parquet`: the query returns rows from `top.parquet` and
+/// `k=1/hive.parquet` only. `listing_table_ignore_subdirectory` defaults to
+/// **true**, so plain subdirectories are skipped, while segments containing
+/// `=` (Hive partitions) are kept. A recursive `read_dir` would have refused
+/// on a file DataFusion never opens; a flat one would have missed the Hive
+/// partition. Asking DataFusion keeps the two sets identical by construction.
+type ListedFiles = (
+    Arc<dyn object_store::ObjectStore>,
+    Vec<(String, object_store::ObjectMeta)>,
+);
+
+async fn listed_parquet_files(
+    ctx: &SessionContext,
+    location: &str,
+) -> std::result::Result<ListedFiles, SqlError> {
+    let url = ListingTableUrl::parse(location)?;
+    let store = ctx.runtime_env().object_store(&url)?;
+    let state = ctx.state();
+    let metas: Vec<object_store::ObjectMeta> = url
+        .list_all_files(&state, store.as_ref(), ".parquet")
+        .await?
+        .try_collect()
+        .await?;
+
+    let prefix = url.prefix().as_ref().to_string();
+    let named = metas
+        .into_iter()
+        .map(|meta| {
+            let full = meta.location.as_ref();
+            let rel = full
+                .strip_prefix(&prefix)
+                .unwrap_or(full)
+                .trim_start_matches('/')
+                .to_string();
+            (rel, meta)
+        })
+        .collect();
+    Ok((store, named))
+}
+
+/// Refuse a directory table whose files carry duplicate top-level column
+/// names, instead of letting DataFusion answer it wrongly.
+///
+/// This is a deliberate refusal rather than a repair. Three reasons, in order
+/// of weight:
+///
+/// 1. There is no correct answer to repair *to*. `ListingTable` merges the
+///    files of a directory **by name**; a duplicate name has no unambiguous
+///    counterpart in a sibling file. Given `[id, id, x]` in one file and
+///    `[id, x, id]` in another, "the second `id`" is a different column in
+///    each, and any rule pq picked would be a guess presented as data.
+/// 2. The only mechanism pq has for preserving duplicates is reading the file
+///    and re-registering it under new names (see `RenamedDuplicatesTable`),
+///    which materializes it. A directory table is precisely the case that
+///    does not fit in memory. Trading silent wrong data for a silent OOM is
+///    not a fix.
+/// 3. The obvious lazy alternative — hand `ListingTable` a pre-disambiguated
+///    schema — was already tried and rejected on evidence for the single-file
+///    case (see the block comment above): the parquet reader still matches
+///    columns by name and substitutes NULLs. That failure is a property of
+///    the reader, so it applies here unchanged.
+///
+/// pyarrow, used as the independent instrument, refuses the same input:
+/// `pyarrow.lib.ArrowInvalid: Can't unify schema with duplicate field names`.
+/// pq was answering, with exit 0, where the reference implementation declines.
+///
+/// Cost, stated plainly: one footer read per file in the directory, on every
+/// directory-table registration, including directories that turn out to be
+/// fine. That is the same order of work `ListingTable` does to infer the
+/// schema, and it is metadata only — no column data is read.
+async fn reject_directory_with_duplicate_columns(
+    ctx: &SessionContext,
+    location: &str,
+    display: &str,
+) -> std::result::Result<(), SqlError> {
+    let (store, files) = listed_parquet_files(ctx, location).await?;
+
+    for (rel, meta) in files {
+        let reader = parquet::arrow::async_reader::ParquetObjectReader::new(store.clone(), meta);
+        let builder = parquet::arrow::ParquetRecordBatchStreamBuilder::new(reader)
+            .await
+            .map_err(|e| SqlError::Other(format!("failed to read '{rel}' in '{display}': {e}")))?;
+        let schema = builder.schema();
+        if disambiguated_names(schema).is_none() {
+            continue;
+        }
+        let mut seen: HashSet<&str> = HashSet::new();
+        let mut dups: Vec<&str> = Vec::new();
+        for field in schema.fields() {
+            if !seen.insert(field.name()) && !dups.contains(&field.name().as_str()) {
+                dups.push(field.name());
+            }
+        }
+        return Err(SqlError::Other(format!(
+            "'{display}' is a directory of parquet files, and '{rel}' inside it has duplicate \
+             top-level column names ({}). DataFusion merges a directory's files by column name, \
+             which drops all but one of them and returns the surviving column under the wrong \
+             data — silently. pq refuses to answer rather than answer wrongly. Query the file \
+             on its own instead (`FROM '{display}/{rel}'`), where pq renames the duplicates so \
+             both are addressable, or rewrite the file with unique column names.",
+            dups.join(", "),
+        )));
+    }
+    Ok(())
+}
+
+/// A parquet file with duplicate top-level column names, registered under
+/// unique ones, read **only when the table is actually scanned**.
+///
+/// Laziness is the point. `register_files_from_query` registers every
+/// `.parquet` string literal it finds anywhere in the query, including ones
+/// that are only ever compared against — `WHERE src = '.../fat.parquet'`.
+/// When this was a plain `MemTable` built at registration time, such a
+/// literal was read into memory in full and a rename note was printed about a
+/// file the query never selects from. Measured with `/usr/bin/time -l` on a
+/// 132 MB file: 168,591,912 bytes peak footprint and 698,284,988 instructions
+/// against 6,832,512 / 66,052,831 for a unique-named twin — 24x memory for a
+/// file that is not a table in that query.
+///
+/// The note moves with the read, so it is now printed if and only if the
+/// table is scanned. That is also what makes the guard against this
+/// measurable from a test: no note means no materialization, by construction.
+///
+/// Not fixed by this: a table that *is* scanned is still materialized whole,
+/// so a duplicate-named file still loses predicate and projection pushdown
+/// and still reads everything for `LIMIT 1`. That cost is accepted and
+/// recorded in TODO.md; deferring it does not remove it.
+struct RenamedDuplicatesTable {
+    read_from: String,
+    display: String,
+    original: SchemaRef,
+    renamed: SchemaRef,
+    loaded: OnceLock<Arc<MemTable>>,
+}
+
+impl std::fmt::Debug for RenamedDuplicatesTable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RenamedDuplicatesTable")
+            .field("display", &self.display)
+            .field("renamed", &self.renamed)
+            .field("materialized", &self.loaded.get().is_some())
+            .finish()
+    }
+}
+
+impl RenamedDuplicatesTable {
+    /// Read and relabel the file, once. Concurrent scans may both do the work
+    /// but only one result is kept, so every scan sees the same batches.
+    fn materialize(&self) -> std::result::Result<Arc<MemTable>, SqlError> {
+        if let Some(table) = self.loaded.get() {
+            return Ok(table.clone());
+        }
+
+        announce_renames(&self.display, &self.original, &self.renamed);
+
+        let (batches, _) = pq_core::reader::open_batches(&self.read_from, &ReadOptions::default())
+            .map_err(|e| SqlError::Other(e.to_string()))?;
+        let relabelled = batches
+            .into_iter()
+            .map(|b| RecordBatch::try_new(self.renamed.clone(), b.columns().to_vec()))
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| {
+                SqlError::Other(format!(
+                    "failed to relabel the duplicate columns of '{}': {e}",
+                    self.display
+                ))
+            })?;
+
+        let table = Arc::new(MemTable::try_new(self.renamed.clone(), vec![relabelled])?);
+        let _ = self.loaded.set(table);
+        Ok(self
+            .loaded
+            .get()
+            .expect("OnceLock is set above or was already set")
+            .clone())
+    }
+}
+
+#[async_trait]
+impl TableProvider for RenamedDuplicatesTable {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn schema(&self) -> SchemaRef {
+        self.renamed.clone()
+    }
+
+    fn table_type(&self) -> TableType {
+        TableType::Base
+    }
+
+    async fn scan(
+        &self,
+        state: &dyn Session,
+        projection: Option<&Vec<usize>>,
+        filters: &[Expr],
+        limit: Option<usize>,
+    ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
+        let table = self
+            .materialize()
+            .map_err(|e| DataFusionError::Execution(e.to_string()))?;
+        table.scan(state, projection, filters, limit).await
+    }
 }
 
 /// Register `read_from` under `table_ref`, disambiguating duplicate top-level
@@ -334,10 +570,22 @@ async fn register_parquet_source(
     read_from: &str,
     display: &str,
 ) -> std::result::Result<(), SqlError> {
-    if !is_checkable(read_from) {
-        ctx.register_parquet(table_ref, read_from, ParquetReadOptions::default())
-            .await?;
-        return Ok(());
+    match classify(read_from) {
+        // A directory is either safe to hand to DataFusion untouched, or not
+        // answerable at all. `reject_directory_with_duplicate_columns` decides
+        // which; it never falls back to registering anyway.
+        Target::Directory => {
+            reject_directory_with_duplicate_columns(ctx, read_from, display).await?;
+            ctx.register_parquet(table_ref, read_from, ParquetReadOptions::default())
+                .await?;
+            return Ok(());
+        }
+        Target::Other => {
+            ctx.register_parquet(table_ref, read_from, ParquetReadOptions::default())
+                .await?;
+            return Ok(());
+        }
+        Target::Remote | Target::File => {}
     }
 
     let schema = arrow_schema_of(read_from).await?;
@@ -347,22 +595,13 @@ async fn register_parquet_source(
         return Ok(());
     };
 
-    announce_renames(display, &schema, &names);
-    let renamed = schema_with_names(&schema, &names);
-
-    let (batches, _) = pq_core::reader::open_batches(read_from, &ReadOptions::default())
-        .map_err(|e| SqlError::Other(e.to_string()))?;
-    let relabelled = batches
-        .into_iter()
-        .map(|b| RecordBatch::try_new(renamed.clone(), b.columns().to_vec()))
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| {
-            SqlError::Other(format!(
-                "failed to relabel the duplicate columns of '{display}': {e}"
-            ))
-        })?;
-
-    let table = MemTable::try_new(renamed, vec![relabelled])?;
+    let table = RenamedDuplicatesTable {
+        read_from: read_from.to_string(),
+        display: display.to_string(),
+        renamed: schema_with_names(&schema, &names),
+        original: schema,
+        loaded: OnceLock::new(),
+    };
     let _ = ctx.register_table(table_ref, Arc::new(table))?;
     Ok(())
 }
