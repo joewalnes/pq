@@ -2,6 +2,7 @@
 
 ## 2026-09-02
 
+- Publish `SHA256SUMS` as a release asset, and document verifying a downloaded binary against it in README.md
 - Releases are now created for the git tag itself. Removes the `gh release delete latest` / `git push origin :refs/tags/latest` / `gh release create latest` dance that destroyed the project's only release; GitHub's own `/releases/latest/download/` redirect provides the pointer, so nothing needs deleting
 - Release version now comes from the git tag, derived once in a new `preflight` job and consumed by every other job. Deletes the `0.1.$(date +%Y%m%d%H%M)` scheme, which the two publish jobs computed independently and could disagree on across a minute boundary
 - Record in LESSONS.md that an adversarial pass over four merged branches found three had each injected a fresh defect, and that a destructive step suppressed with `|| true` will eventually destroy something

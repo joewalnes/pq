@@ -96,6 +96,21 @@ curl -Lo pq https://github.com/joewalnes/pq/releases/latest/download/pq-linux-am
 curl -Lo pq https://github.com/joewalnes/pq/releases/latest/download/pq-linux-arm64
 ```
 
+Verify the download against the checksums published with each release (optional
+but recommended):
+
+```sh
+curl -Lo SHA256SUMS https://github.com/joewalnes/pq/releases/latest/download/SHA256SUMS
+
+# macOS
+shasum -a 256 pq | awk '{print $1}' | grep -qFf - SHA256SUMS && echo "pq: checksum OK"
+
+# Linux
+sha256sum pq | awk '{print $1}' | grep -qFf - SHA256SUMS && echo "pq: checksum OK"
+```
+
+Nothing is printed and the command exits non-zero if the hash is not in the list.
+
 Then make it executable and move it to your PATH:
 
 ```sh

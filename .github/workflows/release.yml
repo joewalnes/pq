@@ -176,13 +176,28 @@ jobs:
           path: dist
           merge-multiple: true
 
+      # Staged into a directory of its own, by explicit name, so a build
+      # matrix leg that produced nothing fails here - before the release
+      # exists - rather than producing a release that is quietly missing a
+      # platform. `cp` of a missing file exits non-zero under `set -e`.
+      - name: Stage release assets and checksum them
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          cp dist/pq-darwin-arm64 dist/pq-linux-amd64 dist/pq-linux-arm64 release-assets/
+          chmod +x release-assets/pq-*
+          cd release-assets
+          # Names listed explicitly, not `*`: a glob would silently include
+          # SHA256SUMS itself or omit an asset that failed to stage.
+          sha256sum pq-darwin-arm64 pq-linux-amd64 pq-linux-arm64 > SHA256SUMS
+          cat SHA256SUMS
+
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.preflight.outputs.version }}
         run: |
           set -euo pipefail
-          chmod +x dist/*
           # Built from the validated version, not from github.ref_name, so a
           # release can only ever be created for a tag preflight accepted.
           TAG="v${VERSION}"
@@ -193,9 +208,10 @@ jobs:
           # pointer is why this workflow no longer needs a mutable `latest`
           # release of its own; see DIARY.md 2026-09-02.
           gh release create "$TAG" \
-            dist/pq-darwin-arm64 \
-            dist/pq-linux-amd64 \
-            dist/pq-linux-arm64 \
+            release-assets/pq-darwin-arm64 \
+            release-assets/pq-linux-amd64 \
+            release-assets/pq-linux-arm64 \
+            release-assets/SHA256SUMS \
             --title "$TAG" \
             --notes "pq $TAG - built from $(git rev-parse --short HEAD)" \
             --verify-tag \
