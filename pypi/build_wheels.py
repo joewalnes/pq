@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
 """Build platform-specific Python wheels containing the pq binary.
 
-Each wheel contains only the native binary and a thin wrapper script.
-The wheel platform tags ensure pip installs only the correct one.
+Each wheel places the native binary directly at
+`<pkg>-<version>.data/scripts/pq`, which pip installs to `<venv>/bin/pq`
+verbatim. There is deliberately no `[console_scripts]` entry point: if one
+is declared, pip generates its own Python launcher script at that same
+`bin/pq` path and installs it *after* the data-scripts binary, clobbering
+the real executable with a shim that does `from pqtool import main` -
+which fails, because no `pqtool` Python module is ever packaged. The
+`.data/scripts` mechanism alone is sufficient and works unmodified.
 
 Usage:
     python3 pypi/build_wheels.py --version 0.1.0 --binaries-dir dist/
@@ -41,13 +47,6 @@ Classifier: Topic :: Database
 Classifier: Topic :: Utilities
 """
 
-WRAPPER_SCRIPT = """\
-#!/usr/bin/env python3
-import os, sys
-bin_path = os.path.join(os.path.dirname(__file__), "pq")
-os.execv(bin_path, [bin_path] + sys.argv[1:])
-"""
-
 
 def sha256_digest(data: bytes) -> str:
     return base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=").decode()
@@ -69,7 +68,20 @@ def build_wheel(binary_path: str, platform_tag: str, version: str, out_dir: str)
             binary_data = f.read()
 
         bin_info = zipfile.ZipInfo(f"{data_dir}/pq")
-        bin_info.external_attr = (stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH) << 16
+        # S_IFREG is required, not just the permission bits: pip's installer
+        # (zip_item_is_executable in pip._internal.utils.unpacking) only
+        # chmod's the extracted file +x if stat.S_ISREG(mode) is true, and
+        # S_ISREG inspects the file-type bits, which live above the
+        # permission bits and are NOT implied by them. Without S_IFREG here,
+        # `unzip`/`zipfile` still *display* this entry as rwxr-xr-x (they
+        # don't require the type bits to show permissions), which is why
+        # this was easy to miss by inspecting the zip alone - but pip
+        # installs the file as a plain non-executable 0o644 file, so the
+        # installed `pq` fails with "permission denied" even once the
+        # entry_points.txt clobbering (see below) is also fixed.
+        bin_info.external_attr = (
+            stat.S_IFREG | stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH
+        ) << 16
         whl.writestr(bin_info, binary_data)
         records.append((f"{data_dir}/pq", sha256_digest(binary_data), len(binary_data)))
 
@@ -82,16 +94,6 @@ def build_wheel(binary_path: str, platform_tag: str, version: str, out_dir: str)
         wheel_meta = f"Wheel-Version: 1.0\nGenerator: pq-build\nRoot-Is-Purelib: false\nTag: {tag}\n".encode()
         whl.writestr(f"{dist_info}/WHEEL", wheel_meta)
         records.append((f"{dist_info}/WHEEL", sha256_digest(wheel_meta), len(wheel_meta)))
-
-        # entry_points.txt
-        entry = b"[console_scripts]\npq = pqtool:main\n"
-        whl.writestr(f"{dist_info}/entry_points.txt", entry)
-        records.append((f"{dist_info}/entry_points.txt", sha256_digest(entry), len(entry)))
-
-        # top_level.txt
-        top = b"pqtool\n"
-        whl.writestr(f"{dist_info}/top_level.txt", top)
-        records.append((f"{dist_info}/top_level.txt", sha256_digest(top), len(top)))
 
         # RECORD (must be last, no hash for itself)
         buf = io.StringIO()
