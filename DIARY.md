@@ -4,6 +4,33 @@ Latest entries first. Record significant decisions, architecture changes, and no
 
 ---
 
+## 2026-09-02 — Release decisions, and a correction to what was "burned"
+
+The three open release questions are answered: keep all three channels, drive
+releases from a hand-pushed `v*` semver tag with the version read from the tag, and
+stop creating a `latest` tag at all — GitHub's own `/releases/latest/download/`
+redirect already does that job, and the README was already using the pointer form.
+
+Two things in the record needed correcting, both mine.
+
+First, I described the tag name `latest` as "permanently burned". The evidence was
+real — run `33579005702` failed with `HTTP 422 ... tag_name was used by an immutable
+release`, after its own `gh release delete latest` had succeeded — but "that 422
+happened" and "the name is permanently unusable" are different claims, and I only
+measured the first. It is moot under the agreed design, which never creates that tag
+again, but the overreach is worth recording: a single error observed once is evidence
+about a moment, not a permanent property.
+
+Second, the reason nothing has ever been published is not the failure I kept citing.
+Release has run 17 times: 14 succeeded in April 2026, before publishing existed. The
+one run that reached the publish jobs, `578a2b6` on 2026-05-26, had `release` succeed
+and *both* `publish-npm` and `publish-pypi` fail — and those logs have expired, so the
+cause is unrecorded. The two September failures died earlier, in `release`, and
+skipped publishing entirely. So the credentials have never been proven to work, and
+the first `v0.1.0` tag will fail the same way unless someone checks first — after the
+GitHub release exists, leaving it half-published. That is now a P1 in TODO.md, and it
+is the single thing most likely to spoil the first real release.
+
 ## 2026-09-02 — Multi-file semantics for `tail`/`sample`: concatenation, not per-file
 
 `tail`, `sample`, `count`, `merge` all silently mishandled >1 file (`tail`
