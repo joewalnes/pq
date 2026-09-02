@@ -8,36 +8,41 @@ they are urgent, in which case say so explicitly.
 
 ## Open
 
-- [ ] **P1** Redesign the release process properly — **decisions made, implementation outstanding**
-  Raised 2026-09-01. The interim fix (gate `release.yml` behind CI, move off the
-  push-to-`main` trigger) was a stopgap to make unattended work safe, and it landed.
+- [ ] **P1** Redesign the release process properly — **implemented; blocked on one human action**
+  Raised 2026-09-01. All three decisions the human made on 2026-09-02 are
+  implemented in `release.yml` (branch `p1-release-redesign`, 2026-09-02):
 
-  The three open questions were answered by the human on 2026-09-02:
-  1. **Keep all three channels** — GitHub Releases, npm, and PyPI.
-  2. **Manual semver, driven by a git tag.** A human tags `v0.1.0`; the tag triggers
-     the release and the version is read from the tag. Delete the
-     `0.1.$(date +%Y%m%d%H%M)` scheme entirely.
-  3. **No `latest` tag at all.** GitHub already redirects
-     `/releases/latest/download/<asset>` to the newest release, so remove the
-     delete-and-recreate dance from `release.yml`. README URLs already use the
-     pointer form and need no change.
+  - [x] version from the tag, derived once in a new `preflight` job and consumed
+        via job outputs; the `0.1.$(date …)` scheme is gone. `workflow_dispatch`
+        from a branch now fails in `preflight`; dispatching against a tag works.
+  - [x] `latest` delete/recreate dropped — the release is created for the tag,
+        with `--latest` so GitHub's `/releases/latest/` redirect resolves to it.
+        No `gh release delete`, no tag deletion, no `|| true` left in the file.
+  - [x] `SHA256SUMS` published as a release asset; README documents verifying
+        a download against it.
+  - [x] `LICENSE` + `THIRD-PARTY-LICENSES` shipped as release assets, reusing the
+        existing `licenses` job's artifact.
+  - [x] `dtolnay/rust-toolchain`, `pypa/gh-action-pypi-publish` and
+        `cargo install cross --git` pinned to exact commits (the cross pin is
+        duplicated in the `Makefile` and must be bumped with it).
+  - [x] the workflow now refuses to start if `NPM_TOKEN` is empty, so a missing
+        credential can no longer burn a version number behind an immutable
+        GitHub release.
 
-  Still to implement:
-  - version from the tag, in one place (both publish jobs currently compute
-    `date` independently and can disagree across a minute boundary)
-  - drop the `latest` delete/recreate
-  - publish `SHA256SUMS` alongside the release assets
-  - ship `LICENSE` + `THIRD-PARTY-LICENSES` in the **release assets** (already done
-    for npm packages and wheels) — the `curl`-a-binary user is the one channel that
-    still receives no attribution
-  - pin `dtolnay/rust-toolchain` and `pypa/gh-action-pypi-publish` (both are
-    *branches*, not tags) and the `cargo install cross --git` reference
-  - **Before the first real tag:** confirm why publishing has never succeeded. See
-    the Infrastructure entry in `TODO.md` — the credentials have never been proven
-    to work, and `v0.1.0` will fail the same way if they are still absent.
+  **What remains — the human's, not an agent's:** add the `NPM_TOKEN` repository
+  secret (it does not exist: `gh secret list` is empty, the Actions secrets API
+  reports `total_count=0`) and confirm the `pypi` environment's trusted publisher
+  is configured. Until `NPM_TOKEN` exists, tagging `v0.1.0` will now stop in
+  `preflight` having created and published nothing — the tag stays reusable. See
+  the P1 Infrastructure entry in `TODO.md`.
 
-  Already done under this ask: `pypi/build_wheels.py`'s broken console entry point,
-  `THIRD-PARTY-LICENSES` generation via `cargo-about` and bundling into npm packages
-  and wheels, and wiring `make licenses` into `release.yml`.
+  Not verified by any agent: nothing here has been observed in a real Actions run.
+  Verification was YAML parse, in-file `needs:` resolution, and executing the
+  workflow's own shell scripts locally against good and bad inputs. Publishing,
+  tagging, pushing and triggering workflows were all guard-blocked.
+
+  Already done earlier under this ask: `pypi/build_wheels.py`'s broken console
+  entry point, `THIRD-PARTY-LICENSES` generation via `cargo-about` and bundling
+  into npm packages and wheels, and wiring `make licenses` into `release.yml`.
 
 ## Done

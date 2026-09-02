@@ -4,6 +4,37 @@ Latest entries first. Record significant decisions, architecture changes, and no
 
 ---
 
+## 2026-09-02 — One version, derived once, and a release that refuses to start half-doomed
+
+Two jobs each running `date +%Y%m%d%H%M` looked like duplication. It was worse
+than that: `publish-npm` and `publish-pypi` run in parallel, so a run that
+straddles a minute boundary publishes *different* version numbers for the same
+commit to two registries, permanently. Nobody would notice until someone tried to
+match an npm version to a wheel. The version now comes from the tag, is derived
+once in a `preflight` job, and reaches everything else as a job output — including
+the binaries' `BUILD_VERSION`, so `pq --version` finally says what was published.
+
+`workflow_dispatch` with no tag had to mean something. A `version` input was the
+obvious answer and is the wrong one: it lets a human publish a version with no
+immutable git tag behind it, which is the same git-versus-registry divergence the
+change exists to close. So a dispatch from a branch fails in preflight, and
+dispatching *against a tag* — which the ref picker allows — still works as a
+re-run. Only plain X.Y.Z is accepted, because `v0.1.0-rc.1` is valid semver and
+invalid PEP 440, and I would rather reject a pre-release than silently publish it
+under two different strings.
+
+The fail-fast question was the interesting one. `release` creates the GitHub
+release before `publish-npm` runs, and the repository's rules make that release
+immutable — the ordering that turned an ordinary failure into a destroyed release
+last time. `NPM_TOKEN` does not exist in this repo today, so tagging `v0.1.0` right
+now would produce an immutable release plus a failed publish on a version number no
+registry will ever let us reuse. A one-line presence check in a job that already
+runs first converts that into a clean refusal with nothing created. It is a floor,
+not a guarantee: an expired token is non-empty and still fails at publish, and
+there is no equivalent check for PyPI's OIDC trusted publishing. Adding the
+credential remains the human's job; the workflow now just declines to burn a
+version while waiting for it.
+
 ## 2026-09-02 — Why a project with 14 successful releases has zero releases
 
 Recording this as evidence rather than preference, because it is the concrete
