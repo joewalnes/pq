@@ -174,7 +174,7 @@ fn run(cli: Cli, format: Format, explicit_format: bool) -> anyhow::Result<()> {
             ref columns,
         } => {
             let resolved = files::resolve_files(files)?;
-            run_sample(&resolved[0], lines, seed, columns.clone(), format)
+            run_sample(&resolved, lines, seed, columns.clone(), format)
         }
 
         Command::Count { ref files } => commands::count::run(files, format),
@@ -341,8 +341,12 @@ fn run_tail(
     Ok(())
 }
 
+/// Uniform random sample of N rows drawn from the *concatenation* of
+/// `files` (matching `count`'s "sum across files" and `cat`/`head`'s
+/// "one logical stream" treatment of multiple files) rather than N rows
+/// from each file, since `-n` names a total row budget, not a per-file one.
 fn run_sample(
-    file: &str,
+    files: &[String],
     n: usize,
     seed: Option<u64>,
     columns: Option<Vec<String>>,
@@ -351,7 +355,11 @@ fn run_sample(
     use rand::seq::index::sample;
     use rand::SeedableRng;
 
-    let total = pq_core::reader::open_row_count(file)? as usize;
+    let counts: Vec<i64> = files
+        .iter()
+        .map(|f| pq_core::reader::open_row_count(f).map_err(anyhow::Error::from))
+        .collect::<anyhow::Result<_>>()?;
+    let total = counts.iter().sum::<i64>() as usize;
 
     if total == 0 {
         let stdout = std::io::stdout();
@@ -362,7 +370,8 @@ fn run_sample(
 
     let sample_n = n.min(total);
 
-    // Generate sorted random indices without allocating 0..total
+    // Generate sorted random indices over the virtual concatenation
+    // [0, total) without allocating 0..total.
     let indices: Vec<usize> = match seed {
         Some(s) => {
             let mut rng = rand::rngs::StdRng::seed_from_u64(s);
@@ -378,28 +387,44 @@ fn run_sample(
         }
     };
 
-    // Group consecutive indices into (offset, count) ranges to minimize reads
-    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    // Map each global index to (file index, local offset), then group
+    // consecutive local indices *within the same file* into (offset, count)
+    // ranges to minimize reads.
+    let mut file_bounds: Vec<(i64, i64)> = Vec::with_capacity(counts.len()); // (start, end)
+    let mut acc = 0i64;
+    for &c in &counts {
+        file_bounds.push((acc, acc + c));
+        acc += c;
+    }
+
+    let mut ranges: Vec<(usize, usize, usize)> = Vec::new(); // (file_idx, offset, count)
+    let mut file_idx = 0usize;
     for &idx in &indices {
+        let idx = idx as i64;
+        while idx >= file_bounds[file_idx].1 {
+            file_idx += 1;
+        }
+        let local = (idx - file_bounds[file_idx].0) as usize;
         if let Some(last) = ranges.last_mut() {
-            if idx == last.0 + last.1 {
-                last.1 += 1;
+            if last.0 == file_idx && local == last.1 + last.2 {
+                last.2 += 1;
                 continue;
             }
         }
-        ranges.push((idx, 1));
+        ranges.push((file_idx, local, 1));
     }
 
-    // Read only the needed ranges and collect sampled batches
+    // Read only the needed ranges and collect sampled batches, in global
+    // (i.e. file) order.
     let mut sampled_batches: Vec<arrow::array::RecordBatch> = Vec::new();
-    for (offset, count) in &ranges {
+    for (file_idx, offset, count) in &ranges {
         let opts = pq_core::reader::ReadOptions {
             columns: columns.clone(),
             limit: Some(*count),
             offset: Some(*offset),
             batch_size: 8192,
         };
-        let (batches, _schema) = pq_core::reader::open_batches(file, &opts)?;
+        let (batches, _schema) = pq_core::reader::open_batches(&files[*file_idx], &opts)?;
         sampled_batches.extend(batches);
     }
 

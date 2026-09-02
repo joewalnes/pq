@@ -1510,6 +1510,52 @@ fn test_tail_multi_file_concatenates_across_files() {
     );
 }
 
+/// `sample` draws from the *concatenation* of all files (matching `count`'s
+/// "sum across files" and `cat`/`head`'s single-logical-stream treatment),
+/// not just the first file. `a` only has 5 rows total, so asking for 6
+/// samples across a+b+c *must* include at least one row from b or c in any
+/// correct implementation, regardless of the random draw.
+#[test]
+fn test_sample_multi_file_draws_from_all_files() {
+    let tmp = TempDir::new().unwrap();
+    let a = write_tagged_fixture(tmp.path(), "a", "A", 5);
+    let b = write_tagged_fixture(tmp.path(), "b", "B", 10);
+    let c = write_tagged_fixture(tmp.path(), "c", "C", 20);
+
+    let output = pq()
+        .args([
+            "sample",
+            a.to_str().unwrap(),
+            b.to_str().unwrap(),
+            c.to_str().unwrap(),
+            "-n",
+            "6",
+            "--seed",
+            "7",
+            "-f",
+            "jsonl",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+
+    let row_count = stdout.matches("\"id\"").count();
+    assert_eq!(
+        row_count, 6,
+        "requested 6 rows across 35 total; got {row_count}:\n{stdout}"
+    );
+    let non_a = stdout.matches("\"tag\":\"B\"").count() + stdout.matches("\"tag\":\"C\"").count();
+    assert!(
+        non_a >= 1,
+        "a has only 5 rows total, so 6 samples across a+b+c must include b or c:\n{stdout}"
+    );
+}
+
 // ── Layout correctness tests ────────────────────────────────────────────
 
 /// `pq layout` must accumulate row offsets across row groups and account
