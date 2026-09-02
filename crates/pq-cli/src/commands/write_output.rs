@@ -1,11 +1,13 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::Path;
 
 use arrow::array::RecordBatch;
-use arrow::datatypes::SchemaRef;
+use arrow::datatypes::{Schema, SchemaRef};
+use arrow::util::display::{ArrayFormatter, FormatOptions};
 
 /// Output file format, auto-detected from extension.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputFileFormat {
     Parquet,
     Json,
@@ -23,26 +25,51 @@ pub fn format_from_extension(path: &str) -> OutputFileFormat {
     }
 }
 
-/// Write RecordBatches to a file, auto-detecting format from extension.
+/// Write RecordBatches to a file in an **already-resolved** format.
 /// Returns the number of rows written.
-pub fn write_batches_to_file(path: &str, batches: &[RecordBatch]) -> anyhow::Result<usize> {
+///
+/// This exists so that a caller which has decided the format from the
+/// destination the *user named* can hand that decision down instead of
+/// letting a second function re-derive it from a different string.
+/// `sql -o` used to resolve the format from the destination name and then
+/// call [`write_batches_to_file`] with the **staging** path; since
+/// `pq_transform::output_guard` builds the staging name from the resolved
+/// *symlink target*, `-o link.parquet` where `link.parquet -> target.csv`
+/// staged as `...csv`, the second sniff won, and CSV bytes landed under a
+/// `.parquet` name with exit 0. Format is decided once; here it is only
+/// obeyed.
+pub fn write_batches_as(
+    path: &Path,
+    batches: &[RecordBatch],
+    format: OutputFileFormat,
+) -> anyhow::Result<usize> {
     let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
 
-    match format_from_extension(path) {
+    match format {
         OutputFileFormat::Parquet => {
             if batches.is_empty() {
                 anyhow::bail!("No data to write");
             }
             let opts = pq_core::writer::WriteOptions::default();
-            pq_core::writer::write_batches(Path::new(path), batches, &opts)?;
+            pq_core::writer::write_batches(path, batches, &opts)?;
         }
-        format => {
+        text => {
             let mut file = std::fs::File::create(path)?;
-            write_batches_text(&mut file, batches, format)?;
+            write_batches_text(&mut file, batches, text)?;
         }
     }
 
     Ok(total_rows)
+}
+
+/// Write RecordBatches to a file, **sniffing** the format from `path`'s
+/// extension. Returns the number of rows written.
+///
+/// Only correct when `path` is the destination the user actually named.
+/// Never call this with a staging path — see [`write_batches_as`] for why
+/// that combination silently wrote the wrong format.
+pub fn write_batches_to_file(path: &str, batches: &[RecordBatch]) -> anyhow::Result<usize> {
+    write_batches_as(Path::new(path), batches, format_from_extension(path))
 }
 
 /// Write JSON values to a file, auto-detecting format from extension.
@@ -96,7 +123,9 @@ fn write_batches_text(
                 }
             }
         }
-        OutputFileFormat::Csv => write_batches_csv(writer, batches)?,
+        OutputFileFormat::Csv => {
+            write_batches_csv(writer, batches)?;
+        }
         OutputFileFormat::Parquet => unreachable!(),
     }
     Ok(())
@@ -124,37 +153,166 @@ fn write_values_text(
     Ok(())
 }
 
-/// Header for a batch-derived CSV: the union of every batch's schema field
-/// names, in first-seen order — not just the first batch's.
+// ---------------------------------------------------------------------------
+// Batch-derived CSV. One implementation, shared by every path that turns
+// Arrow batches into CSV: `cat -f csv` (stdout), `cat --output x.csv`,
+// `export`, and `sql -o x.csv`. There used to be four; they disagreed.
+// ---------------------------------------------------------------------------
+
+/// One column of a batch-derived CSV: a field name, plus which field of that
+/// name it is within a single schema.
 ///
-/// `pq cat a.parquet b.parquet --output out.csv` combines files that can
-/// have different schemas with no per-row key lookup on the naive approach:
-/// a header frozen from batch 0 either shifts a later batch's values under
-/// the wrong column name (if key sets merely differ) or silently drops a
-/// column batch 0 didn't have. Dropping a value that the user has but that
-/// never reaches the output is the same class of bug as shifting it.
+/// **Why the occurrence index.** A Parquet file may legally carry two fields
+/// with the same name, and an Arrow batch is *positional* — column 0 and
+/// column 1 can both be called `id`. The first union-header implementation
+/// deduped names through a `HashSet` and then resolved each header entry
+/// back to data with `Schema::index_of(name)` (stdout) or a JSON map keyed
+/// by name (file paths). Both keep only the **first** field of a given name,
+/// so the second `id` column silently vanished — and the two paths did not
+/// even drop the same one: `cat -f csv` emitted the first column's values,
+/// `export -o` the second's.
 ///
-/// `batches` is already fully resident in memory by the time this runs (the
-/// caller collected every batch before calling in), so building the union
-/// costs one extra pass over already-known field lists, not extra
-/// buffering. See `union_header_from_values` for the analogous, non-schema
-/// case.
-pub(crate) fn union_header(schemas: impl IntoIterator<Item = SchemaRef>) -> Vec<String> {
-    let mut header = Vec::new();
+/// Keying on `(name, occurrence)` restores positional identity within a
+/// schema while preserving the reason the union header exists: aligning
+/// *heterogeneous files* by column name. A column is "the same column"
+/// across batches when both its name and its occurrence index match.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct CsvColumn {
+    name: String,
+    occurrence: usize,
+}
+
+/// The CSV columns for a set of schemas: the union over every schema, in
+/// first-seen order.
+///
+/// `pq cat a.parquet b.parquet -f csv` can combine files with different
+/// schemas; freezing the header from the first schema either misaligns a
+/// later batch's values under the wrong column or silently drops a column
+/// the first schema didn't have.
+pub(crate) fn union_columns(schemas: impl IntoIterator<Item = SchemaRef>) -> Vec<CsvColumn> {
+    let mut columns = Vec::new();
     let mut seen = HashSet::new();
     for schema in schemas {
+        let mut counts: HashMap<String, usize> = HashMap::new();
         for field in schema.fields() {
-            if seen.insert(field.name().clone()) {
-                header.push(field.name().clone());
+            let occurrence = counts.entry(field.name().clone()).or_insert(0);
+            let column = CsvColumn {
+                name: field.name().clone(),
+                occurrence: *occurrence,
+            };
+            *occurrence += 1;
+            if seen.insert(column.clone()) {
+                columns.push(column);
             }
         }
     }
-    header
+    columns
 }
 
-/// Same idea as `union_header`, but for jq output: there is no Arrow schema
-/// to consult (jq can add, rename, or drop fields per row), so the union is
-/// computed from the values' own keys instead, in first-seen order.
+/// Where each CSV column lives in `schema`, or `None` when this schema
+/// doesn't have it (a file that lacks a column another file has).
+///
+/// Resolution is positional: the *n*-th field named `id` answers for the
+/// *n*-th `id` column, which is what `Schema::index_of` could not express.
+fn column_indices(columns: &[CsvColumn], schema: &Schema) -> Vec<Option<usize>> {
+    let mut positions: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (idx, field) in schema.fields().iter().enumerate() {
+        positions
+            .entry(field.name().as_str())
+            .or_default()
+            .push(idx);
+    }
+    columns
+        .iter()
+        .map(|column| {
+            positions
+                .get(column.name.as_str())
+                .and_then(|found| found.get(column.occurrence).copied())
+        })
+        .collect()
+}
+
+/// Write the header record. Duplicate columns repeat their name (`id,id`),
+/// which is what the table renderer prints and what keeps the record arity
+/// equal to the number of columns actually emitted.
+pub(crate) fn write_csv_header(
+    writer: &mut dyn Write,
+    columns: &[CsvColumn],
+) -> anyhow::Result<()> {
+    if columns.is_empty() {
+        return Ok(());
+    }
+    let names: Vec<&str> = columns.iter().map(|c| c.name.as_str()).collect();
+    writer.write_all(&csv_record_bytes(&names)?)?;
+    Ok(())
+}
+
+/// Write every row of `batch` as a CSV record, aligned to `columns`.
+/// Returns the number of rows written.
+///
+/// Cells are rendered with Arrow's `ArrayFormatter` — the same formatter the
+/// table renderer uses — so `-f csv` and `-f table` agree cell for cell, and
+/// so the rendering is *positional*. The previous file-side implementations
+/// went through `batch_to_json_rows`, which builds a map keyed by field
+/// name and therefore cannot represent two columns of the same name at all.
+pub(crate) fn write_batch_csv_rows(
+    writer: &mut dyn Write,
+    columns: &[CsvColumn],
+    batch: &RecordBatch,
+) -> anyhow::Result<usize> {
+    let schema = batch.schema();
+    let indices = column_indices(columns, schema.as_ref());
+    let options = FormatOptions::default();
+    let formatters: Vec<Option<ArrayFormatter>> = indices
+        .iter()
+        .zip(columns)
+        .map(|(index, column)| match index {
+            Some(i) => ArrayFormatter::try_new(batch.column(*i).as_ref(), &options)
+                .map(Some)
+                .map_err(|e| anyhow::anyhow!("cannot render column '{}' as CSV: {e}", column.name)),
+            None => Ok(None),
+        })
+        .collect::<anyhow::Result<_>>()?;
+
+    for row_idx in 0..batch.num_rows() {
+        let cells: Vec<String> = formatters
+            .iter()
+            .map(|f| match f {
+                Some(fmt) => fmt.value(row_idx).to_string(),
+                // A column this batch's file doesn't have: empty, never
+                // omitted, so the record never goes ragged.
+                None => String::new(),
+            })
+            .collect();
+        writer.write_all(&csv_record_bytes(&cells)?)?;
+    }
+    Ok(batch.num_rows())
+}
+
+/// Render a whole in-memory batch set as CSV. Returns the number of rows.
+pub(crate) fn write_batches_csv(
+    writer: &mut dyn Write,
+    batches: &[RecordBatch],
+) -> anyhow::Result<usize> {
+    let columns = union_columns(batches.iter().map(|b| b.schema()));
+    write_csv_header(writer, &columns)?;
+    let mut rows = 0;
+    for batch in batches {
+        rows += write_batch_csv_rows(writer, &columns, batch)?;
+    }
+    Ok(rows)
+}
+
+// ---------------------------------------------------------------------------
+// Values-derived CSV (the jq path). Here the input genuinely *is* a map of
+// names to values — jq can add, rename, or drop fields per row and there is
+// no Arrow schema to consult — so lookup stays keyed by name. A JSON object
+// cannot have duplicate keys, so the duplicate-column problem does not
+// arise on this path.
+// ---------------------------------------------------------------------------
+
+/// Header for jq output: the union of the values' own keys, first-seen
+/// order.
 fn union_header_from_values(values: &[serde_json::Value]) -> Vec<String> {
     let mut header = Vec::new();
     let mut seen = HashSet::new();
@@ -171,8 +329,8 @@ fn union_header_from_values(values: &[serde_json::Value]) -> Vec<String> {
 }
 
 /// A row's value for one header column: empty for a key this row's object
-/// doesn't have (or a JSON null), so a column absent from one file/row never
-/// causes it to be dropped or to appear at all under a different column.
+/// doesn't have (or a JSON null), so a column absent from one row never
+/// causes it to be dropped or to appear under a different column.
 fn csv_cell(value: Option<&serde_json::Value>) -> String {
     match value {
         None | Some(serde_json::Value::Null) => String::new(),
@@ -184,10 +342,7 @@ fn csv_cell(value: Option<&serde_json::Value>) -> String {
 /// Build one CSV record from an object row, keyed by column name against
 /// `header` — never by positional/iteration order, which is what let a
 /// `val` land under `name` in the original bug.
-pub(crate) fn csv_record(
-    header: &[String],
-    obj: &serde_json::Map<String, serde_json::Value>,
-) -> Vec<String> {
+fn csv_record(header: &[String], obj: &serde_json::Map<String, serde_json::Value>) -> Vec<String> {
     header.iter().map(|k| csv_cell(obj.get(k))).collect()
 }
 
@@ -197,26 +352,16 @@ pub(crate) fn csv_record(
 /// caller freely interleave non-CSV raw writes (see `write_values_csv`'s
 /// non-object fallback) without fighting the writer's ownership of the
 /// underlying `dyn Write`.
+///
+/// Uses the `csv` crate rather than hand-rolled quoting: a bare `\r` is just
+/// as much a record separator to a compliant CSV reader as `\n` or `\r\n`,
+/// but a hand-rolled check that only tests for `,`, `"`, and `\n` leaves a
+/// lone `\r` unquoted, silently splitting one row into two on read.
 pub(crate) fn csv_record_bytes<T: AsRef<str>>(fields: &[T]) -> anyhow::Result<Vec<u8>> {
     let mut wtr = csv::WriterBuilder::new().from_writer(Vec::new());
     wtr.write_record(fields.iter().map(|f| f.as_ref()))?;
     wtr.into_inner()
         .map_err(|e| anyhow::anyhow!("failed to flush CSV record: {e}"))
-}
-
-fn write_batches_csv(writer: &mut dyn Write, batches: &[RecordBatch]) -> anyhow::Result<()> {
-    let header = union_header(batches.iter().map(|b| b.schema()));
-    if !header.is_empty() {
-        writer.write_all(&csv_record_bytes(&header)?)?;
-    }
-    for batch in batches {
-        for row in pq_query::convert::batch_to_json_rows(batch) {
-            if let Some(obj) = row.as_object() {
-                writer.write_all(&csv_record_bytes(&csv_record(&header, obj))?)?;
-            }
-        }
-    }
-    Ok(())
 }
 
 fn write_values_csv(writer: &mut dyn Write, values: &[serde_json::Value]) -> anyhow::Result<()> {
@@ -240,4 +385,91 @@ fn write_values_csv(writer: &mut dyn Write, values: &[serde_json::Value]) -> any
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::{ArrayRef, Int64Array, StringArray};
+    use arrow::datatypes::{DataType, Field};
+    use std::sync::Arc;
+
+    fn dup_id_batch() -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("id", DataType::Int64, false),
+        ]));
+        let first: ArrayRef = Arc::new(Int64Array::from(vec![1_i64, 2]));
+        let second: ArrayRef = Arc::new(Int64Array::from(vec![10_i64, 20]));
+        RecordBatch::try_new(schema, vec![first, second]).unwrap()
+    }
+
+    fn render(batches: &[RecordBatch]) -> String {
+        let mut buf: Vec<u8> = Vec::new();
+        write_batches_csv(&mut buf, batches).unwrap();
+        String::from_utf8(buf).unwrap()
+    }
+
+    #[test]
+    fn duplicate_names_get_one_column_each_resolved_positionally() {
+        // `Schema::index_of("id")` returns 0 for both fields, which is how
+        // the second column used to disappear.
+        assert_eq!(render(&[dup_id_batch()]), "id,id\n1,10\n2,20\n");
+    }
+
+    #[test]
+    fn duplicate_names_are_counted_per_schema_not_globally() {
+        // Two batches with the same duplicate-name schema must union to two
+        // columns, not four.
+        let columns = union_columns([dup_id_batch().schema(), dup_id_batch().schema()]);
+        assert_eq!(columns.len(), 2);
+        assert_eq!(
+            render(&[dup_id_batch(), dup_id_batch()]),
+            "id,id\n1,10\n2,20\n1,10\n2,20\n"
+        );
+    }
+
+    #[test]
+    fn heterogeneous_schemas_still_union_by_name() {
+        let a = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int64, false),
+                Field::new("name", DataType::Utf8, false),
+            ])),
+            vec![
+                Arc::new(Int64Array::from(vec![1_i64])) as ArrayRef,
+                Arc::new(StringArray::from(vec!["alice"])) as ArrayRef,
+            ],
+        )
+        .unwrap();
+        let b = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int64, false),
+                Field::new("val", DataType::Int64, false),
+            ])),
+            vec![
+                Arc::new(Int64Array::from(vec![3_i64])) as ArrayRef,
+                Arc::new(Int64Array::from(vec![30_i64])) as ArrayRef,
+            ],
+        )
+        .unwrap();
+        // `val` must appear as its own column and `name` must be blank for
+        // the row that has no `name` — not shifted, not dropped.
+        assert_eq!(render(&[a, b]), "id,name,val\n1,alice,\n3,,30\n");
+    }
+
+    #[test]
+    fn format_is_taken_from_the_argument_not_the_path() {
+        // The `sql -o` defect at the unit level: a `.csv` path asked to
+        // write Parquet must produce Parquet, never re-sniff its own name.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("staged.csv");
+        write_batches_as(&path, &[dup_id_batch()], OutputFileFormat::Parquet).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(
+            &bytes[..4],
+            b"PAR1",
+            "write_batches_as re-sniffed the path instead of obeying its format argument"
+        );
+    }
 }

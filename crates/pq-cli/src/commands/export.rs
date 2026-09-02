@@ -57,6 +57,18 @@ fn resolve_file_format(
     global_format: Format,
     explicit_format: bool,
 ) -> anyhow::Result<Format> {
+    // A format that can't be written to a file at all is rejected *before*
+    // any note is printed. `export -f table -o out.csv` used to print
+    // `note: -f/--format table overrides the format implied by 'out.csv's
+    // extension (csv)` and then fail — announcing an override that never
+    // took effect. `extension_format` never yields Table/Plain, so an
+    // explicit `-f` is the only way the resolved format can be one of them.
+    if explicit_format && matches!(global_format, Format::Table | Format::Plain) {
+        anyhow::bail!(
+            "-f/--format {} can't be written to a file with `export`; use json, jsonl, or csv",
+            format_flag_name(global_format),
+        );
+    }
     let ext_format = extension_format(output_path);
     let format = match (ext_format, explicit_format) {
         (Some(ext_fmt), true) if ext_fmt != global_format => {
@@ -75,12 +87,6 @@ fn resolve_file_format(
              explicitly, or give the output file one of those extensions."
         ),
     };
-    if matches!(format, Format::Table | Format::Plain) {
-        anyhow::bail!(
-            "-f/--format {} can't be written to a file with `export`; use json, jsonl, or csv",
-            format_flag_name(format),
-        );
-    }
     Ok(format)
 }
 
@@ -179,11 +185,12 @@ fn write_rows(
 /// Write every file's rows as CSV to `writer`. Shared by the to-file and
 /// to-stdout paths so `export -f csv` behaves identically either way.
 ///
-/// Header is the union of every file's schema field names, in file/column
-/// order — not just the first file's. `export h1.parquet h2.parquet` with
-/// differing schemas used to freeze the header from file 1's first row,
-/// which silently shifted or dropped values from files with a different
-/// key set (see the CSV column-shift bug).
+/// Columns are the union of every file's schema, in file/column order — not
+/// just the first file's. `export h1.parquet h2.parquet` with differing
+/// schemas used to freeze the header from file 1's first row, which silently
+/// shifted or dropped values from files with a different key set (see the
+/// CSV column-shift bug). Column identity is `(name, occurrence)`, so a file
+/// carrying two columns of the same name keeps both — see `CsvColumn`.
 ///
 /// The union is built from a cheap metadata-only read per file
 /// (`open_metadata` reads the Parquet footer, not row data), so this pass
@@ -199,22 +206,13 @@ fn write_csv(
         .iter()
         .map(|f| pq_core::reader::open_metadata(f).map(|(schema, _rows)| schema))
         .collect::<Result<_, _>>()?;
-    let header = super::write_output::union_header(schemas);
+    let columns = super::write_output::union_columns(schemas);
 
-    if !header.is_empty() {
-        writer.write_all(&super::write_output::csv_record_bytes(&header)?)?;
-    }
+    super::write_output::write_csv_header(writer, &columns)?;
     for f in files {
         let (batches, _schema) = pq_core::reader::open_batches(f, opts)?;
         for batch in &batches {
-            let rows = pq_query::convert::batch_to_json_rows(batch);
-            total_rows += rows.len();
-            for row in &rows {
-                if let Some(obj) = row.as_object() {
-                    let record = super::write_output::csv_record(&header, obj);
-                    writer.write_all(&super::write_output::csv_record_bytes(&record)?)?;
-                }
-            }
+            total_rows += super::write_output::write_batch_csv_rows(writer, &columns, batch)?;
         }
     }
     Ok(total_rows)

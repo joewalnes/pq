@@ -18,6 +18,27 @@
   multi-file command. A glob matching zero files and a literal missing
   path now produce distinct errors.
 
+- Fix CSV silently dropping duplicate-named columns — a regression from the
+  union-header change, which deduped field names through a `HashSet` and
+  resolved them back by name. A Parquet file with two `id` columns lost one
+  in every CSV path, and the paths disagreed about which: `cat -f csv` kept
+  the first column's values, `export -o`/`cat --output`/`sql -o` the
+  second's, both under a single `id` header. Columns are now identified by
+  `(name, occurrence)` and resolved positionally, so the header is `id,id`
+  and both columns' data survives. All four batch-to-CSV implementations
+  were replaced by one shared implementation, which also makes `-f csv`
+  agree cell-for-cell with `-f table`.
+- Fix `pq sql -o <file>` writing the wrong format when the destination is a
+  symlink whose target has a different extension: `-o link.parquet` where
+  `link.parquet -> target.csv` wrote CSV under a `.parquet` name, exit 0.
+  The format was being resolved twice from two different strings — once
+  from the destination the user named, then again by sniffing the staging
+  path (whose name comes from the resolved symlink target). It is now
+  resolved once and passed down.
+- Fix `export`/`sql -o` printing `note: -f/--format table overrides ...`
+  and then failing — the note announced an override that never took effect.
+  A format that can't be written to a file is now rejected before any note.
+
 ## 2026-09-02 (4)
 
 - Fix `export`/`sql -o`: an explicit `-f`/`--format` was silently ignored

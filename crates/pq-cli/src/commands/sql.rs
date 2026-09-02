@@ -94,6 +94,13 @@ fn resolve_output_format(
             Ok(ResolvedFormat::Parquet)
         }
         ExtFormat::Text(ext_fmt) => {
+            // Reject a format that cannot be written to a file at all
+            // *before* announcing an override. `-f table -o out.csv` used to
+            // print "note: -f/--format table overrides ... (csv)" and then
+            // fail — a note claiming an override that never took effect.
+            if explicit_format {
+                check_file_format(global_format, display_path)?;
+            }
             let format = if explicit_format && ext_fmt != global_format {
                 eprintln!(
                     "note: -f/--format {} overrides the format implied by '{display_path}'s \
@@ -105,7 +112,6 @@ fn resolve_output_format(
             } else {
                 ext_fmt
             };
-            check_file_format(format, display_path)?;
             Ok(ResolvedFormat::Text(format))
         }
         ExtFormat::Unrecognized => {
@@ -146,6 +152,19 @@ fn format_flag_name(format: Format) -> &'static str {
     }
 }
 
+/// Write the query results to `staged`, in the format implied by
+/// `display_path` — the destination the *user* named.
+///
+/// The two arguments are deliberately different strings and that is the
+/// whole point. `staged` is a temporary sibling created by
+/// `pq_transform::output_guard`, whose name is derived from the destination
+/// *after* symlink resolution; `display_path` is what the user typed. The
+/// format must come from the latter, decided exactly once, and be handed
+/// down. This used to call `write_batches_to_file(staged, ...)`, which
+/// re-derived the format by sniffing `staged`'s extension — so
+/// `-o link.parquet` where `link.parquet -> target.csv` staged as `...csv`,
+/// the second sniff won, and `pq sql` wrote a CSV file under a `.parquet`
+/// name, exit 0, "Wrote N rows". Never re-sniff a path here.
 fn write_output_file(
     staged: &Path,
     display_path: &str,
@@ -154,9 +173,10 @@ fn write_output_file(
     explicit_format: bool,
 ) -> anyhow::Result<usize> {
     match resolve_output_format(display_path, global_format, explicit_format)? {
-        ResolvedFormat::Parquet => super::write_output::write_batches_to_file(
-            staged.to_str().unwrap_or(display_path),
+        ResolvedFormat::Parquet => super::write_output::write_batches_as(
+            staged,
             batches,
+            super::write_output::OutputFileFormat::Parquet,
         ),
         ResolvedFormat::Text(format) => write_text(staged, batches, format),
     }
@@ -184,18 +204,7 @@ fn write_text(path: &Path, batches: &[RecordBatch], format: Format) -> anyhow::R
             }
         }
         Format::Csv => {
-            let header = super::write_output::union_header(batches.iter().map(|b| b.schema()));
-            if !header.is_empty() {
-                file.write_all(&super::write_output::csv_record_bytes(&header)?)?;
-            }
-            for batch in batches {
-                for row in pq_query::convert::batch_to_json_rows(batch) {
-                    if let Some(obj) = row.as_object() {
-                        let record = super::write_output::csv_record(&header, obj);
-                        file.write_all(&super::write_output::csv_record_bytes(&record)?)?;
-                    }
-                }
-            }
+            super::write_output::write_batches_csv(&mut file, batches)?;
         }
         Format::Table | Format::Plain => {
             unreachable!("check_file_format rejects Table/Plain before this is reached")

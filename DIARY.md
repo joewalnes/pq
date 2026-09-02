@@ -25,6 +25,58 @@ back to (file, local offset) and grouping consecutive same-file indices
 into ranges to avoid full scans, same trick the single-file code already
 used for one file.
 
+## 2026-09-02 — Decide the output format once, from the name the user typed
+
+Two features that each parse a filename collided. `sql -o DEST` resolves the
+format from `DEST`'s extension, then hands the writer the *staging* path from
+`output_guard`, and that writer re-sniffed the extension of the path it was
+given. The staging name is built from `resolve_symlinks(DEST)` — the symlink
+*target*'s name — so `-o link.parquet` where `link.parquet -> target.csv`
+staged as `....csv`, the second sniff won, and `pq sql` wrote a CSV file under
+a `.parquet` name with exit 0 and "Wrote 2 rows". Confirmed by magic bytes:
+`69 64 2c 6e` ("id,n") where a control run produced `50 41 52 31` ("PAR1").
+Extensionless and dangling targets produced JSONL and CSV the same way.
+
+The tempting fix — make the staging name mimic the *destination's* extension
+rather than the target's — is a patch on a symptom: it leaves two independent
+derivations of the same fact, and they will drift again the next time either
+side learns a new rule. So the format is decided exactly once, from the string
+the user typed, and passed down: `write_batches_as(path, batches, format)`
+obeys a format it is given, and `write_batches_to_file(path, ...)` (the
+sniffing entry point, still used by `cat -O`/`jq -o`, which pass the real
+destination) is documented as safe only for a path the user named.
+`staging_path`'s doc comment used to *justify* preserving the extension as "so
+callers which sniff the format still see what the user asked for"; that claim
+was false, and the correction now lives there.
+
+## 2026-09-02 — Union headers align records by name; Arrow batches are positional
+
+The union-header CSV fix deduped field names through a `HashSet` and then
+resolved each header entry back to data with `Schema::index_of(name)` (stdout)
+or a JSON map keyed by name (the file paths). Neither can represent two
+columns with the same name — which Parquet permits and Arrow batches express
+positionally. A file with two `id` columns therefore lost one in every CSV
+path, silently, exit 0, and the paths did not even lose the same one:
+`cat -f csv` emitted `id / 1 / 2`, `export -o` emitted `id / 10 / 20`, where
+`-f table` correctly showed `id,id / 1,10 / 2,20`. A fix whose stated purpose
+was to stop CSV dropping data introduced a new way for CSV to drop data.
+
+The tension is real and worth writing down: the union header exists to align
+*heterogeneous records* by name, while an Arrow batch is positional. The
+resolution is to make column identity `(name, occurrence-within-schema)` —
+positional inside a schema, name-aligned across schemas — so the union still
+works across files with different columns while duplicates each keep their
+own slot and the header reads `id,id`, matching the table renderer. Name-keyed
+lookup survives only on the jq/values path, where the input genuinely *is* a
+map of names to values and duplicate keys cannot exist.
+
+Four hand-rolled batch-to-CSV implementations became one, which is the more
+durable half of the fix: they had already drifted into disagreeing about which
+column to keep, and they rendered cells differently besides (Arrow's formatter
+on stdout, JSON stringification in files). The shared implementation uses
+Arrow's `ArrayFormatter`, the same one `-f table` uses, so CSV and table now
+agree cell for cell.
+
 ## 2026-09-02 — Published tutorials left un-migrated; README claim narrowed instead
 
 `docs/src/tutorials/*.md` (rendered onto the docs site by `docs/build.py`,
