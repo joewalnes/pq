@@ -4,6 +4,23 @@ Latest entries first. Record significant decisions, architecture changes, and no
 
 ---
 
+## 2026-09-02 — Peer review of the licensing/wheel work found real bugs
+
+A verifying peer built and installed the wheel/license changes below rather
+than trusting the report, and found four real defects: generated
+`THIRD-PARTY-LICENSES` files were untracked-but-not-gitignored (dirtied the
+shared checkout and blocked the merge gate for every other agent); the
+cargo-about install check used `command -v`, which misses `~/.cargo/bin`
+when it's off `$PATH` (it was, on this machine); the NOTICE-appendix scratch
+file used a fixed `/tmp` path (a collision hazard the CLAUDE.md singleton
+warnings already called out); and `release.yml` never actually ran `make
+licenses`, so the gap noted below as "deferred" would have failed the first
+real release. All four are fixed on this branch, each reproduced against
+the broken behavior before fixing, same as the original work. Lesson worth
+generalizing: "I noted the gap in a comment" is not the same as "someone
+will act on the gap" — a landmine documented next to where it will detonate
+is still a landmine.
+
 ## 2026-09-02 — Third-party license bundling: generate at build time, don't commit
 
 Chose not to commit the `cargo-about`-generated `THIRD-PARTY-LICENSES` (~525KB,

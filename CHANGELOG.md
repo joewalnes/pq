@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-09-02 (2)
+
+- Fix `make licenses` leaving generated `THIRD-PARTY-LICENSES` files
+  untracked and ungitignored (blocked the shared-checkout merge gate);
+  gitignore them instead of committing
+- Fix `make licenses`' cargo-about install check using `command -v`, which
+  misses `~/.cargo/bin` when it's off `$PATH`; probe with `cargo about
+  --version` instead
+- Fix `make licenses` writing its NOTICE-appendix scratch file to a fixed
+  `/tmp` path (collision risk with concurrent agents); use `mktemp` with
+  cleanup on both success and failure
+- Wire `make licenses` into `.github/workflows/release.yml` (new
+  `licenses` job feeding `publish-npm`/`publish-pypi`), pinning cargo-about
+  to an exact version — closes the gap where the first tagged release
+  would have failed at the wheel-build step
+
 ## 2026-09-02
 
 - Fix PyPI wheel: removed a `[console_scripts]` entry point that made pip
