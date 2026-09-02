@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-09-02
+
+- Record the human's release decisions in ASKS.md: three channels, tag-driven semver, no `latest` tag
+- Log two unfixed bugs found by adversarial review: `pq sql` silently drops duplicate-named columns via DataFusion planning, and `pq-core` error Display doubles its own source chain
+- Log that npm/PyPI publishing has never succeeded and must be verified before the first `v0.1.0` tag
+- Correct the record: the `latest` tag name was not shown to be permanently unusable, only refused once
 ## 2026-09-02 (5)
 
 - Fix `pq layout`: row group ranges never accumulated an offset (every
