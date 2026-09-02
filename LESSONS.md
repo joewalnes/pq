@@ -131,3 +131,29 @@ new thing first and move a pointer, or use a name that is never reused — over 
 recreate against a shared mutable identity. And treat a long run of successes as weak evidence
 about a rare failure branch: fourteen prior successes are precisely why nobody looked.
 **Scope:** general
+
+## A confirmed finding that lives only in a report is indistinguishable from one nobody found
+**What happened:** A reconnaissance agent confirmed four data-correctness bugs and returned them
+in one report. The foreman dispatched fixes for three — the output-aliasing cluster, mixed-type
+JSON columns being NULLed, and the CSV pair — and never dispatched the fourth. It stayed live in
+`main` for the rest of the run: `pq cat` rendering a `decimal256(40,2)` value of `123.45` as
+`"12345.2"`, and collapsing `1.23` and `123.00` to the identical string `"123.2"`, so the error
+was not even recoverable from the output. It was found only when the foreman went back and
+re-read the original report against current source. A deliberate sweep of every other confirmed
+finding then turned up two more in the same state — `stats --describe --sample-size` silently
+reporting on the first file only, and the atomic output guard breaking hardlinks and dropping
+xattrs and ACLs. Nine findings checked, seven already handled, **two still unassigned: a 22%
+leak rate on work that had already been paid for.**
+**What it cost:** A 100x-wrong financial-precision rendering shipped in every build for a full
+run, plus two silent-wrong-answer bugs, none of them new discoveries — all three had been found,
+reproduced and written down hours earlier.
+**The rule that would have prevented it:** None of the usual machinery watches the gap between
+*confirmed* and *assigned*. A merge gate cannot — there is no test for a bug nobody fixed. An
+adversarial pass cannot — it attacks what changed, not what was never touched. Verification
+cannot — you only verify what you dispatched. So reconcile findings against dispatches
+explicitly and in writing: when a report returns N findings, enumerate them, and record for each
+one whether it was fixed, dispatched, or deliberately logged. Splitting one multi-item finding
+across several dispatches is the specific shape that leaks, because each dispatch looks complete
+on its own. Do the reconciliation from the original report, never from recollection of what you
+sent.
+**Scope:** general

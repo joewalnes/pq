@@ -2,6 +2,9 @@
 
 ## 2026-09-02
 
+- Record in LESSONS.md that confirmed findings leak between being reported and being dispatched: a sweep of nine found two never assigned, after a fourth was discovered live in main all run
+## 2026-09-02
+
 - Fix `pq cat`'s default table output (and `-f plain`) silently misaligning
   columns when combining files whose column names appear in a different
   order, or whose column sets differ. The header was frozen from the first
