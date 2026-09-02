@@ -155,8 +155,12 @@ RUST_SOURCES := $(shell find crates Cargo.toml Cargo.lock -name '*.rs' -o -name 
 
 release: $(DIST_DIR)/pq-darwin-arm64/pq $(DIST_DIR)/pq-linux-amd64/pq $(DIST_DIR)/pq-linux-arm64/pq
 
+# Pinned to an exact commit of cross's default branch, with --locked, and
+# kept identical to the pin in .github/workflows/release.yml's build job:
+# a local `make release` and a CI release must not be built by different
+# versions of the cross-compiler driver. Bump both together.
 $(CROSS):
-	cargo install cross --git https://github.com/cross-rs/cross
+	cargo install cross --git https://github.com/cross-rs/cross --rev 8c1a8aa4b661711f4b7b6ac07c2e8929ce2f7d27 --locked  # main @ 2026-08-19
 
 $(DIST_DIR)/pq-darwin-arm64/pq: $(RUST_SOURCES)
 	rustup target add aarch64-apple-darwin

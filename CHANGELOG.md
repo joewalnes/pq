@@ -2,6 +2,7 @@
 
 ## 2026-09-02
 
+- Pin the floating refs the release workflow trusted: `dtolnay/rust-toolchain@stable` and `pypa/gh-action-pypi-publish@release/v1` (both branches) to exact commits, and `cargo install cross --git` to an exact `--rev` with `--locked`, in both `release.yml` and the `Makefile`
 - Ship `LICENSE` and `THIRD-PARTY-LICENSES` as release assets, so the `curl`-a-binary install gets the same attribution npm packages and wheels already carry
 - Publish `SHA256SUMS` as a release asset, and document verifying a downloaded binary against it in README.md
 - Releases are now created for the git tag itself. Removes the `gh release delete latest` / `git push origin :refs/tags/latest` / `gh release create latest` dance that destroyed the project's only release; GitHub's own `/releases/latest/download/` redirect provides the pointer, so nothing needs deleting
