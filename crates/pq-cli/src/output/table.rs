@@ -1,3 +1,4 @@
+use crate::commands::write_output::{column_indices, union_columns, CsvColumn};
 use arrow::array::RecordBatch;
 use arrow::util::display::ArrayFormatter;
 use comfy_table::{
@@ -6,13 +7,71 @@ use comfy_table::{
 };
 use std::io::Write;
 
+/// Shown for a column that a given row's *file* does not have at all --
+/// never for a column the file has whose value happens to be SQL NULL.
+///
+/// A genuine NULL already renders as a blank cell (arrow's `ArrayFormatter`
+/// with default `FormatOptions` prints nulls as the empty string, and this
+/// predates this fix -- `pq cat nulls.parquet -f table` has always shown a
+/// blank cell for a null, matching `-f csv`'s empty field). Reusing blank for
+/// "this file has no such column" would make the two cases indistinguishable
+/// in a multi-file table where the reader has no other way to tell "empty
+/// value" from "value doesn't exist here". A one-character marker is cheap
+/// and keeps that distinction visible without disturbing the established
+/// blank-means-null convention.
+const MISSING_COLUMN_MARKER: &str = "\u{b7}"; // ·
+
+/// Build the header cells for `columns` -- the union of every batch's schema,
+/// aligned by `(name, occurrence)` exactly as `-f csv` aligns it (see
+/// `write_output::union_columns`). A duplicate name repeats in the header,
+/// same as CSV's `id,id`, rather than being deduplicated away.
+fn header_cells(columns: &[CsvColumn], color: bool) -> Vec<Cell> {
+    columns
+        .iter()
+        .map(|c| {
+            let cell = Cell::new(c.name());
+            if color {
+                cell.add_attribute(Attribute::Bold).fg(Color::Cyan)
+            } else {
+                cell
+            }
+        })
+        .collect()
+}
+
+/// One batch's formatters, one per union column: `Some` when this batch's
+/// schema has that column (resolved positionally, so a duplicate name
+/// resolves to the matching occurrence, not just the first), `None` when it
+/// doesn't.
+fn batch_formatters<'a>(
+    batch: &'a RecordBatch,
+    columns: &[CsvColumn],
+) -> Vec<Option<ArrayFormatter<'a>>> {
+    let schema = batch.schema();
+    column_indices(columns, schema.as_ref())
+        .into_iter()
+        .map(|index| {
+            index.map(|i| {
+                ArrayFormatter::try_new(batch.column(i).as_ref(), &Default::default()).unwrap()
+            })
+        })
+        .collect()
+}
+
 pub fn render_table(writer: &mut dyn Write, batches: &[RecordBatch]) -> std::io::Result<()> {
     if batches.is_empty() {
         writeln!(writer, "(no data)")?;
         return Ok(());
     }
 
-    let schema = batches[0].schema();
+    // Union header, resolved by name (and by occurrence within a name) per
+    // batch -- the same alignment `-f csv` uses. Freezing the header from
+    // `batches[0]`'s schema, as this renderer used to, breaks the moment a
+    // later file has the same column names in a different order: values are
+    // then zipped in positionally under the first file's header, silently
+    // swapping columns that merely happen to share names across files.
+    let columns = union_columns(batches.iter().map(|b| b.schema()));
+
     let mut table = Table::new();
     table
         .load_preset(UTF8_FULL)
@@ -35,32 +94,26 @@ pub fn render_table(writer: &mut dyn Write, batches: &[RecordBatch]) -> std::io:
     if color {
         table.enforce_styling();
     }
-    let headers: Vec<Cell> = schema
-        .fields()
-        .iter()
-        .map(|f| {
-            let cell = Cell::new(f.name());
-            if color {
-                cell.add_attribute(Attribute::Bold).fg(Color::Cyan)
-            } else {
-                cell
-            }
-        })
-        .collect();
-    table.set_header(headers);
+    table.set_header(header_cells(&columns, color));
 
     // Rows
     for batch in batches {
-        let formatters: Vec<ArrayFormatter> = (0..batch.num_columns())
-            .map(|i| {
-                ArrayFormatter::try_new(batch.column(i).as_ref(), &Default::default()).unwrap()
-            })
-            .collect();
+        let formatters = batch_formatters(batch, &columns);
 
         for row_idx in 0..batch.num_rows() {
             let cells: Vec<Cell> = formatters
                 .iter()
-                .map(|f| Cell::new(f.value(row_idx).to_string()))
+                .map(|f| match f {
+                    Some(fmt) => Cell::new(fmt.value(row_idx).to_string()),
+                    None => {
+                        let cell = Cell::new(MISSING_COLUMN_MARKER);
+                        if color {
+                            cell.add_attribute(Attribute::Dim)
+                        } else {
+                            cell
+                        }
+                    }
+                })
                 .collect();
             table.add_row(cells);
         }
@@ -75,21 +128,23 @@ pub fn render_plain(writer: &mut dyn Write, batches: &[RecordBatch]) -> std::io:
         return Ok(());
     }
 
-    let schema = batches[0].schema();
-    let headers: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
+    // Same by-name/by-occurrence alignment as `render_table` and `-f csv` --
+    // see `render_table`'s comment. `-f plain` had the identical positional
+    // bug (it also built its header from `batches[0]`'s schema alone).
+    let columns = union_columns(batches.iter().map(|b| b.schema()));
+    let headers: Vec<&str> = columns.iter().map(|c| c.name()).collect();
     writeln!(writer, "{}", headers.join("\t"))?;
 
     for batch in batches {
-        let formatters: Vec<ArrayFormatter> = (0..batch.num_columns())
-            .map(|i| {
-                ArrayFormatter::try_new(batch.column(i).as_ref(), &Default::default()).unwrap()
-            })
-            .collect();
+        let formatters = batch_formatters(batch, &columns);
 
         for row_idx in 0..batch.num_rows() {
             let cells: Vec<String> = formatters
                 .iter()
-                .map(|f| f.value(row_idx).to_string())
+                .map(|f| match f {
+                    Some(fmt) => fmt.value(row_idx).to_string(),
+                    None => MISSING_COLUMN_MARKER.to_string(),
+                })
                 .collect();
             writeln!(writer, "{}", cells.join("\t"))?;
         }

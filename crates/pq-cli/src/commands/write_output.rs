@@ -176,10 +176,23 @@ fn write_values_text(
 /// schema while preserving the reason the union header exists: aligning
 /// *heterogeneous files* by column name. A column is "the same column"
 /// across batches when both its name and its occurrence index match.
+///
+/// Despite the name, this is now the shared alignment unit for every
+/// renderer that lays columns out side by side by name -- CSV and the table
+/// renderer (`output::table`) both build their header from [`union_columns`]
+/// and resolve each batch against it with [`column_indices`], rather than
+/// keeping a second, table-flavored copy of the same by-name/by-occurrence
+/// logic that could drift out of agreement with CSV's.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct CsvColumn {
     name: String,
     occurrence: usize,
+}
+
+impl CsvColumn {
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
 }
 
 /// The CSV columns for a set of schemas: the union over every schema, in
@@ -214,7 +227,7 @@ pub(crate) fn union_columns(schemas: impl IntoIterator<Item = SchemaRef>) -> Vec
 ///
 /// Resolution is positional: the *n*-th field named `id` answers for the
 /// *n*-th `id` column, which is what `Schema::index_of` could not express.
-fn column_indices(columns: &[CsvColumn], schema: &Schema) -> Vec<Option<usize>> {
+pub(crate) fn column_indices(columns: &[CsvColumn], schema: &Schema) -> Vec<Option<usize>> {
     let mut positions: HashMap<&str, Vec<usize>> = HashMap::new();
     for (idx, field) in schema.fields().iter().enumerate() {
         positions
