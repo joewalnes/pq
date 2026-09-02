@@ -39,12 +39,16 @@ pub fn run(file: &str, format: Format) -> anyhow::Result<()> {
             )?;
             writeln!(writer)?;
 
+            let mut row_offset: i64 = 0;
             for rg in &layout.row_groups {
-                let row_end = rg.num_rows.saturating_sub(1);
+                let row_start = row_offset;
+                let row_end = row_start + rg.num_rows.saturating_sub(1).max(0);
+                row_offset += rg.num_rows;
                 writeln!(
                     writer,
-                    "Row Group {} (rows 0\u{2013}{}, {}):",
+                    "Row Group {} (rows {}\u{2013}{}, {}):",
                     rg.index,
+                    format_number(row_start),
                     format_number(row_end),
                     bytesize::ByteSize(rg.total_byte_size as u64),
                 )?;
