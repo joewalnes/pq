@@ -2,6 +2,32 @@
 
 ## 2026-09-02
 
+- Fix `pq sql --help`'s own examples: every one used a bareword path like
+  `'data.parquet'`, which DataFusion parses as a `schema.table` reference and
+  fails to resolve (`failed to resolve schema: data`), and the `long_about`
+  additionally claimed glob support ("Glob patterns (e.g., 'logs/*.parquet')
+  are supported") that did not exist in any form (`table
+  'datafusion.public.logs/*.parquet' not found`). Fixed both: examples now
+  use `./data.parquet` (matches `docs/src/faq.md`'s existing advice, and a
+  bareword with no `/` anywhere is the only shape that trips the bug — an
+  absolute path or a `subdir/`-prefixed one already works), and glob support
+  is now real — `register_files_from_query` (`crates/pq-query/src/sql.rs`)
+  was skipping a glob's registration entirely because it never exists as a
+  literal path; it now hands a glob straight to DataFusion, which already
+  expands and schema-merges it natively, plus an explicit check that a
+  pattern matching zero files is an error rather than a silent empty result.
+  Fixed every advertised copy: `cli.rs`'s `long_about`/`after_help`,
+  `docs/src/cli-reference.md` (regenerated — also picked up unrelated
+  pre-existing `-q`/`-v`-flag and line-wrap drift from before this change),
+  `docs/src/index.md`, and the golden expectation in
+  `tests/golden/tests/help-output.md`. New guard,
+  `crates/pq-cli/tests/help_examples_tests.rs`: extracts every `pq sql
+  "..."` example straight out of the binary's own `--help` text and runs it
+  against a real fixture, so a future broken example fails a test instead of
+  shipping inside pinned help text nobody executes; confirmed to fail against
+  the pre-fix binary with the exact reported error. Scoped to `sql` — other
+  subcommands' examples are not covered (see TODO.md).
+
 - Fix `pq sql` error messages tripling for parser/type/schema errors (e.g.
   `DataFusion error: SQL error: ParserError("..."): SQL error:
   ParserError("..."): sql parser error: ...`). `SqlError::DataFusion`
