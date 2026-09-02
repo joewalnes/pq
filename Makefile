@@ -38,10 +38,11 @@ install: build
 # requires preserving these; cargo-about only handles LICENSE text, not NOTICE
 # files, so that part is done by hand below).
 #
-# NOTE: wiring `make licenses` into .github/workflows/release.yml so it runs
-# automatically before packaging is deliberately NOT done here - that file is
-# owned by another in-flight change to the release workflow. Until that
-# lands, a human must run `make licenses` before cutting a release.
+# Wired into .github/workflows/release.yml's `licenses` job, which runs this
+# and hands the result to publish-npm/publish-pypi as a build artifact - see
+# that job's comments. Local runs (e.g. to eyeball the output, or before a
+# manual `make release`) still work the same way and are untracked/
+# gitignored, same as CI's copy.
 
 .PHONY: licenses
 
