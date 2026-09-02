@@ -4,6 +4,30 @@ Latest entries first. Record significant decisions, architecture changes, and no
 
 ---
 
+## 2026-09-02 — Generating capabilities.rs instead of re-listing
+
+`capabilities.rs`'s 197-line hand-duplicate of the clap tree had already
+drifted once (its tagline diverged from `--help`'s). Rewriting it to
+*exactly* preserve every field the old JSON had turned out to be the wrong
+goal: several of those fields encoded semantic knowledge clap genuinely
+doesn't have (a `String` field being "a path" or "a regex"), and pretending
+otherwise would mean either lying via reflection tricks that behave
+differently in debug vs. release builds, or hand-listing per-command
+overrides that just reintroduce the 197 lines. The fix that actually
+removes the drift risk: everything clap *can* derive (which commands and
+args exist, required-ness, defaults, enum values) now comes straight from
+`Cli::command()`, and the only hand-written part left is a ~16-entry table
+mapping an argument's *id* (not per-command — the same field name means the
+same thing everywhere in this CLI, e.g. every `file` is a path) to the one
+semantic fact clap can't infer. That table is checked against the live clap
+tree on every invocation, and a deliberately injected stale entry proved it
+fails loudly rather than silently. Generating for real also surfaced two
+drifts nobody had caught: the hand list had never mentioned
+`stats --sample-size` or `cat --output`, and claimed `count`/`merge`'s file
+arguments were `required: true` when clap's actual parse behavior
+(confirmed by running `pq count` with zero files) lets them through to an
+application-level error instead.
+
 ## 2026-09-02 — One version read from two places
 
 `pq --version` and `pq capabilities`'s `"version"` field read from different
