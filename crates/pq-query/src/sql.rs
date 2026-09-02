@@ -192,6 +192,35 @@ async fn register_files_from_query(
 
         if source::is_url(path_str) {
             register_remote_parquet(ctx, path_str, path_str).await?;
+        } else if is_glob_pattern(path_str) {
+            // A glob never exists as a literal path, so the canonicalize+exists
+            // guard below must not gate it. DataFusion's own `ListingTableUrl`
+            // already expands a glob embedded in the path (see datafusion-44's
+            // `register_parquet` doctest `read_with_glob_path`), including
+            // merging the matched files' schemas via `ParquetFormat::infer_schema`
+            // — so handing the pattern straight to `register_parquet_source`
+            // (which falls through to `ctx.register_parquet` for anything that
+            // isn't a real file or directory) is sufficient; no separate glob
+            // expansion is needed here. This intentionally does not run the
+            // duplicate-top-level-column check that single files and
+            // directories get (`Target::Other` already skipped it before this
+            // change, for the same "left entirely to DataFusion" reason
+            // documented on that variant) — see TODO.md.
+            //
+            // Confirmed separately (before this guard existed): DataFusion
+            // does not treat "matched nothing" as an error — it registers an
+            // empty table and the query silently returns zero rows, exit 0.
+            // `pq sql "SELECT * FROM 'empty/*.parquet'"` printed nothing and
+            // exited 0 with no diagnostic at all. A typo'd pattern is then
+            // indistinguishable from a legitimately empty result, so check
+            // for at least one match ourselves first and say so if there is
+            // none.
+            if !glob_has_match(path_str)? {
+                return Err(SqlError::Other(format!(
+                    "No files matched pattern '{path_str}'"
+                )));
+            }
+            register_parquet_source(ctx, path_str, path_str, path_str).await?;
         } else {
             // Canonicalize to resolve relative paths before checking existence
             let path = Path::new(path_str);
@@ -209,6 +238,33 @@ async fn register_files_from_query(
 fn is_parquet_ref(s: &str) -> bool {
     let lower = s.to_lowercase();
     lower.ends_with(".parquet") || lower.ends_with(".parq") || lower.ends_with(".pq")
+}
+
+/// Whether `s` should be treated as a glob pattern rather than a literal path.
+///
+/// Same heuristic as `pq_cli::files::resolve_files` (`*`, `?`, `[`): a literal
+/// filename that happens to contain one of these characters is misdetected as
+/// a glob. That is a pre-existing, accepted ambiguity shared with shell
+/// globbing itself, not new here.
+fn is_glob_pattern(s: &str) -> bool {
+    s.contains('*') || s.contains('?') || s.contains('[')
+}
+
+/// Whether `pattern` matches at least one filesystem entry.
+///
+/// Deliberately stops at the first match rather than collecting the whole
+/// list — DataFusion performs its own, separate expansion once registration
+/// proceeds (see the call site), so this exists solely to convert "matches
+/// nothing" from a silent empty result into a stated error before that
+/// happens.
+fn glob_has_match(pattern: &str) -> std::result::Result<bool, SqlError> {
+    let mut matches = glob::glob(pattern)
+        .map_err(|e| SqlError::Other(format!("Invalid glob pattern '{pattern}': {e}")))?;
+    let first = matches
+        .next()
+        .transpose()
+        .map_err(|e| SqlError::Other(format!("Glob error reading '{pattern}': {e}")))?;
+    Ok(first.is_some())
 }
 
 // ---------------------------------------------------------------------------
@@ -721,5 +777,169 @@ mod tests {
         assert_eq!(renamed.field(1).data_type(), &DataType::Utf8);
         assert!(!renamed.field(0).is_nullable());
         assert!(renamed.field(1).is_nullable());
+    }
+
+    // ------------------------------------------------------------------
+    // Glob support in `FROM '...'`
+    //
+    // `sql --help` claims "Glob patterns (e.g., 'logs/*.parquet') are
+    // supported." Before this module's `is_glob_pattern` branch existed,
+    // that claim was false in every form: `register_files_from_query`
+    // canonicalized every quoted path and skipped registration unless
+    // `resolved.exists()`, and a glob string never exists as a literal
+    // path, so the table was never registered and DataFusion reported
+    // "table ... not found". Reproduced on the release binary before this
+    // fix, with a real two-file fixture:
+    //
+    //   $ pq sql "SELECT * FROM 'logs/*.parquet'"
+    //   Error: DataFusion error: Error during planning: table
+    //   'datafusion.public.logs/*.parquet' not found
+    //
+    // These tests exercise the fix end to end through `execute_sql` (the
+    // same entry point `pq sql` calls), using real on-disk Parquet files
+    // in a `TempDir`, not just the string-matching helpers, so a
+    // regression that breaks registration itself (not just detection)
+    // still fails loudly here.
+    // ------------------------------------------------------------------
+
+    use arrow::array::Int64Array;
+    use std::sync::Arc as StdArc;
+    use tempfile::TempDir;
+
+    fn write_int_fixture(path: &std::path::Path, column: &str, values: &[i64]) {
+        let schema = StdArc::new(Schema::new(vec![Field::new(
+            column,
+            DataType::Int64,
+            false,
+        )]));
+        let batch =
+            RecordBatch::try_new(schema, vec![StdArc::new(Int64Array::from(values.to_vec()))])
+                .expect("building fixture RecordBatch");
+        pq_core::writer::write_batches(
+            path,
+            std::slice::from_ref(&batch),
+            &pq_core::writer::WriteOptions::default(),
+        )
+        .expect("writing fixture parquet file");
+    }
+
+    fn run_sql(query: &str) -> std::result::Result<Vec<RecordBatch>, SqlError> {
+        tokio::runtime::Runtime::new()
+            .expect("building tokio runtime for test")
+            .block_on(execute_sql(query))
+    }
+
+    #[test]
+    fn is_glob_pattern_detects_metacharacters() {
+        assert!(is_glob_pattern("logs/*.parquet"));
+        assert!(is_glob_pattern("logs/data-?.parquet"));
+        assert!(is_glob_pattern("logs/[ab].parquet"));
+        assert!(!is_glob_pattern("logs/data.parquet"));
+        assert!(!is_glob_pattern("./data.parquet"));
+    }
+
+    #[test]
+    fn glob_with_multiple_matches_unions_them() {
+        let dir = TempDir::new().expect("tempdir");
+        write_int_fixture(&dir.path().join("a.parquet"), "n", &[1, 2]);
+        write_int_fixture(&dir.path().join("b.parquet"), "n", &[3]);
+
+        let pattern = dir.path().join("*.parquet");
+        let query = format!(
+            "SELECT sum(n) AS total FROM '{}'",
+            pattern.to_str().expect("utf8 tempdir path")
+        );
+        let batches = run_sql(&query).unwrap_or_else(|e| {
+            panic!("expected the glob to resolve and the query to run, got: {e}")
+        });
+        let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total_rows, 1, "expected one aggregate row");
+        let col = batches[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .expect("sum(n) is Int64");
+        assert_eq!(col.value(0), 6, "sum across both glob-matched files");
+    }
+
+    #[test]
+    fn glob_with_single_match_still_registers() {
+        let dir = TempDir::new().expect("tempdir");
+        write_int_fixture(&dir.path().join("only.parquet"), "n", &[42]);
+
+        let pattern = dir.path().join("*.parquet");
+        let query = format!(
+            "SELECT n FROM '{}'",
+            pattern.to_str().expect("utf8 tempdir path")
+        );
+        let batches = run_sql(&query).expect("single glob match should register and query");
+        let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total_rows, 1);
+    }
+
+    #[test]
+    fn glob_with_zero_matches_errors_instead_of_silently_returning_nothing() {
+        // The bug this guards: before `glob_has_match` was added, DataFusion
+        // registered an empty table for a pattern that matched nothing and
+        // the query returned zero rows with exit 0 — indistinguishable from
+        // a legitimately empty result. Confirmed on the release binary:
+        // `pq sql "SELECT * FROM 'empty/*.parquet'"` printed nothing and
+        // exited 0.
+        let dir = TempDir::new().expect("tempdir");
+        // Deliberately do not create any file matching the pattern.
+        let pattern = dir.path().join("*.parquet");
+        let pattern_str = pattern.to_str().expect("utf8 tempdir path").to_string();
+        let query = format!("SELECT * FROM '{pattern_str}'");
+
+        let err = run_sql(&query).expect_err("a pattern matching nothing must be an error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("No files matched pattern"),
+            "expected a stated zero-match error, got: {msg}"
+        );
+        assert!(
+            msg.contains(&pattern_str),
+            "error should name the pattern that matched nothing, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn glob_matching_incompatible_schemas_errors_rather_than_silently_answering() {
+        let dir = TempDir::new().expect("tempdir");
+        // Same file name pattern, same column name, incompatible types.
+        write_int_fixture(&dir.path().join("ints.parquet"), "a", &[1]);
+        let schema = StdArc::new(Schema::new(vec![Field::new("a", DataType::Utf8, false)]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![StdArc::new(arrow::array::StringArray::from(vec!["x"]))],
+        )
+        .expect("building string fixture batch");
+        pq_core::writer::write_batches(
+            &dir.path().join("strs.parquet"),
+            std::slice::from_ref(&batch),
+            &pq_core::writer::WriteOptions::default(),
+        )
+        .expect("writing string fixture");
+
+        let pattern = dir.path().join("*.parquet");
+        let query = format!(
+            "SELECT * FROM '{}'",
+            pattern.to_str().expect("utf8 tempdir path")
+        );
+        let err = run_sql(&query)
+            .expect_err("mismatched column types across glob-matched files must error");
+        // Must be a schema-merge failure caught *after* both files were
+        // actually registered — not the pre-fix "table ... not found" (which
+        // would mean the glob never registered at all and this test would
+        // pass for the wrong reason).
+        let msg = err.to_string();
+        assert!(
+            !msg.contains("not found"),
+            "glob should have registered both files, not failed to find the table: {msg}"
+        );
+        assert!(
+            msg.to_lowercase().contains("schema") || msg.to_lowercase().contains("merge"),
+            "expected a schema-merge error naming the conflict, got: {msg}"
+        );
     }
 }

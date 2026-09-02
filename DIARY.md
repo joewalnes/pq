@@ -62,6 +62,61 @@ partial state described above, with certainty rather than by bad luck. This is
 also the likeliest explanation for the npm half of run `578a2b6`, where both
 publish jobs failed and the logs have since expired.
 
+## 2026-09-02 — `sql --help`'s glob claim: implemented, not deleted, because DataFusion already does the hard part
+
+`sql --help` claimed glob support that didn't exist:
+`register_files_from_query` (`crates/pq-query/src/sql.rs`) canonicalizes
+every quoted path and only registers it if `resolved.exists()`; a glob
+string like `logs/*.parquet` never exists as a literal path, so the branch
+was silently skipped and DataFusion reported `table
+'datafusion.public.logs/*.parquet' not found`.
+
+The instinct going in was that real glob support meant reimplementing
+expansion with the `glob` crate, then hand-building a multi-file
+`ListingTable` (`ListingTableConfig::new_with_multi_paths`) to get
+predicate/schema handling across the matched files, with all the edge-case
+machinery that implies. Reading `datafusion-44.0.0/src/execution/context/
+parquet.rs`'s own test suite first paid for itself: `ctx.register_parquet`
+already accepts a glob embedded in the path string end to end
+(`read_with_glob_path`, `read_from_registered_table_with_glob_path`) —
+`ListingTableUrl::parse` splits the string into a directory prefix and a
+compiled `glob::Pattern` itself, lists everything under the prefix, and
+filters by the pattern; schema inference (`ParquetFormat::infer_schema`)
+runs across *all* matched files under that one URL and merges via Arrow's
+`Schema::try_merge`, which is exactly the union-with-loud-conflict-error
+behavior wanted. So the entire implementation is: stop gating a glob string
+on `.exists()` and hand it to the same `register_parquet_source` path
+non-globs already use. No new dependency on `ListingTableConfig`, no
+hand-rolled multi-path plumbing.
+
+That native path had one real gap, found by testing it rather than assuming
+it: DataFusion does not treat "matched nothing" as an error. A pattern with
+zero matches registers an empty table and the query silently returns zero
+rows, exit 0 — `pq sql "SELECT * FROM 'empty/*.parquet'"` printed nothing.
+A typo'd pattern is then indistinguishable from a legitimately empty
+result. Added `glob_has_match` (using the `glob` crate only to check for a
+first match, not to expand or register anything — DataFusion still does the
+real expansion) so a zero-match glob is now a stated error naming the
+pattern. Mixed-schema files across a glob were also tested directly
+(two files, same column name, incompatible types): DataFusion's own
+`try_merge` already refuses this loudly (`Fail to merge schema field 'a'
+... does not equal Int64`) rather than answering wrong, so no extra guard
+was needed there — decided *by testing it*, not by inspection, since a
+silent wrong merge would have been the kind of thing worth building around.
+
+Decided **not** to extend the duplicate-top-level-column-name protection
+(`RenamedDuplicatesTable`) to glob-matched tables. That protection exists
+because DataFusion collapses same-named columns silently; extending it to
+an arbitrary glob match set would need the same per-file schema read this
+module already does for directories (`reject_directory_with_duplicate_
+columns`), adapted to a `Vec<PathBuf>` instead of an object-store listing —
+doable, but a second thing to get right under time pressure, and the
+`Target::Other` branch this glob path reuses already accepted the same gap
+("left entirely to DataFusion, exactly as before this module grew a
+duplicate check") for every other unclassified location before this change.
+Logged as a known, pre-existing-shaped gap in TODO.md rather than expanded
+scope.
+
 ## 2026-09-02 — `pq sql`'s error tripling was the same disease, opposite cure
 
 `SqlError::DataFusion` (`crates/pq-query/src/sql.rs`) had exactly the shape

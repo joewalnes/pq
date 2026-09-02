@@ -29,7 +29,7 @@ pub const VERSION: &str = env!("PQ_VERSION");
     name = "pq",
     about = TAGLINE,
     version = VERSION,
-    after_help = "Examples:\n  pq data.parquet                              # open in TUI viewer\n  pq info data.parquet\n  pq cat data.parquet --limit 100\n  pq sql \"SELECT count(*) FROM 'data.parquet'\"\n  pq jq data.parquet '.name'",
+    after_help = "Examples:\n  pq data.parquet                              # open in TUI viewer\n  pq info data.parquet\n  pq cat data.parquet --limit 100\n  pq sql \"SELECT count(*) FROM './data.parquet'\"\n  pq jq data.parquet '.name'",
     help_template = "\
 {about}
 
@@ -309,13 +309,15 @@ pub enum Command {
     /// Execute SQL query via DataFusion
     #[command(
         long_about = "Execute SQL queries on Parquet files using Apache DataFusion.\n\n\
-            Files are referenced directly in the FROM clause using single-quoted paths.\n\
-            Glob patterns (e.g., 'logs/*.parquet') are supported.\n\n\
+            Files are referenced directly in the FROM clause using single-quoted paths;\n\
+            prefix local files with './' (a bare 'name.parquet' is parsed as a\n\
+            schema-qualified SQL identifier, not a path, and fails to resolve).\n\
+            Glob patterns (e.g., './logs/*.parquet') are supported.\n\n\
             Examples:\n\
-            \x20 pq sql \"SELECT * FROM 'data.parquet' LIMIT 10\"\n\
-            \x20 pq sql \"SELECT city, count(*) FROM 'data.parquet' GROUP BY city\"\n\
-            \x20 pq sql \"SELECT a.id, b.name FROM 'a.parquet' a JOIN 'b.parquet' b ON a.id = b.id\"\n\
-            \x20 pq sql \"SELECT * FROM 'logs/*.parquet' WHERE level = 'ERROR'\"\n\n\
+            \x20 pq sql \"SELECT * FROM './data.parquet' LIMIT 10\"\n\
+            \x20 pq sql \"SELECT city, count(*) FROM './data.parquet' GROUP BY city\"\n\
+            \x20 pq sql \"SELECT a.id, b.name FROM './a.parquet' a JOIN './b.parquet' b ON a.id = b.id\"\n\
+            \x20 pq sql \"SELECT * FROM './logs/*.parquet' WHERE level = 'ERROR'\"\n\n\
             SQL reference: https://datafusion.apache.org/user-guide/sql/index.html"
     )]
     Sql {
