@@ -213,6 +213,89 @@ fn test_sql() {
     .stdout(predicate::str::contains("100"));
 }
 
+// ── `-f`/`--format` semantics on `sql -o` (PART 1) ───────────────────────
+//
+// Same bug as `export`: `sql -o out.csv -f json` used to silently write
+// CSV (extension-inferred), never consulting `-f` at all. Chosen
+// semantics mirror `export`, with one addition: a `.parquet` extension
+// always wins, since `-f` has no value that means "write real Parquet".
+
+#[test]
+fn test_sql_explicit_format_overrides_conflicting_extension_with_warning() {
+    ensure_fixture();
+    let tmp = TempDir::new().unwrap();
+    let output = tmp.path().join("out.csv");
+
+    pq().args([
+        "sql",
+        &format!("SELECT id, name FROM '{}' LIMIT 2", fixture_path()),
+        "-o",
+        output.to_str().unwrap(),
+        "-f",
+        "json",
+    ])
+    .assert()
+    .success()
+    .stderr(predicate::str::contains("overrides the format implied by"));
+
+    let content = fs::read_to_string(&output).unwrap();
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&content)
+        .unwrap_or_else(|e| panic!("expected JSON (per -f json), got {content:?}: {e}"));
+    assert_eq!(rows.len(), 2);
+}
+
+#[test]
+fn test_sql_parquet_extension_always_wins_over_format_flag() {
+    // `-f` has no "parquet" value, so a `.parquet` output extension must
+    // always win — with a note, since an explicit `-f` is still ignored.
+    ensure_fixture();
+    let tmp = TempDir::new().unwrap();
+    let output = tmp.path().join("out.parquet");
+
+    pq().args([
+        "sql",
+        &format!("SELECT id, name FROM '{}' LIMIT 2", fixture_path()),
+        "-o",
+        output.to_str().unwrap(),
+        "-f",
+        "csv",
+    ])
+    .assert()
+    .success()
+    .stderr(predicate::str::contains("always wins"));
+
+    // A real Parquet file, not CSV text under a .parquet name.
+    let bytes = fs::read(&output).unwrap();
+    assert!(
+        bytes.starts_with(b"PAR1"),
+        "expected a real Parquet file (PAR1 magic), got {} bytes starting {:?}",
+        bytes.len(),
+        &bytes[..bytes.len().min(16)]
+    );
+}
+
+#[test]
+fn test_sql_unrecognized_extension_without_format_errors() {
+    ensure_fixture();
+    let tmp = TempDir::new().unwrap();
+    let output = tmp.path().join("out.txt");
+
+    pq().args([
+        "sql",
+        &format!("SELECT id FROM '{}' LIMIT 2", fixture_path()),
+        "-o",
+        output.to_str().unwrap(),
+    ])
+    .assert()
+    .failure()
+    .stderr(predicate::str::contains("cannot determine output format"));
+
+    assert!(
+        !output.exists(),
+        "no file should be created when the format can't be determined"
+    );
+}
+
 #[test]
 fn test_jq() {
     ensure_fixture();
@@ -1043,6 +1126,145 @@ fn test_export_stdout() {
     pq().args(["export", &fixture_path(), "-f", "jsonl", "--limit", "5"])
         .assert()
         .success();
+}
+
+// ── `-f`/`--format` semantics on `export` (PART 1) ───────────────────────
+//
+// Bug: `-f`/`--format` was silently ignored whenever `export` wrote to a
+// file — the output path's extension governed unconditionally, and an
+// unrecognized extension (e.g. `.parquet`) silently fell back to JSONL.
+// `export data.parquet -o a.parquet -f csv` wrote JSONL into a file named
+// `.parquet`, exit 0, no diagnostic. Separately, `-f csv` to *stdout* never
+// worked at all: the stdout writer had no CSV branch and silently emitted
+// JSONL instead. Chosen semantics (see `export::resolve_file_format`):
+// extension governs by default; an explicit `-f` overrides it with a
+// stderr note (never silently); if neither pins down a format, error
+// instead of guessing.
+
+#[test]
+fn test_export_stdout_format_csv_actually_produces_csv() {
+    // Regression test for the stdout-CSV bug: before the fix, this branch
+    // didn't exist and `-f csv` silently fell through to the JSONL
+    // catch-all. Run against the pre-fix binary this comment is describing
+    // and it fails: stdout starts with `{"active":...`, not a CSV header.
+    ensure_fixture();
+    let assert = pq()
+        .args(["export", &fixture_path(), "-f", "csv", "--limit", "2"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    let mut lines = stdout.lines();
+    let header = lines.next().expect("csv header line");
+    assert!(
+        header
+            .split(',')
+            .eq(["active", "age", "city", "id", "name", "score"]),
+        "expected a CSV header, got: {header:?}"
+    );
+    assert!(
+        !stdout.trim_start().starts_with('{'),
+        "stdout looks like JSON, not CSV: {stdout:?}"
+    );
+}
+
+#[test]
+fn test_export_explicit_format_wins_over_unrecognized_extension() {
+    // `-o out.parquet` has an extension `export` never recognizes as a
+    // target (export produces CSV/JSON/JSONL, not Parquet) — before the
+    // fix this silently defaulted to JSONL regardless of `-f`. An explicit
+    // `-f csv` must now actually produce CSV.
+    ensure_fixture();
+    let tmp = TempDir::new().unwrap();
+    let output = tmp.path().join("weird.parquet");
+
+    pq().args([
+        "export",
+        &fixture_path(),
+        "-o",
+        output.to_str().unwrap(),
+        "-f",
+        "csv",
+        "--limit",
+        "2",
+    ])
+    .assert()
+    .success();
+
+    let content = fs::read_to_string(&output).unwrap();
+    assert!(
+        content.starts_with("active,age,city,id,name,score"),
+        "expected CSV content, got: {content:?}"
+    );
+}
+
+#[test]
+fn test_export_explicit_format_overrides_conflicting_extension_with_warning() {
+    // `-o out.csv -f json`: the flag was typed explicitly, so it wins — but
+    // the loser (the `.csv` extension) must not be silent about losing.
+    ensure_fixture();
+    let tmp = TempDir::new().unwrap();
+    let output = tmp.path().join("out.csv");
+
+    pq().args([
+        "export",
+        &fixture_path(),
+        "-o",
+        output.to_str().unwrap(),
+        "-f",
+        "json",
+        "--limit",
+        "2",
+    ])
+    .assert()
+    .success()
+    .stderr(predicate::str::contains("overrides the format implied by"));
+
+    let content = fs::read_to_string(&output).unwrap();
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&content)
+        .unwrap_or_else(|e| panic!("expected JSON (per -f json), got {content:?}: {e}"));
+    assert_eq!(rows.len(), 2);
+}
+
+#[test]
+fn test_export_unrecognized_extension_without_format_errors() {
+    // Neither a recognized extension nor an explicit `-f` pins down a
+    // format. Before the fix this silently wrote JSONL; now it must fail
+    // loudly instead of guessing, and must not leave a file behind.
+    ensure_fixture();
+    let tmp = TempDir::new().unwrap();
+    let output = tmp.path().join("out.txt");
+
+    pq().args(["export", &fixture_path(), "-o", output.to_str().unwrap()])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot determine export format"));
+
+    assert!(
+        !output.exists(),
+        "no file should be created when the format can't be determined"
+    );
+}
+
+#[test]
+fn test_export_invalid_file_format_errors_instead_of_panicking() {
+    // `-f table`/`-f plain` have no file representation for `export`. This
+    // used to reach an `unreachable!()` in the writer and panic; it must
+    // now be a clean error.
+    ensure_fixture();
+    let tmp = TempDir::new().unwrap();
+    let output = tmp.path().join("out.csv");
+
+    pq().args([
+        "export",
+        &fixture_path(),
+        "-o",
+        output.to_str().unwrap(),
+        "-f",
+        "table",
+    ])
+    .assert()
+    .failure()
+    .stderr(predicate::str::contains("can't be written to a file"));
 }
 
 // ── Describe tests (now via stats --describe) ────────────────────────────

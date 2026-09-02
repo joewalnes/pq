@@ -195,7 +195,7 @@ fn run(cli: Cli, format: Format, explicit_format: bool) -> anyhow::Result<()> {
                     .print_long_help()?;
                 Ok(())
             }
-            Some(q) => commands::sql::run(q, output.as_deref(), format),
+            Some(q) => commands::sql::run(q, output.as_deref(), format, explicit_format),
         },
 
         Command::View { ref file } => commands::view::run(file),
@@ -255,7 +255,7 @@ fn run(cli: Cli, format: Format, explicit_format: bool) -> anyhow::Result<()> {
             limit,
         } => {
             let resolved = files::resolve_files(files)?;
-            commands::export::run(&resolved, output.as_deref(), limit, format)
+            commands::export::run(&resolved, output.as_deref(), limit, format, explicit_format)
         }
 
         Command::Grep {

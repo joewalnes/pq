@@ -12,7 +12,7 @@
 
 ## Tier 2 — Differentiation
 
-- [x] `describe <file>` — Statistical summary per column: count, nulls, null%, min, max, mean, stddev, distinct, top-K frequent values
+- [x] `stats --describe <file>` — Statistical summary per column: count, nulls, null%, min, max, mean, stddev, distinct, top-K frequent values (shipped as a flag on `stats`, not a standalone `describe` command)
 - [x] `grep <file> <pattern>` — Search across all columns for a regex match; supports `-i` case-insensitive, `--limit`, `-c` column filter
 - [x] `split <file>` — Split by row count (`--rows`) or partition key (`--partition-by col`); Hive-style partitioned output
 - [ ] `schema evolve <file>` — Add columns (`--add name:type`), drop (`--drop col`), rename (`--rename old:new`), cast types (`--cast col:type`)
@@ -22,10 +22,11 @@
 
 - [x] TUI: row number unreadable on selected row — Fixed: row number now uses `fg(White)` on selected row, `fg(DarkGray)` otherwise.
 - [ ] P2: Interactive viewer demo GIF missing from docs site — The homepage and viewer page reference `img/tui-viewer.gif` but the GIF has never been committed. `make demos` generates it via `demos/tui-viewer.py` + asciinema + agg, but the docs CI workflow doesn't run this step. Either generate and commit the GIF, or add asciinema/agg to the docs workflow.
+- [ ] P1: `docs/src/tutorials/*.md` (published) have drifted from `tests/golden/tutorials/*.md` (tested) — hand-copied when the golden tutorials were written, never kept in sync since; diffs now range ~58-172 changed lines per file across all five. `docs/build.py` renders `docs/src/tutorials/` with a plain Markdown pipeline that can't parse the golden runner's `console`/`file:` fences, so the two can't simply be pointed at the same files without teaching `docs/build.py` that DSL (or switching the golden runner to consume the docs copies' plain fences, losing per-command expected-output checking). Fix is either: (a) write a `docs/build.py` preprocessor that renders the golden DSL into the docs site's current look, or (b) accept the copies are illustrative-only and say so loudly next to each one. README.md's claim was corrected to describe only the tested `tests/golden/` copies; the published copies remain unverified until this is done.
 
 ## Infrastructure
 
 - [x] Streaming TUI — Lazy PageCache with background fetch thread; no row limit
-- [ ] `union <files...>` — Like merge but actually implements union-by-name (fill missing columns with nulls)
-- [ ] Progress bars on all transform commands (repack, sort, merge, convert, export, split)
+- [x] `union <files...>` — Already satisfied by `merge --schema-mode union` below: fills missing columns with nulls instead of adding a separate command (verified in `crates/pq-transform/src/merge.rs`'s `SchemaMode::Union` branch)
+- [ ] Progress bars on all transform commands (repack, sort, merge, import, export, split)
 - [x] Fix `merge --schema-mode union|intersect` — implemented: union adds null columns for missing fields, intersect keeps only common columns, strict rejects mismatches

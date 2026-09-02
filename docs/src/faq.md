@@ -92,4 +92,8 @@ pq export data.parquet -o data.json
 pq export data.parquet -o data.jsonl
 ```
 
-The output format is auto-detected from the extension.
+The output format is auto-detected from the extension. An explicit
+`-f`/`--format` overrides the extension (with a note on stderr saying so);
+if the extension isn't recognized and `-f` isn't given either, `export` and
+`sql -o` refuse to guess and exit with an error instead of picking a
+default silently.

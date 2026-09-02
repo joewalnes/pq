@@ -1,5 +1,42 @@
 # Changelog
 
+## 2026-09-02 (4)
+
+- Fix `export`/`sql -o`: an explicit `-f`/`--format` was silently ignored
+  whenever output went to a file (extension always won, and an
+  unrecognized extension silently fell back to JSONL — confirmed:
+  `export -o a.parquet -f csv` wrote JSONL into a file named `.parquet`,
+  exit 0). Now: extension governs by default, an explicit `-f` overrides
+  it with a stderr note, and an undetermined format is a hard error
+  instead of a silent guess. Also fixed `export -f csv` to stdout, which
+  had no CSV branch at all and silently emitted JSONL.
+- Fix `TODO.md`: `describe` doesn't exist as a standalone command (it's
+  `stats --describe`); the `union` command item was already satisfied by
+  `merge --schema-mode union`, not a separate TODO; one stale `convert`
+  reference updated to `import`
+- Correct README.md: `-O` was documented as the output-*format* flag (real
+  flag is `-f`; `-O` on `cat` means `--output <FILE>`), `pq convert` was
+  documented instead of the real `pq import`, `pq select` was documented
+  as filtering rows (it only projects columns), `grep`/`split`/`validate`/
+  `import`/`export` were missing from the feature list entirely, and the
+  flagship example used a table-rendering style (`┌┬┐`/`│`, no row
+  separators, comma-formatted counts, a fabricated `…` truncation row, a
+  `Created by: pq 0.1.0` line the tool never emits) that hasn't matched
+  the real renderer's output (`╭╮╰╯`/`┆`, per-row separators, no comma
+  formatting) since it was written
+- Correct `docs/src/example-data.md` and `docs/src/index.md`: their
+  `pq schema` tree output was fabricated (wrong Unicode box-drawing glyph
+  for the last branch, wrong/missing `(nullable)` markers, invented type
+  names like `date32`/`decimal128`/`binary` instead of the real
+  `date`/`decimal`/`fixed_binary`); replaced with real, verified output.
+  `docs/src/faq.md` updated to describe the new `-f`-vs-extension
+  semantics on `export`/`sql -o`
+- Correct the README's "tutorials double as tests" claim: only
+  `tests/golden/tutorials/` is executed by the test harness. The published
+  `docs/src/tutorials/` copies are hand-formatted and have drifted
+  (~58-172 changed lines per file across all five); tracked in TODO.md
+  rather than silently migrated
+
 ## 2026-09-02 (3)
 
 - Give HTTP remote-file access real, running test coverage: 10 `test_http_*`

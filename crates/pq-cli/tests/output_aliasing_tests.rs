@@ -159,13 +159,24 @@ fn export_output_aliasing_preserves_data() {
     let dir = TempDir::new().unwrap();
     let a = make_parquet(dir.path(), "a.parquet");
 
-    pq().args(["export", a.to_str().unwrap(), "-o", a.to_str().unwrap()])
-        .assert()
-        .success();
+    // `export`'s destination is `a.parquet` (same name as the input, to
+    // exercise aliasing) but `export` never writes Parquet, so `.parquet` is
+    // not a format it can infer from the extension — `-f jsonl` says so
+    // explicitly. This test is about the anti-aliasing guard, not format
+    // selection; see `export.rs`'s `resolve_file_format` for the latter.
+    pq().args([
+        "export",
+        a.to_str().unwrap(),
+        "-o",
+        a.to_str().unwrap(),
+        "-f",
+        "jsonl",
+    ])
+    .assert()
+    .success();
 
-    // `export` picks its file format from the output extension, so a
-    // `.parquet` destination gets JSON Lines. Whatever the format, all five
-    // rows must be there — pre-fix this file was zero bytes.
+    // Whatever the format, all five rows must be there — pre-fix this file
+    // was zero bytes.
     let text = fs::read_to_string(&a).unwrap();
     assert_eq!(
         text.lines().count(),

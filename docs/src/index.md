@@ -15,16 +15,18 @@ Compression:  ZSTD
 # What columns does it have?
 $ pq schema events.parquet
 Schema (8 columns):
-├── id: int64
-├── event: string
-├── user_id: int32
-├── ts: timestamp(us)
-├── city: string
-├── device: string
-├── duration_ms: int32
-╰── payload: struct
-    ├── action: string
-    ╰── metadata: map<string, string>
+├── id: int64 (nullable)
+├── event: string (nullable)
+├── user_id: int32 (nullable)
+├── ts: timestamp(us) (nullable)
+├── city: string (nullable)
+├── device: string (nullable)
+├── duration_ms: int32 (nullable)
+└── payload: struct (nullable)
+    ├── action: string (nullable)
+    └── metadata: map (nullable)
+        ├── key: string
+        └── value: string (nullable)
 
 # Peek at the data
 $ pq head events.parquet -n 3
