@@ -24,14 +24,33 @@ pub enum OutputFileFormat {
 /// lives in exactly one spot instead of being repeated — and potentially
 /// gotten wrong — at every call site. Swallowing the flush's `Result`
 /// (`let _ = buffered.flush();`) instead of propagating it is exactly the
-/// mistake that matters here: every writer in this workspace goes through
-/// `pq_transform::output_guard::with_atomic_output`, which renames the
-/// staged file over the destination only *after* the writing closure
-/// returns `Ok`. A swallowed flush error would let that `Ok` through with an
-/// incompletely-written staged file, and the rename would commit it — a
-/// silent truncation. See `write_buffered_propagates_a_flush_error` below,
-/// which fails immediately if the `?` after `.flush()` is ever weakened to
-/// an ignored result.
+/// mistake that matters here: the file writers in this module run *inside*
+/// the closure that `pq_transform::output_guard::with_atomic_output` waits
+/// on, and that guard renames the staged file over the user's destination
+/// only *after* the closure returns `Ok`. A swallowed flush error would let
+/// that `Ok` through with an incompletely-written staged file, and the
+/// rename would commit it — a silent truncation. See
+/// `write_buffered_propagates_a_flush_error` below, which fails immediately
+/// if the `?` after `.flush()` is ever weakened to an ignored result.
+///
+/// # Correction to the previous version of this paragraph
+///
+/// It used to read "**every** writer in this workspace goes through
+/// `pq_transform::output_guard::with_atomic_output`". That was false when it
+/// was written, and false in precisely the two functions it was attached to.
+/// [`write_batches_to_file`] (`cat -O`) and [`json_values_to_file`]
+/// (`jq -o`, `cat --jq -O`) called `std::fs::File::create` on the user's
+/// destination directly — `O_TRUNC`, no staging — so a write that failed
+/// part way through replaced the destination with partial output. Measured on
+/// a deliberately full 4 MB HFS+ RAM disk (`hdiutil attach -nomount
+/// ram://8192`), with a 23-byte pre-existing destination and a 200,000-row
+/// input: all three commands exited 1 having replaced those 23 bytes with
+/// 258,048 bytes of half-written JSONL, while `export -o` — which already
+/// went through the guard — left the destination byte-identical under the
+/// identical failure. Both functions stage now, which is what makes the
+/// paragraph above true. Do not take the claim on trust: `grep -rln
+/// with_atomic_output crates/` must name every module that writes to a
+/// user-supplied output path.
 pub(crate) fn write_buffered<W, T>(
     inner: W,
     body: impl FnOnce(&mut std::io::BufWriter<W>) -> anyhow::Result<T>,
@@ -99,21 +118,110 @@ pub fn write_batches_as(
     Ok(total_rows)
 }
 
-/// Write RecordBatches to a file, **sniffing** the format from `path`'s
-/// extension. Returns the number of rows written.
+/// Write RecordBatches to the destination `path` the user named
+/// (`cat -O`), staged. Returns the number of rows written.
 ///
-/// Only correct when `path` is the destination the user actually named.
-/// Never call this with a staging path — see [`write_batches_as`] for why
-/// that combination silently wrote the wrong format.
+/// The format is sniffed from `path`'s extension **once, here**, and then
+/// handed to [`write_batches_as`], which only obeys it. That ordering is
+/// load-bearing: the path the writer actually receives is a *staging* path
+/// with a different name, built by `pq_transform::output_guard` from the
+/// resolved symlink target. Re-sniffing it is the seam that made
+/// `sql -o link.parquet` (`link.parquet -> target.csv`) write CSV under a
+/// `.parquet` name with exit 0.
+///
+/// Staged so that a write which fails part way through — a full disk, a
+/// backend error surfacing at flush — leaves `path` exactly as it was. It
+/// used to be a bare `File::create(path)`; see [`write_buffered`] for the
+/// measurement.
 pub fn write_batches_to_file(path: &str, batches: &[RecordBatch]) -> anyhow::Result<usize> {
-    write_batches_as(Path::new(path), batches, format_from_extension(path))
+    let format = format_from_extension(path);
+    staged(path, |dest| write_batches_as(dest, batches, format))
 }
 
-/// Write JSON values to a file, auto-detecting format from extension.
+/// Write JSON values to the destination `path` the user named (`jq -o`,
+/// `cat --jq -O`), staged. Returns the number of rows written.
+///
+/// Same two properties as [`write_batches_to_file`]: the format is resolved
+/// once from the user's own path and never re-sniffed from the staging name,
+/// and a failed write leaves `path` untouched.
+pub fn json_values_to_file(path: &str, values: &[serde_json::Value]) -> anyhow::Result<usize> {
+    let format = format_from_extension(path);
+    staged(path, |dest| json_values_as(dest, values, format))
+}
+
+/// Run `write` against a staging file and rename it over `dest` on success,
+/// via `pq_transform::output_guard::with_atomic_output` — except when `dest`
+/// names an already-open file descriptor, in which case `write` is handed the
+/// path itself.
+///
+/// **Why the exception exists, and why it is a classification and not a
+/// fallback.** `/dev/stdout`, `/dev/stderr`, `/dev/fd/N` and the `/dev/fd/63`
+/// paths a shell hands to `>(...)` process substitution are aliases for a
+/// descriptor the process already holds, not names of files in a directory.
+/// When that descriptor happens to be redirected to a regular file
+/// (`pq cat x -O /dev/stdout > out.jsonl`), `fs::metadata` on it reports a
+/// regular file, so `output_guard` tries to stage a sibling inside `/dev/fd`
+/// — which devfs refuses — and the whole command fails with
+/// "cannot create a temporary file next to /dev/stdout". That is a real
+/// defect and it already affects `export`, `select`, `sql`, `slice` and
+/// `merge`; fixing it inside `output_guard` was out of scope for the change
+/// that staged `cat`/`jq`, so it is compensated for here and recorded in
+/// `TODO.md`. Piped `/dev/stdout` and plain fifos are already handled by the
+/// guard's own `can_stage` check and do not come through here.
+///
+/// The distinction that keeps this safe: the decision is made up front from
+/// what the destination *is*, never from a staging attempt that failed. An
+/// `Err(_) => write(dest)` fallback is the exact shape that kept the original
+/// data-loss bug reachable (see `output_guard`'s module docs); nothing here
+/// resumes the destructive path after an error.
+fn staged<T>(dest: &str, write: impl FnOnce(&Path) -> anyhow::Result<T>) -> anyhow::Result<T> {
+    if names_an_open_descriptor(Path::new(dest)) {
+        return write(Path::new(dest));
+    }
+    pq_transform::output_guard::with_atomic_output(dest, write)
+}
+
+/// Follow `path`'s symlink chain and report whether it lands in `/dev/fd`.
+///
+/// macOS `/dev/stdout` is a relative symlink to `fd/1`; `/dev/fd/1` itself is
+/// not a symlink, so the chain stops there. On Linux `/dev/stdout` points at
+/// `/proc/self/fd/1`, which the kernel resolves the rest of the way to the
+/// real file — so there the chain leaves `/dev` entirely and staging works,
+/// which is the behaviour we want and which this check does not disturb.
+fn names_an_open_descriptor(path: &Path) -> bool {
+    let mut current = path.to_path_buf();
+    // Same bound the kernel uses for ELOOP.
+    for _ in 0..40 {
+        if current.starts_with("/dev/fd") {
+            return true;
+        }
+        let Ok(target) = std::fs::read_link(&current) else {
+            return false;
+        };
+        current = if target.is_absolute() {
+            target
+        } else {
+            match current.parent() {
+                Some(parent) => parent.join(target),
+                None => target,
+            }
+        };
+    }
+    false
+}
+
+/// Write JSON values to `path` in an **already-resolved** format.
 /// For Parquet output, infers schema and converts to RecordBatches first.
 /// Returns the number of rows written.
-pub fn json_values_to_file(path: &str, values: &[serde_json::Value]) -> anyhow::Result<usize> {
-    match format_from_extension(path) {
+///
+/// The [`write_batches_as`] of the jq path: `path` here is a staging path,
+/// so this function must never look at its extension.
+pub(crate) fn json_values_as(
+    path: &Path,
+    values: &[serde_json::Value],
+    format: OutputFileFormat,
+) -> anyhow::Result<usize> {
+    match format {
         OutputFileFormat::Parquet => {
             // Filter to only object values for schema inference
             let objects: Vec<serde_json::Value> =
@@ -127,14 +235,15 @@ pub fn json_values_to_file(path: &str, values: &[serde_json::Value]) -> anyhow::
             let batches =
                 pq_transform::schema_inference::json_values_to_batches(&objects, &schema)?;
             let opts = pq_core::writer::WriteOptions::default();
-            pq_core::writer::write_batches(Path::new(path), &batches, &opts)?;
+            pq_core::writer::write_batches(path, &batches, &opts)?;
             Ok(objects.len())
         }
-        format => {
+        text => {
             // Buffered for the same reason as `write_batches_as`'s text
-            // branch above; see `write_buffered`.
+            // branch above; see `write_buffered`. The flush happens inside
+            // this call, so its error reaches the guard before the rename.
             write_buffered(std::fs::File::create(path)?, |file| {
-                write_values_text(file, values, format)
+                write_values_text(file, values, text)
             })?;
             Ok(values.len())
         }
@@ -575,5 +684,56 @@ mod tests {
             b"PAR1",
             "write_batches_as re-sniffed the path instead of obeying its format argument"
         );
+    }
+
+    #[test]
+    fn json_values_as_takes_the_format_from_the_argument_not_the_path() {
+        // The jq half of the same seam. `json_values_to_file` resolves the
+        // format from the user's own path and then hands `json_values_as` a
+        // *staging* path whose extension is unrelated (it is built from the
+        // resolved symlink target). Re-sniffing here would write CSV under a
+        // `.parquet` destination, exit 0.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("staged.csv");
+        let values = vec![serde_json::json!({"id": 1, "name": "a"})];
+        json_values_as(&path, &values, OutputFileFormat::Parquet).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(
+            &bytes[..4],
+            b"PAR1",
+            "json_values_as re-sniffed the path instead of obeying its format argument"
+        );
+
+        let path = dir.path().join("staged.parquet");
+        json_values_as(&path, &values, OutputFileFormat::Csv).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "id,name\n1,a\n",
+            "json_values_as re-sniffed a .parquet staging name and wrote Parquet"
+        );
+    }
+
+    #[test]
+    fn descriptor_aliases_are_recognised_but_ordinary_paths_are_not() {
+        // Only meaningful where these exist; every unix pq supports has them.
+        assert!(names_an_open_descriptor(Path::new("/dev/fd/1")));
+        assert!(names_an_open_descriptor(Path::new("/dev/fd/63")));
+        if std::fs::read_link("/dev/stdout").is_ok() {
+            assert!(
+                names_an_open_descriptor(Path::new("/dev/stdout")),
+                "/dev/stdout must resolve to a descriptor alias, or `-O /dev/stdout > file` \
+                 breaks with 'cannot create a temporary file next to /dev/stdout'"
+            );
+        }
+        // Everything a user would actually stage must go through the guard.
+        let dir = tempfile::TempDir::new().unwrap();
+        let real = dir.path().join("out.jsonl");
+        std::fs::write(&real, "x").unwrap();
+        assert!(!names_an_open_descriptor(&real));
+        let link = dir.path().join("link.jsonl");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        assert!(!names_an_open_descriptor(&link));
+        assert!(!names_an_open_descriptor(Path::new("/dev/null")));
+        assert!(!names_an_open_descriptor(Path::new("/dev/shm/out.jsonl")));
     }
 }

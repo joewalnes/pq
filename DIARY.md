@@ -4,6 +4,45 @@ Latest entries first. Record significant decisions, architecture changes, and no
 
 ---
 
+## 2026-09-02 — `cat`/`jq` were the last unstaged writers, and the comment said otherwise
+
+`grep -rln with_atomic_output crates/` listed eight files and did not list
+`cat.rs` or `jq.rs`. Those two reached `File::create(dest)` through
+`write_output::write_batches_to_file` and `json_values_to_file`, so `-O`/`-o`
+truncated the user's file before any output existed. On a deliberately full
+4 MB HFS+ RAM disk, all three shapes (`cat -O`, `jq -o`, `cat --jq -O`)
+turned a 23-byte destination into 258,048 bytes of half-written JSONL and
+exited 1; `export -o`, already staged, left the same destination
+byte-identical under the identical failure. That paired measurement is the
+whole argument — same input, same destination, same filesystem, one
+difference.
+
+What made this worth writing down is that the doc comment on `write_buffered`
+— added the same day, two lines above the code — asserted that *every* writer
+in the workspace went through the guard, and it was attached to precisely the
+two functions where that was false. An auditor reading it would have stopped.
+The comment now says what is true and tells the reader to re-run the grep
+rather than trust the prose.
+
+Two things the fix had to avoid. The format must be resolved once, from the
+name the user typed, and passed down: the staging name is built from the
+resolved *symlink target*, so re-sniffing it writes CSV under a `.parquet`
+destination — the confirmed `sql -o` corruption, one layer down. And the guard
+mishandles `/dev/stdout` when the shell has redirected it to a regular file:
+`fs::metadata` says "regular file", so it tries to stage inside `/dev/fd`,
+which devfs refuses, and the command dies. That already breaks `export`,
+`select`, `sql`, `slice` and `merge` (it is the open P3 in `TODO.md`), and
+`output_guard.rs` was out of scope here, so `write_output` classifies
+descriptor aliases up front and writes through them. Deliberately a
+classification made *before* any attempt, not an `Err(_) => write(dest)`
+fallback — that shape is what kept the original data-loss bug alive.
+
+One behaviour genuinely changed: `cat X -O X` inside a mode-0555 directory
+used to succeed and now refuses, because staging cannot create a sibling.
+That is the same refusal every other `-o` command already gives, and the
+input survives either way; it is asserted in the tests so it stays a decision
+rather than a surprise.
+
 ## 2026-09-02 — `stats --describe --sample-size`: budget the concatenation, not the file-open order
 
 `stats --describe`'s row-budget loop opened files in argument order with a
