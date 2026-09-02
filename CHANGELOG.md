@@ -1,5 +1,31 @@
 # Changelog
 
+## 2026-09-02 (2)
+
+- Fix `make licenses` leaving generated `THIRD-PARTY-LICENSES` files
+  untracked and ungitignored (blocked the shared-checkout merge gate);
+  gitignore them instead of committing
+- Fix `make licenses`' cargo-about install check using `command -v`, which
+  misses `~/.cargo/bin` when it's off `$PATH`; probe with `cargo about
+  --version` instead
+- Fix `make licenses` writing its NOTICE-appendix scratch file to a fixed
+  `/tmp` path (collision risk with concurrent agents); use `mktemp` with
+  cleanup on both success and failure
+- Wire `make licenses` into `.github/workflows/release.yml` (new
+  `licenses` job feeding `publish-npm`/`publish-pypi`), pinning cargo-about
+  to an exact version — closes the gap where the first tagged release
+  would have failed at the wheel-build step
+
+## 2026-09-02
+
+- Fix PyPI wheel: removed a `[console_scripts]` entry point that made pip
+  clobber the real `pq` binary with a broken Python shim, and fixed the
+  binary's zip permission bits so pip actually marks it executable
+- Add `pypi/build_wheels.py --self-test` regression guard for both of the above
+- Add `about.toml`/`about.hbs` (cargo-about config) and `make licenses` to
+  generate `THIRD-PARTY-LICENSES` for the workspace's dependencies
+- Ship `LICENSE` and `THIRD-PARTY-LICENSES` in the npm packages and PyPI wheel
+
 ## 2026-09-01
 
 - Record three lessons in LESSONS.md: a harness must assert the identity of its subject rather than resolving it by name through an ambient PATH, and an intermittent gate must be explained rather than retried, and a fix that changes the mechanism must be attacked on what the new mechanism requires

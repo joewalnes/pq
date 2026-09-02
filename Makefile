@@ -23,6 +23,92 @@ install: build
 	mkdir -p ~/.local/bin
 	cp target/release/pq ~/.local/bin/pq
 
+# -- Third-party license bundling --------------------------------------------
+# Regenerates THIRD-PARTY-LICENSES at the repo root from the workspace's
+# dependency graph via cargo-about (https://github.com/EmbarkStudios/cargo-about),
+# using about.toml/about.hbs for config/formatting. The file is NOT committed:
+# it is ~500KB and tracks Cargo.lock exactly, so it would go stale the moment
+# a dependency version bumps without anyone noticing. Regenerate it with
+# `make licenses` before packaging a release, which also copies it (and
+# pq's own LICENSE) into each npm package directory so `npm pack`/`npm
+# publish` picks them up (pypi/build_wheels.py instead reads both files
+# directly from the repo root and embeds them in the wheel itself).
+#
+# Also appends verbatim any dependency NOTICE files (Apache-2.0 section 4(d)
+# requires preserving these; cargo-about only handles LICENSE text, not NOTICE
+# files, so that part is done by hand below).
+#
+# Wired into .github/workflows/release.yml's `licenses` job, which runs this
+# and hands the result to publish-npm/publish-pypi as a build artifact - see
+# that job's comments. Local runs (e.g. to eyeball the output, or before a
+# manual `make release`) still work the same way and are untracked/
+# gitignored, same as CI's copy.
+
+.PHONY: licenses
+
+define NOTICE_APPENDIX_PY
+import json, os, sys
+
+about_json_path, out_path = sys.argv[1], sys.argv[2]
+data = json.load(open(about_json_path))
+
+notices = {}  # NOTICE content -> set of "name version" crate ids that ship it
+for c in data["crates"]:
+    manifest = c["package"].get("manifest_path")
+    if not manifest:
+        continue
+    crate_dir = os.path.dirname(manifest)
+    for fname in ("NOTICE", "NOTICE.txt", "NOTICE.md"):
+        p = os.path.join(crate_dir, fname)
+        if os.path.isfile(p):
+            content = open(p, errors="replace").read().strip()
+            notices.setdefault(content, set()).add(
+                f"{c['package']['name']} {c['package']['version']}"
+            )
+            break
+
+if not notices:
+    sys.exit(0)
+
+with open(out_path, "a") as out:
+    out.write("\n" + "=" * 80 + "\n\n")
+    out.write("Notices (Apache License 2.0 section 4(d))\n")
+    out.write("-------------------------------------------\n\n")
+    out.write(
+        "The following crates ship a NOTICE file which Apache-2.0 section 4(d)\n"
+        "requires be preserved in derivative works. Reproduced verbatim below.\n\n"
+    )
+    for content, crates in sorted(notices.items(), key=lambda kv: sorted(kv[1])):
+        out.write("-" * 80 + "\nUsed by:\n")
+        for name in sorted(crates):
+            out.write(f"  - {name}\n")
+        out.write("\n" + content + "\n\n")
+
+print(f"licenses: appended {len(notices)} unique NOTICE text(s) covering "
+      f"{sum(len(v) for v in notices.values())} crate(s)", file=sys.stderr)
+endef
+export NOTICE_APPENDIX_PY
+
+LICENSE_DEST_DIRS := npm/darwin-arm64 npm/linux-arm64 npm/linux-x64 npm/pqtool
+
+licenses:
+	@cargo about --version >/dev/null 2>&1 || { \
+		echo "error: cargo-about is not installed (or not runnable via 'cargo about')."; \
+		echo "  install with: cargo install cargo-about --locked --features cli"; \
+		exit 1; \
+	}
+	@set -e; \
+	tmp=$$(mktemp -t pq-about-json); \
+	trap 'rm -f "$$tmp"' EXIT; \
+	cargo about generate --workspace -o THIRD-PARTY-LICENSES about.hbs; \
+	cargo about generate --workspace --format json -o "$$tmp"; \
+	python3 -c "$$NOTICE_APPENDIX_PY" "$$tmp" THIRD-PARTY-LICENSES; \
+	for d in $(LICENSE_DEST_DIRS); do \
+		cp LICENSE THIRD-PARTY-LICENSES $$d/; \
+	done; \
+	echo "licenses: wrote THIRD-PARTY-LICENSES ($$(wc -l < THIRD-PARTY-LICENSES) lines) and copied LICENSE + THIRD-PARTY-LICENSES into: $(LICENSE_DEST_DIRS)"; \
+	echo "licenses: pypi/build_wheels.py reads LICENSE/THIRD-PARTY-LICENSES from the repo root directly - no copy needed there."
+
 # -- Documentation ------------------------------------------------------------
 
 docs: build demos
