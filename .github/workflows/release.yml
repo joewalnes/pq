@@ -1,9 +1,12 @@
 name: Release
 
-# Deliberately NOT triggered by push-to-main: every run mints an irreversible
-# `0.1.$(date +%Y%m%d%H%M)` version on npm and PyPI, so a release must be an
-# explicit act. `v*` tags do not match the `latest` tag this workflow creates,
-# so the release job cannot re-trigger this workflow.
+# Deliberately NOT triggered by push-to-main: every run publishes irreversible
+# versions to npm and PyPI, so a release must be an explicit act by a human.
+#
+# The version is the tag, minus its leading `v` — nothing else computes one.
+# `workflow_dispatch` is a re-run mechanism for an existing tag (pick the tag
+# in the ref selector); dispatched from a branch it fails in `preflight`
+# before any job can create or publish anything. See the `preflight` job.
 on:
   push:
     tags: ['v*']
@@ -14,6 +17,50 @@ permissions:
   contents: read
 
 jobs:
+  # Derives the one version string every other job uses, and refuses the run
+  # if there isn't one. Runs first and needs nothing, so a bad release attempt
+  # costs seconds and creates nothing.
+  #
+  # Why a job and not a step in each consumer: `publish-npm` and `publish-pypi`
+  # used to each run `date +%Y%m%d%H%M` independently, in parallel. Across a
+  # minute boundary they published *different* version numbers for the same
+  # commit, irreversibly, to two registries. One source, one value.
+  preflight:
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Derive version from tag
+        id: version
+        # REF via env, not ${{ }} interpolation into the script: a tag name is
+        # attacker-controlled text as far as the shell is concerned.
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          case "$REF" in
+            refs/tags/v*) ;;
+            *)
+              echo "::error::Release must run from a v<semver> tag; got '$REF'."
+              echo "::error::Push a tag (git tag v0.1.0 && git push origin v0.1.0),"
+              echo "::error::or re-run this workflow with an existing tag as the ref."
+              exit 1
+              ;;
+          esac
+          version="${REF#refs/tags/v}"
+          # Plain X.Y.Z only. A semver pre-release suffix (`-rc.1`) is not a
+          # valid PEP 440 version, so it would publish under a different
+          # string on PyPI than on npm - the exact divergence this job exists
+          # to prevent. Supporting pre-releases means normalising per registry
+          # first; until then, reject them loudly.
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Tag '$REF' does not yield a plain X.Y.Z version (got '$version')."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Releasing version $version"
+
   # `needs:` cannot reference a job in another workflow file, so CI is pulled
   # in here as a real job via `workflow_call`. This job's conclusion is the
   # conclusion of the whole CI workflow: if any CI job fails, `ci` fails, and
@@ -56,6 +103,9 @@ jobs:
           path: THIRD-PARTY-LICENSES
 
   build:
+    # preflight so a malformed tag stops the run before three build matrix
+    # legs spend runner minutes on a version that will be rejected anyway.
+    needs: [preflight]
     strategy:
       matrix:
         include:
@@ -86,14 +136,19 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Build
+        env:
+          # The release version, from the tag (see the preflight job), so
+          # `pq --version` reports the same string the registries published.
+          VERSION: ${{ needs.preflight.outputs.version }}
         run: |
+          set -euo pipefail
           SHA=$(git rev-parse --short HEAD)
-          DATE=$(TZ=UTC date +'%Y-%m-%d %H:%M')
-          VERSION="${DATE} main ${SHA} release"
+          DATE=$(TZ=UTC date +'%Y-%m-%d')
+          BUILD_VERSION="v${VERSION} (${SHA}) ${DATE}"
           if [ "${{ matrix.target }}" = "aarch64-unknown-linux-musl" ]; then
-            BUILD_VERSION="$VERSION" cross build --release --target ${{ matrix.target }}
+            BUILD_VERSION="$BUILD_VERSION" cross build --release --target ${{ matrix.target }}
           else
-            BUILD_VERSION="$VERSION" cargo build --release --target ${{ matrix.target }}
+            BUILD_VERSION="$BUILD_VERSION" cargo build --release --target ${{ matrix.target }}
           fi
           cp target/${{ matrix.target }}/release/pq ${{ matrix.asset }}
 
@@ -136,13 +191,17 @@ jobs:
             --latest
 
   publish-npm:
-    needs: [build, release, ci, licenses]
+    needs: [preflight, build, release, ci, licenses]
     runs-on: ubuntu-latest
     # id-token for `npm publish --provenance`; contents: read for checkout.
     # No write scope: this job only reads the repo and pushes to npm.
     permissions:
       contents: read
       id-token: write
+    env:
+      # The single version for the whole run, from the tag. Nothing in this
+      # job may compute a version of its own.
+      VERSION: ${{ needs.preflight.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -172,15 +231,11 @@ jobs:
             cp THIRD-PARTY-LICENSES "$d/"
           done
 
-      - name: Set version
-        run: |
-          VERSION="0.1.$(date +%Y%m%d%H%M)"
-          echo "VERSION=$VERSION" >> $GITHUB_ENV
-
       - name: Prepare and publish platform packages
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
+          set -euo pipefail
           chmod +x dist/*
 
           # darwin-arm64
@@ -202,6 +257,7 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
+          set -euo pipefail
           cd npm/pqtool
           jq --arg v "$VERSION" \
             '.version = $v | .optionalDependencies["@pqtool/darwin-arm64"] = $v | .optionalDependencies["@pqtool/linux-x64"] = $v | .optionalDependencies["@pqtool/linux-arm64"] = $v' \
@@ -209,13 +265,16 @@ jobs:
           npm publish --provenance --access public
 
   publish-pypi:
-    needs: [build, release, ci, licenses]
+    needs: [preflight, build, release, ci, licenses]
     runs-on: ubuntu-latest
     # id-token for PyPI trusted publishing (OIDC); contents: read for checkout.
     permissions:
       contents: read
       id-token: write
     environment: pypi
+    env:
+      # Same single version as publish-npm, from the same job output.
+      VERSION: ${{ needs.preflight.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -234,13 +293,9 @@ jobs:
           # fails loudly if either is missing.
           path: .
 
-      - name: Set version
-        run: |
-          VERSION="0.1.$(date +%Y%m%d%H%M)"
-          echo "VERSION=$VERSION" >> $GITHUB_ENV
-
       - name: Build wheels
         run: |
+          set -euo pipefail
           chmod +x dist/*
           python3 pypi/build_wheels.py --version "$VERSION" --binaries-dir dist/
 

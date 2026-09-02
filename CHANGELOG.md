@@ -2,6 +2,7 @@
 
 ## 2026-09-02
 
+- Release version now comes from the git tag, derived once in a new `preflight` job and consumed by every other job. Deletes the `0.1.$(date +%Y%m%d%H%M)` scheme, which the two publish jobs computed independently and could disagree on across a minute boundary
 - Record in LESSONS.md that an adversarial pass over four merged branches found three had each injected a fresh defect, and that a destructive step suppressed with `|| true` will eventually destroy something
 - Record the credentials finding: no repo secrets exist, so `NPM_TOKEN` is absent and tagging `v0.1.0` would create a release then fail to publish
 - Record in DIARY.md why 14 successful release runs left zero releases: the `latest` delete succeeded and the recreate failed, which is the evidence for dropping the mutable tag in favour of GitHub's `/releases/latest/` redirect
