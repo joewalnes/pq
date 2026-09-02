@@ -88,6 +88,11 @@ fn write_batch_output(
 ) -> anyhow::Result<()> {
     match output {
         Some(path) => {
+            // Staged inside `write_batches_to_file`: `-O` used to be a bare
+            // `File::create` on the user's file, so a write that ran out of
+            // space replaced the destination with partial output. The batches
+            // are already fully in memory here, which is why `cat X -O X`
+            // worked in spite of that; staging makes the *failure* safe too.
             let rows = super::write_output::write_batches_to_file(path, batches)?;
             eprintln!("Wrote {rows} rows to {path}");
         }
@@ -107,6 +112,9 @@ fn write_jq_output(
 ) -> anyhow::Result<()> {
     match output {
         Some(path) => {
+            // Staged inside `json_values_to_file`; see `write_batch_output`.
+            // `cat --jq '.' -O <existing file>` on a full disk used to leave
+            // the destination emptied or half-written.
             let rows = super::write_output::json_values_to_file(path, results)?;
             eprintln!("Wrote {rows} rows to {path}");
         }

@@ -28,6 +28,9 @@ pub fn run(
     let results = pq_query::jq::apply_jq_filter(filter, all_rows, slurp)?;
 
     if let Some(path) = output {
+        // Staged inside `json_values_to_file`: `-o` used to be a bare
+        // `File::create` on the user's file, so a write that failed part way
+        // through (a full disk) replaced the destination with partial output.
         let rows = super::write_output::json_values_to_file(path, &results)?;
         eprintln!("Wrote {rows} rows to {path}");
         return Ok(());

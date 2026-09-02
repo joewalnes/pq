@@ -34,6 +34,8 @@
 
 ## 2026-09-02
 
+- Fix `cat -O`, `jq -o` and `cat --jq -O` destroying the destination file when a write fails. All three wrote straight to `File::create(dest)` — the destination was truncated before a single byte of output existed — so a full disk left the user's file replaced by partial output (measured on a full 4 MB RAM disk: a 23-byte file became 258,048 bytes of half-written JSONL, exit 1). They now stage to a sibling and rename on success, like every other `-o` path. Output format is resolved once from the name the user typed, never re-sniffed from the staging name. `-O /dev/stdout` (redirected and piped), fifo destinations, and in-place `cat X -O X` all still work
+- Correct a false claim in `write_output.rs` that "every writer in this workspace goes through `with_atomic_output`" — it was attached to the two functions for which it was untrue
 - Record in LESSONS.md that confirmed findings leak between being reported and being dispatched: a sweep of nine found two never assigned, after a fourth was discovered live in main all run
 ## 2026-09-02
 
