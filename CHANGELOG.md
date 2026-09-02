@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-09-02 (5)
+
+- Fix CSV silently dropping duplicate-named columns — a regression from the
+  union-header change, which deduped field names through a `HashSet` and
+  resolved them back by name. A Parquet file with two `id` columns lost one
+  in every CSV path, and the paths disagreed about which: `cat -f csv` kept
+  the first column's values, `export -o`/`cat --output`/`sql -o` the
+  second's, both under a single `id` header. Columns are now identified by
+  `(name, occurrence)` and resolved positionally, so the header is `id,id`
+  and both columns' data survives. All four batch-to-CSV implementations
+  were replaced by one shared implementation, which also makes `-f csv`
+  agree cell-for-cell with `-f table`.
+
 ## 2026-09-02 (4)
 
 - Fix `export`/`sql -o`: an explicit `-f`/`--format` was silently ignored

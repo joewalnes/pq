@@ -184,18 +184,7 @@ fn write_text(path: &Path, batches: &[RecordBatch], format: Format) -> anyhow::R
             }
         }
         Format::Csv => {
-            let header = super::write_output::union_header(batches.iter().map(|b| b.schema()));
-            if !header.is_empty() {
-                file.write_all(&super::write_output::csv_record_bytes(&header)?)?;
-            }
-            for batch in batches {
-                for row in pq_query::convert::batch_to_json_rows(batch) {
-                    if let Some(obj) = row.as_object() {
-                        let record = super::write_output::csv_record(&header, obj);
-                        file.write_all(&super::write_output::csv_record_bytes(&record)?)?;
-                    }
-                }
-            }
+            super::write_output::write_batches_csv(&mut file, batches)?;
         }
         Format::Table | Format::Plain => {
             unreachable!("check_file_format rejects Table/Plain before this is reached")

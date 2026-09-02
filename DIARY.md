@@ -4,6 +4,34 @@ Latest entries first. Record significant decisions, architecture changes, and no
 
 ---
 
+## 2026-09-02 — Union headers align records by name; Arrow batches are positional
+
+The union-header CSV fix deduped field names through a `HashSet` and then
+resolved each header entry back to data with `Schema::index_of(name)` (stdout)
+or a JSON map keyed by name (the file paths). Neither can represent two
+columns with the same name — which Parquet permits and Arrow batches express
+positionally. A file with two `id` columns therefore lost one in every CSV
+path, silently, exit 0, and the paths did not even lose the same one:
+`cat -f csv` emitted `id / 1 / 2`, `export -o` emitted `id / 10 / 20`, where
+`-f table` correctly showed `id,id / 1,10 / 2,20`. A fix whose stated purpose
+was to stop CSV dropping data introduced a new way for CSV to drop data.
+
+The tension is real and worth writing down: the union header exists to align
+*heterogeneous records* by name, while an Arrow batch is positional. The
+resolution is to make column identity `(name, occurrence-within-schema)` —
+positional inside a schema, name-aligned across schemas — so the union still
+works across files with different columns while duplicates each keep their
+own slot and the header reads `id,id`, matching the table renderer. Name-keyed
+lookup survives only on the jq/values path, where the input genuinely *is* a
+map of names to values and duplicate keys cannot exist.
+
+Four hand-rolled batch-to-CSV implementations became one, which is the more
+durable half of the fix: they had already drifted into disagreeing about which
+column to keep, and they rendered cells differently besides (Arrow's formatter
+on stdout, JSON stringification in files). The shared implementation uses
+Arrow's `ArrayFormatter`, the same one `-f table` uses, so CSV and table now
+agree cell for cell.
+
 ## 2026-09-02 — Published tutorials left un-migrated; README claim narrowed instead
 
 `docs/src/tutorials/*.md` (rendered onto the docs site by `docs/build.py`,

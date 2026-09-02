@@ -244,6 +244,240 @@ fn csv_narrow_then_wide_row_is_not_ragged() {
 }
 
 // ---------------------------------------------------------------------------
+// BUG 1b: duplicate-named columns must survive, in every batch path
+//
+// REGRESSION introduced by the union-header fix above. A Parquet file may
+// legally carry two fields with the same name, and an Arrow batch is
+// *positional* — column 0 and column 1 can both be called `id`. The union
+// header deduped names through a `HashSet` and then resolved each header
+// name back to a column with `Schema::index_of(name)` / a JSON map keyed by
+// name, both of which keep only the FIRST field of that name. So a whole
+// column vanished, silently, exit 0 — and the stdout and file paths did not
+// even lose the same one (`cat -f csv` kept `1,2`; `export -o` kept
+// `10,20`).
+//
+// The correct header for `id`,`id` is `id,id`: it is what the table renderer
+// prints, what `pq cat -f csv` printed before the union-header change, and
+// the only header that keeps the file round-trippable at the same arity.
+// ---------------------------------------------------------------------------
+
+/// A Parquet file with two int64 columns *both named `id`*, holding
+/// distinguishable data (1,2 in the first; 10,20 in the second).
+///
+/// Built directly with the `arrow`/`parquet` crates because it is not
+/// reachable through `pq import`: a JSON object cannot have duplicate keys,
+/// so no JSONL input can produce this schema.
+fn dup_column_parquet(dir: &Path) -> PathBuf {
+    use arrow::array::{ArrayRef, Int64Array, RecordBatch};
+    use arrow::datatypes::{DataType, Field, Schema};
+    use std::sync::Arc;
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("id", DataType::Int64, false),
+    ]));
+    let first: ArrayRef = Arc::new(Int64Array::from(vec![1_i64, 2]));
+    let second: ArrayRef = Arc::new(Int64Array::from(vec![10_i64, 20]));
+    let batch = RecordBatch::try_new(schema.clone(), vec![first, second]).unwrap();
+
+    let out = dir.join("dup.parquet");
+    let file = fs::File::create(&out).unwrap();
+    let mut writer = parquet::arrow::ArrowWriter::try_new(file, schema, None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+    out
+}
+
+/// Both `id` columns present, in schema order, with their own data.
+fn assert_both_duplicate_columns_survive(csv_bytes: &[u8], case: &str) {
+    let (header, rows) = parse_strict_csv(csv_bytes).unwrap_or_else(|e| {
+        panic!(
+            "[{case}] output is not valid strict CSV: {e}\nbytes: {:?}",
+            String::from_utf8_lossy(csv_bytes)
+        )
+    });
+    assert_eq!(
+        header,
+        vec!["id".to_string(), "id".to_string()],
+        "[{case}] a duplicate-named column was dropped from the header (raw: {:?})",
+        String::from_utf8_lossy(csv_bytes)
+    );
+    assert_eq!(
+        rows,
+        vec![
+            vec!["1".to_string(), "10".to_string()],
+            vec!["2".to_string(), "20".to_string()],
+        ],
+        "[{case}] duplicate-named columns were not resolved positionally (raw: {:?})",
+        String::from_utf8_lossy(csv_bytes)
+    );
+}
+
+/// Control / reference instrument: the table renderer keeps both columns, so
+/// the fixture really does carry two readable columns and any CSV path that
+/// shows one is losing data rather than reading an unreadable file.
+#[test]
+fn dup_columns_control_table_renderer_keeps_both() {
+    let dir = TempDir::new().unwrap();
+    let f = dup_column_parquet(dir.path());
+    let out = pq()
+        .args(["cat", f.to_str().unwrap(), "-f", "table"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8_lossy(&out);
+    for want in ["1", "2", "10", "20"] {
+        assert!(
+            text.contains(want),
+            "control: table renderer lost {want}: {text}"
+        );
+    }
+}
+
+#[test]
+fn dup_columns_survive_stdout_render_path() {
+    let dir = TempDir::new().unwrap();
+    let f = dup_column_parquet(dir.path());
+    let out = pq()
+        .args(["cat", f.to_str().unwrap(), "-f", "csv"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_both_duplicate_columns_survive(&out, "cat -f csv (stdout render path)");
+}
+
+#[test]
+fn dup_columns_survive_batch_file_path() {
+    let dir = TempDir::new().unwrap();
+    let f = dup_column_parquet(dir.path());
+    let out = dir.path().join("out.csv");
+    pq().args([
+        "cat",
+        f.to_str().unwrap(),
+        "--output",
+        out.to_str().unwrap(),
+    ])
+    .assert()
+    .success();
+    assert_both_duplicate_columns_survive(
+        &fs::read(&out).unwrap(),
+        "cat --output out.csv (batch file path)",
+    );
+}
+
+#[test]
+fn dup_columns_survive_export_path() {
+    let dir = TempDir::new().unwrap();
+    let f = dup_column_parquet(dir.path());
+    let out = dir.path().join("out.csv");
+    pq().args([
+        "export",
+        f.to_str().unwrap(),
+        "--output",
+        out.to_str().unwrap(),
+    ])
+    .assert()
+    .success();
+    assert_both_duplicate_columns_survive(&fs::read(&out).unwrap(), "export --output out.csv");
+}
+
+/// `sql` is deliberately NOT in the list above, and this test says why so the
+/// omission cannot be mistaken for an oversight.
+///
+/// `pq sql -o out.csv` now writes through the same shared batch-CSV
+/// implementation as the other paths (unit-tested directly in
+/// `commands::write_output`), but a CLI duplicate-column test cannot reach
+/// that writer: DataFusion collapses the two `id` columns during planning,
+/// before any output code runs. `SELECT * FROM dup.parquet` returns a
+/// single-column result, and `SELECT 1 AS id, 2 AS id` is rejected outright
+/// ("Projections require unique expression names"), so no query can produce
+/// a duplicate-named result set to hand the writer.
+///
+/// That upstream collapse is itself silent data loss — a separate bug, in
+/// `pq-query`/DataFusion rather than in any CSV path. This test pins the
+/// diagnosis using the *table* renderer, which shares no code with CSV: if
+/// the loss ever moves (or is fixed upstream), this fails loudly and tells
+/// the next reader that the CLI-level CSV case has become reachable.
+#[test]
+fn sql_loses_duplicate_columns_upstream_of_every_output_path() {
+    let dir = TempDir::new().unwrap();
+    let f = dup_column_parquet(dir.path());
+
+    // How many `id` headers the table renderer prints, for a given command.
+    let header_ids = |args: &[&str]| -> usize {
+        let out = pq()
+            .args(args)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        String::from_utf8_lossy(&out)
+            .lines()
+            .find(|line| line.contains("id"))
+            .map(|line| line.matches("id").count())
+            .unwrap_or(0)
+    };
+
+    // Reference instrument: reading the file directly keeps both columns, so
+    // the fixture is not at fault and the renderer can express duplicates.
+    assert_eq!(
+        header_ids(&["cat", f.to_str().unwrap(), "-f", "table"]),
+        2,
+        "reference: `cat -f table` should show two `id` columns"
+    );
+
+    assert_eq!(
+        header_ids(&[
+            "sql",
+            &format!("SELECT * FROM '{}'", f.to_str().unwrap()),
+            "-f",
+            "table",
+        ]),
+        1,
+        "DataFusion now preserves duplicate column names — the CLI-level \
+         `sql -o out.csv` duplicate-column case is reachable again and needs \
+         a real guard here"
+    );
+}
+
+/// The two CSV paths disagreed about *which* duplicate column to keep, which
+/// is a second, independent defect: `cat -f csv` emitted the first `id`,
+/// `export -o` emitted the second. Byte equality is the cheapest way to state
+/// "these must agree" without re-encoding the expectation.
+#[test]
+fn dup_columns_stdout_and_file_paths_agree_byte_for_byte() {
+    let dir = TempDir::new().unwrap();
+    let f = dup_column_parquet(dir.path());
+    let stdout_bytes = pq()
+        .args(["cat", f.to_str().unwrap(), "-f", "csv"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let out = dir.path().join("out.csv");
+    pq().args([
+        "export",
+        f.to_str().unwrap(),
+        "--output",
+        out.to_str().unwrap(),
+    ])
+    .assert()
+    .success();
+    let file_bytes = fs::read(&out).unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&stdout_bytes),
+        String::from_utf8_lossy(&file_bytes),
+        "the stdout CSV path and the export CSV path disagree on duplicate-named columns"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // BUG 2: a bare CR must be quoted, across the same four paths
 // ---------------------------------------------------------------------------
 
