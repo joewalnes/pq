@@ -159,11 +159,12 @@ jobs:
           path: ${{ matrix.asset }}
 
   release:
-    needs: [build, ci]
+    needs: [preflight, build, ci]
     runs-on: ubuntu-latest
-    # `gh release create/delete` and the `git push origin :refs/tags/latest`
-    # tag deletion below both write to the repo, so this job — and only this
-    # job — needs contents: write.
+    # `gh release create` writes to the repo, so this job — and only this
+    # job — needs contents: write. It creates one release for the tag that
+    # triggered the run and deletes nothing: there is no `gh release delete`
+    # and no tag deletion anywhere in this workflow.
     permissions:
       contents: write
     steps:
@@ -175,19 +176,29 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Create or update release
+      - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.preflight.outputs.version }}
         run: |
+          set -euo pipefail
           chmod +x dist/*
-          gh release delete latest --yes 2>/dev/null || true
-          git push origin :refs/tags/latest 2>/dev/null || true
-          gh release create latest \
+          # Built from the validated version, not from github.ref_name, so a
+          # release can only ever be created for a tag preflight accepted.
+          TAG="v${VERSION}"
+          # --verify-tag: abort rather than create a tag, if the tag has gone
+          # away between the push and this job.
+          # --latest: makes GitHub's /releases/latest/download/<asset>
+          # redirect - the URL README.md documents - resolve here. That
+          # pointer is why this workflow no longer needs a mutable `latest`
+          # release of its own; see DIARY.md 2026-09-02.
+          gh release create "$TAG" \
             dist/pq-darwin-arm64 \
             dist/pq-linux-amd64 \
             dist/pq-linux-arm64 \
-            --title "Latest" \
-            --notes "Built from main at $(git rev-parse --short HEAD)" \
+            --title "$TAG" \
+            --notes "pq $TAG - built from $(git rev-parse --short HEAD)" \
+            --verify-tag \
             --latest
 
   publish-npm:
