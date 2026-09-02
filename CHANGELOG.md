@@ -2,6 +2,9 @@
 
 ## 2026-09-01
 
+- Release workflow now triggers on `v*` tags or manual dispatch instead of every push to main
+- Gate releases and npm/PyPI publishing behind CI passing
+- Scope release workflow permissions down to read by default, write only where needed
 - Add CI workflow: fmt, clippy, cargo test, and golden tests on PRs and pushes to main
 - Add project process docs: CLAUDE.md, engineering diary, changelog
 - Ignore .wrangler/ directory
