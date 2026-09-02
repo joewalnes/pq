@@ -25,7 +25,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Once, OnceLock};
 use std::thread;
 use tempfile::TempDir;
@@ -199,6 +199,15 @@ struct ServerState {
     /// When set, a ranged GET writes only half its promised bytes and then
     /// closes the connection, simulating a truncated/interrupted transfer.
     truncate_body: AtomicBool,
+    /// Incremented every time the server actually takes the truncation
+    /// branch below (as opposed to merely having `truncate_body` set but
+    /// never receiving a ranged GET). Ties a test's assertions to the
+    /// server having *served* a short response, not just to `pq` having
+    /// failed for some other reason — see
+    /// `test_http_truncated_response_produces_clear_error`, which was
+    /// proven vacuous by a mutation that failed the `cat` subcommand
+    /// without touching the network at all.
+    truncated_response_count: AtomicUsize,
     shutdown: AtomicBool,
 }
 
@@ -217,6 +226,7 @@ impl TestHttpServer {
             requests: Mutex::new(Vec::new()),
             disable_range: AtomicBool::new(false),
             truncate_body: AtomicBool::new(false),
+            truncated_response_count: AtomicUsize::new(0),
             shutdown: AtomicBool::new(false),
         });
         let accept_state = state.clone();
@@ -260,6 +270,12 @@ impl TestHttpServer {
 
     fn set_truncate_body(&self, truncate: bool) {
         self.state.truncate_body.store(truncate, Ordering::SeqCst);
+    }
+
+    /// How many times the server actually took the truncation branch and
+    /// wrote a short `206` body.
+    fn truncated_response_count(&self) -> usize {
+        self.state.truncated_response_count.load(Ordering::SeqCst)
     }
 }
 
@@ -401,6 +417,9 @@ fn handle_connection(stream: TcpStream, state: Arc<ServerState>) {
                             let _ = stream.flush();
                             // Deliberately stop here: the socket closes with
                             // fewer bytes than Content-Length promised.
+                            state
+                                .truncated_response_count
+                                .fetch_add(1, Ordering::SeqCst);
                         } else {
                             write_response(
                                 &mut stream,
@@ -680,12 +699,44 @@ fn test_http_truncated_response_produces_clear_error() {
     // Simulates an interrupted network transfer: the server promises N
     // bytes via Content-Length, a 206 status and a Content-Range header,
     // then closes the connection after writing only half of them.
+    //
+    // This test was proven vacuous by mutation: a `pq` shim that fails the
+    // `cat` subcommand immediately, without making any network connection
+    // at all, satisfied the old assertions (`.failure()` +
+    // `stderr(...not("panicked"))`) just as well as a real truncation did.
+    // Both assertions below close that hole: `truncated_response_count`
+    // ties the result to the server having actually written a short body
+    // (a shim that never dials out leaves it at 0), and the stderr check
+    // requires wording that names an incomplete/short transfer rather than
+    // any old failure.
     let server = start_default_server();
     server.set_truncate_body(true);
-    pq().args(["cat", &server.url_for("test_data.parquet"), "-f", "jsonl"])
+    let assert = pq()
+        .args(["cat", &server.url_for("test_data.parquet"), "-f", "jsonl"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("panicked").not());
+
+    assert!(
+        server.truncated_response_count() >= 1,
+        "server never actually served a truncated response — this test \
+         would pass even if pq failed for a reason unrelated to \
+         truncation: {:?}",
+        server.requests()
+    );
+
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).to_lowercase();
+    assert!(
+        stderr.contains("eof")
+            || stderr.contains("end of file")
+            || stderr.contains("unexpected end")
+            || stderr.contains("incomplete")
+            || stderr.contains("connection closed")
+            || stderr.contains("premature")
+            || stderr.contains("message length"),
+        "error should name an incomplete/truncated transfer as the cause, \
+         not just any failure: {stderr}"
+    );
 }
 
 // -------------------------------------------------------------------------

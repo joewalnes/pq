@@ -23,6 +23,11 @@
   behavior: closing the gap needs `write_output.rs`, which another agent
   owns right now. Logged as a TODO instead of leaving it undiscoverable.
   See DIARY.md.
+- Strengthen `remote_tests.rs::test_http_truncated_response_produces_clear_error`,
+  found vacuous by mutation (a `pq` shim that fails `cat` without touching
+  the network passed its old `.failure()` + no-"panicked" checks). Now
+  asserts the test server actually served a short `206` body and that the
+  error text names an incomplete transfer, not just any failure.
 
 ## 2026-09-02 (4)
 
