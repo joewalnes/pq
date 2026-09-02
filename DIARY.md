@@ -4,6 +4,61 @@ Latest entries first. Record significant decisions, architecture changes, and no
 
 ---
 
+## 2026-09-02 — `pq sql`'s error tripling was the same disease, opposite cure
+
+`SqlError::DataFusion` (`crates/pq-query/src/sql.rs`) had exactly the shape
+the `pq-core` fix above (same date) describes as the bug: `#[error("DataFusion
+error: {0}")] DataFusion(#[from] datafusion::error::DataFusionError)`
+embedded the source's `Display` in its own message *and* `#[from]` gave it a
+`source()` returning that same value, so `anyhow`'s `{:#}` chain walk in
+`pq-cli/main.rs` printed it again. `pq sql "SELECT"` before any fix:
+
+    Error: DataFusion error: SQL error: ParserError("Expected: an expression,
+    found: EOF"): SQL error: ParserError("Expected: an expression, found:
+    EOF"): sql parser error: Expected: an expression, found: EOF
+
+Three copies, not two, because `datafusion::error::DataFusionError` is not a
+leaf: reading `datafusion-common-44.0.0/src/error.rs`, its own `Display`
+writes `"{prefix}{message}"` where `message()` recurses into the Display (or,
+for the `SQL` variant, the *Debug*) of whatever it wraps, and its `source()`
+independently returns that same inner error for every variant that wraps one
+(`ArrowError`, `SchemaError`, `SQL`, …). So `DataFusionError` has the pq-core
+bug baked into itself, one level down, for those variants — which is not
+ours to fix; it's `datafusion-common`, an external crate — and our own
+wrapper had it too, one level up. Two coats of the same bug composed into
+three prints of the same sentence for a parser error, and two for a
+`Plan`/`Execution` error (source() -> None there, so only our own coat
+showed).
+
+The pq-core fix's cure was "`Display` renders only its own words, `source()`
+carries the rest." That doesn't transplant cleanly here, because
+`DataFusionError`'s "own words" (its `Display`) are not a short label — by
+its own design they already recursively contain the *entire* nested message,
+including everything a chain walk would otherwise add. Stripping our
+`Display` down to a bare `"DataFusion error"` and keeping `source()` (the
+literal pq-core recipe) would have fixed the parser case but left the
+`ArrowError`/`SchemaError` cases still doubled one level down, inside
+`DataFusionError` itself, via the exact same mechanism we'd just removed from
+our own code — visible in testing: `pq sql "SELECT CAST(name AS INT) FROM
+...'"` still printed `Cast error: Cannot cast string 'user_0' to value of
+Int32 type` twice.
+
+Applied the opposite half of the same convention instead: `Display` carries
+the *entire* message (unchanged — still `"DataFusion error: {0}"`, and `{0}`
+is already complete), `source()` carries *nothing*. Implemented as a
+hand-written `impl From<DataFusionError> for SqlError` rather than
+`#[from]`/`#[source]`, so `thiserror` never synthesizes a `source()` for this
+variant and `anyhow` has nothing left to walk into. Verified across every
+`DataFusionError` shape reachable from `pq sql` (parser, unknown
+table/planning, unknown column/schema, cast/type, unknown function): each
+now prints exactly once, full context intact (query fragment, position,
+table/column names, offending value). Guarded in
+`crates/pq-cli/tests/error_display_tests.rs`
+(`sql_error_chains_are_not_doubled_or_tripled`), reusing the existing
+`find_doubled_sentence` detector rather than a parallel one — confirmed
+against the pre-fix code that it fails on the very first case (the parser
+error) with the same string shown above.
+
 ## 2026-09-02 — `stats --describe --sample-size`: budget the concatenation, not the file-open order
 
 `stats --describe`'s row-budget loop opened files in argument order with a
