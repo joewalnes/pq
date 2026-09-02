@@ -306,3 +306,110 @@ fn control_sql_explicit_format_still_overrides_extension() {
     .success();
     assert_is_jsonl(&out, "control: -f jsonl overrides .csv");
 }
+
+// ---------------------------------------------------------------------------
+// A diagnostic must not announce something that did not happen.
+// ---------------------------------------------------------------------------
+
+/// `export -f table -o out.csv` printed
+/// `note: -f/--format table overrides the format implied by 'out.csv's
+/// extension (csv)` and *then* failed. No override ever took effect.
+#[test]
+fn export_rejects_table_to_file_without_claiming_an_override() {
+    let dir = TempDir::new().unwrap();
+    let src = make_parquet(dir.path());
+    let out = dir.path().join("out.csv");
+    let assert = pq()
+        .args([
+            "export",
+            src.to_str().unwrap(),
+            "-f",
+            "table",
+            "-o",
+            out.to_str().unwrap(),
+        ])
+        .assert()
+        .failure();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    assert!(
+        stderr.contains("can't be written to a file"),
+        "expected the file-format rejection, got: {stderr}"
+    );
+    assert!(
+        !stderr.contains("overrides"),
+        "the run failed but still claimed an override took effect: {stderr}"
+    );
+}
+
+#[test]
+fn sql_rejects_table_to_file_without_claiming_an_override() {
+    let dir = TempDir::new().unwrap();
+    let src = make_parquet(dir.path());
+    let out = dir.path().join("out.csv");
+    let assert = pq()
+        .args([
+            "sql",
+            &format!("SELECT * FROM '{}'", src.to_str().unwrap()),
+            "-f",
+            "table",
+            "-o",
+            out.to_str().unwrap(),
+        ])
+        .assert()
+        .failure();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    assert!(
+        stderr.contains("can't be written to a file"),
+        "expected the file-format rejection, got: {stderr}"
+    );
+    assert!(
+        !stderr.contains("overrides"),
+        "the run failed but still claimed an override took effect: {stderr}"
+    );
+}
+
+/// Control: when the override *does* take effect, the note must still be
+/// printed. Without this, deleting the note entirely would pass the two
+/// tests above.
+#[test]
+fn control_effective_override_still_prints_the_note() {
+    let dir = TempDir::new().unwrap();
+    let src = make_parquet(dir.path());
+
+    let out = dir.path().join("out.csv");
+    let assert = pq()
+        .args([
+            "export",
+            src.to_str().unwrap(),
+            "-f",
+            "jsonl",
+            "-o",
+            out.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    assert!(
+        stderr.contains("overrides"),
+        "export: an override that did take effect was not announced: {stderr}"
+    );
+    assert_is_jsonl(&out, "control: export -f jsonl -o out.csv");
+
+    let out2 = dir.path().join("out2.csv");
+    let assert = pq()
+        .args([
+            "sql",
+            &format!("SELECT * FROM '{}'", src.to_str().unwrap()),
+            "-f",
+            "jsonl",
+            "-o",
+            out2.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    assert!(
+        stderr.contains("overrides"),
+        "sql: an override that did take effect was not announced: {stderr}"
+    );
+}

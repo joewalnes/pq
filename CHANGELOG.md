@@ -19,6 +19,9 @@
   from the destination the user named, then again by sniffing the staging
   path (whose name comes from the resolved symlink target). It is now
   resolved once and passed down.
+- Fix `export`/`sql -o` printing `note: -f/--format table overrides ...`
+  and then failing — the note announced an override that never took effect.
+  A format that can't be written to a file is now rejected before any note.
 
 ## 2026-09-02 (4)
 

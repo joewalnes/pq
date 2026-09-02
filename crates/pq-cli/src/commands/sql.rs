@@ -94,6 +94,13 @@ fn resolve_output_format(
             Ok(ResolvedFormat::Parquet)
         }
         ExtFormat::Text(ext_fmt) => {
+            // Reject a format that cannot be written to a file at all
+            // *before* announcing an override. `-f table -o out.csv` used to
+            // print "note: -f/--format table overrides ... (csv)" and then
+            // fail — a note claiming an override that never took effect.
+            if explicit_format {
+                check_file_format(global_format, display_path)?;
+            }
             let format = if explicit_format && ext_fmt != global_format {
                 eprintln!(
                     "note: -f/--format {} overrides the format implied by '{display_path}'s \
@@ -105,7 +112,6 @@ fn resolve_output_format(
             } else {
                 ext_fmt
             };
-            check_file_format(format, display_path)?;
             Ok(ResolvedFormat::Text(format))
         }
         ExtFormat::Unrecognized => {

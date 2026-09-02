@@ -57,6 +57,18 @@ fn resolve_file_format(
     global_format: Format,
     explicit_format: bool,
 ) -> anyhow::Result<Format> {
+    // A format that can't be written to a file at all is rejected *before*
+    // any note is printed. `export -f table -o out.csv` used to print
+    // `note: -f/--format table overrides the format implied by 'out.csv's
+    // extension (csv)` and then fail — announcing an override that never
+    // took effect. `extension_format` never yields Table/Plain, so an
+    // explicit `-f` is the only way the resolved format can be one of them.
+    if explicit_format && matches!(global_format, Format::Table | Format::Plain) {
+        anyhow::bail!(
+            "-f/--format {} can't be written to a file with `export`; use json, jsonl, or csv",
+            format_flag_name(global_format),
+        );
+    }
     let ext_format = extension_format(output_path);
     let format = match (ext_format, explicit_format) {
         (Some(ext_fmt), true) if ext_fmt != global_format => {
@@ -75,12 +87,6 @@ fn resolve_file_format(
              explicitly, or give the output file one of those extensions."
         ),
     };
-    if matches!(format, Format::Table | Format::Plain) {
-        anyhow::bail!(
-            "-f/--format {} can't be written to a file with `export`; use json, jsonl, or csv",
-            format_flag_name(format),
-        );
-    }
     Ok(format)
 }
 
