@@ -95,4 +95,39 @@ attack those. Give particular weight to any fallback path: a `catch`/`Err(_)` th
 resumes the behaviour the fix existed to remove converts a fix into a narrowing, and narrowing
 is not fixing. Schedule the adversarial pass against the *previous* round's fixes as
 standing work, not as a treat for spare capacity.
+**How often this happens, measured:** in a later round of the same run, an adversarial pass
+over four merged branches found that **three of the four had each introduced a fresh defect** —
+a CSV rewrite whose stated purpose was to stop silently dropping data introduced a new silent
+column drop; a panic fix over-corrected and began rejecting files the underlying operation
+handles fine; and a "make the docs true" commit introduced a new false claim. Every one had
+passed review, a full green gate, and CI. At a defect-injection rate that high, an adversarial
+pass scheduled as a *follow-up round* rather than as part of the merge would have shipped all
+three. Treat the hunt as a step in the merge, not as work that happens afterwards if there is
+capacity — and note that the fixes most likely to inject a defect are the ones whose authors
+were most careful, because care concentrates on the case they already understood.
+**Scope:** general
+
+## A destructive step that cannot fail loudly will eventually destroy something
+**What happened:** `release.yml` maintained one mutable GitHub release tagged `latest` and
+recreated it on every run:
+
+    gh release delete latest --yes 2>/dev/null || true
+    git push origin :refs/tags/latest 2>/dev/null || true
+    gh release create latest ...
+
+It worked fourteen times. On the fifteenth the delete succeeded and the create failed
+(`HTTP 422 ... tag_name was used by an immutable release`). A project with fourteen successful
+release runs was left with **zero releases**, and the `curl` URL its own README documents
+returned 404 — not because the workflow failed to make something new, but because it destroyed
+the only release it had and could not put it back.
+**What it cost:** The project's entire published distribution, and it went unnoticed until an
+agent audited why installs were broken.
+**The rule that would have prevented it:** Look for the shape, not the command: a destructive
+first half suppressed with `|| true` (or `2>/dev/null`, or an ignored exit code), followed by a
+recreate whose failure is *unrecoverable* rather than merely unsuccessful. The suppression
+guarantees the destructive half can never fail loudly, so the only signal anyone ever sees
+comes from the half that cannot undo it. Prefer operations that never leave a gap — create the
+new thing first and move a pointer, or use a name that is never reused — over delete-then-
+recreate against a shared mutable identity. And treat a long run of successes as weak evidence
+about a rare failure branch: fourteen prior successes are precisely why nobody looked.
 **Scope:** general
