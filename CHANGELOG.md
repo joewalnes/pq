@@ -2,6 +2,12 @@
 
 ## 2026-09-02
 
+- Fail a release before it starts if the `NPM_TOKEN` secret is missing, so the irreversible half (an immutable GitHub release, a burned version number) cannot run when the npm publish is already doomed. `NPM_TOKEN` does not currently exist in the repo, so today a `v0.1.0` tag would stop here
+- Pin the floating refs the release workflow trusted: `dtolnay/rust-toolchain@stable` and `pypa/gh-action-pypi-publish@release/v1` (both branches) to exact commits, and `cargo install cross --git` to an exact `--rev` with `--locked`, in both `release.yml` and the `Makefile`
+- Ship `LICENSE` and `THIRD-PARTY-LICENSES` as release assets, so the `curl`-a-binary install gets the same attribution npm packages and wheels already carry
+- Publish `SHA256SUMS` as a release asset, and document verifying a downloaded binary against it in README.md
+- Releases are now created for the git tag itself. Removes the `gh release delete latest` / `git push origin :refs/tags/latest` / `gh release create latest` dance that destroyed the project's only release; GitHub's own `/releases/latest/download/` redirect provides the pointer, so nothing needs deleting
+- Release version now comes from the git tag, derived once in a new `preflight` job and consumed by every other job. Deletes the `0.1.$(date +%Y%m%d%H%M)` scheme, which the two publish jobs computed independently and could disagree on across a minute boundary
 - Record in LESSONS.md that an adversarial pass over four merged branches found three had each injected a fresh defect, and that a destructive step suppressed with `|| true` will eventually destroy something
 - Record the credentials finding: no repo secrets exist, so `NPM_TOKEN` is absent and tagging `v0.1.0` would create a release then fail to publish
 - Record in DIARY.md why 14 successful release runs left zero releases: the `latest` delete succeeded and the recreate failed, which is the evidence for dropping the mutable tag in favour of GitHub's `/releases/latest/` redirect

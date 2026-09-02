@@ -1,9 +1,12 @@
 name: Release
 
-# Deliberately NOT triggered by push-to-main: every run mints an irreversible
-# `0.1.$(date +%Y%m%d%H%M)` version on npm and PyPI, so a release must be an
-# explicit act. `v*` tags do not match the `latest` tag this workflow creates,
-# so the release job cannot re-trigger this workflow.
+# Deliberately NOT triggered by push-to-main: every run publishes irreversible
+# versions to npm and PyPI, so a release must be an explicit act by a human.
+#
+# The version is the tag, minus its leading `v` — nothing else computes one.
+# `workflow_dispatch` is a re-run mechanism for an existing tag (pick the tag
+# in the ref selector); dispatched from a branch it fails in `preflight`
+# before any job can create or publish anything. See the `preflight` job.
 on:
   push:
     tags: ['v*']
@@ -14,6 +17,78 @@ permissions:
   contents: read
 
 jobs:
+  # Derives the one version string every other job uses, and refuses the run
+  # if there isn't one. Runs first and needs nothing, so a bad release attempt
+  # costs seconds and creates nothing.
+  #
+  # Why a job and not a step in each consumer: `publish-npm` and `publish-pypi`
+  # used to each run `date +%Y%m%d%H%M` independently, in parallel. Across a
+  # minute boundary they published *different* version numbers for the same
+  # commit, irreversibly, to two registries. One source, one value.
+  preflight:
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Derive version from tag
+        id: version
+        # REF via env, not ${{ }} interpolation into the script: a tag name is
+        # attacker-controlled text as far as the shell is concerned.
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          case "$REF" in
+            refs/tags/v*) ;;
+            *)
+              echo "::error::Release must run from a v<semver> tag; got '$REF'."
+              echo "::error::Push a tag (git tag v0.1.0 && git push origin v0.1.0),"
+              echo "::error::or re-run this workflow with an existing tag as the ref."
+              exit 1
+              ;;
+          esac
+          version="${REF#refs/tags/v}"
+          # Plain X.Y.Z only. A semver pre-release suffix (`-rc.1`) is not a
+          # valid PEP 440 version, so it would publish under a different
+          # string on PyPI than on npm - the exact divergence this job exists
+          # to prevent. Supporting pre-releases means normalising per registry
+          # first; until then, reject them loudly.
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Tag '$REF' does not yield a plain X.Y.Z version (got '$version')."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Releasing version $version"
+
+      # The reversible half of a release must not be doomed while the
+      # irreversible half runs. `release` creates a GitHub release before
+      # `publish-npm` runs, and repository rules make that release immutable;
+      # if NPM_TOKEN is missing, `npm publish` fails afterwards, on a version
+      # number no registry will ever let us reuse. Checking the credential
+      # here costs seconds and turns that into a clean pre-flight failure.
+      #
+      # This proves presence, not validity: an expired or wrong-scope token
+      # is non-empty and still fails at publish time. The only way to prove
+      # validity is to publish, which cannot be done in advance.
+      #
+      # There is no equivalent check for PyPI: publish-pypi uses trusted
+      # publishing (OIDC via the `pypi` environment), so there is no secret
+      # to inspect from here.
+      - name: Check the npm publish credential exists
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$NPM_TOKEN" ]; then
+            echo "::error::Repository secret NPM_TOKEN is empty or unset."
+            echo "::error::publish-npm would fail after the GitHub release is"
+            echo "::error::already created and this version is burned. Add the"
+            echo "::error::secret, then re-run this workflow against the tag."
+            exit 1
+          fi
+          echo "NPM_TOKEN is present. Not validated against the registry - only publishing can do that."
+
   # `needs:` cannot reference a job in another workflow file, so CI is pulled
   # in here as a real job via `workflow_call`. This job's conclusion is the
   # conclusion of the whole CI workflow: if any CI job fails, `ci` fails, and
@@ -37,7 +112,12 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        # Pinned to a commit: `stable` is a *branch* in that repo, and a
+        # branch is force-pushable into a workflow that holds publish
+        # credentials. The pin freezes the action's code only - its
+        # `toolchain` input still defaults to the literal string "stable",
+        # so rustup installs whatever is current at run time.
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable branch @ 2026-08-05
 
       - name: Install cargo-about (pinned)
         run: cargo install cargo-about --locked --version 0.9.2 --features cli
@@ -56,6 +136,9 @@ jobs:
           path: THIRD-PARTY-LICENSES
 
   build:
+    # preflight so a malformed tag stops the run before three build matrix
+    # legs spend runner minutes on a version that will be rejected anyway.
+    needs: [preflight]
     strategy:
       matrix:
         include:
@@ -73,27 +156,38 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        # Same commit pin as the licenses job above; see the note there.
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable branch @ 2026-08-05
         with:
           targets: ${{ matrix.target }}
 
       - name: Install cross (Linux ARM64)
         if: matrix.target == 'aarch64-unknown-linux-musl'
-        run: cargo install cross --git https://github.com/cross-rs/cross
+        # Pinned commit + --locked. Unpinned, this installed whatever cross's
+        # default branch happened to be at the moment the release ran, with
+        # cross's own dependencies resolved fresh - inside the job that
+        # produces the published binaries. The same rev is pinned in the
+        # Makefile; bump both together.
+        run: cargo install cross --git https://github.com/cross-rs/cross --rev 8c1a8aa4b661711f4b7b6ac07c2e8929ce2f7d27 --locked # main @ 2026-08-19
 
       - name: Install musl tools (Linux x86_64)
         if: matrix.target == 'x86_64-unknown-linux-musl'
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Build
+        env:
+          # The release version, from the tag (see the preflight job), so
+          # `pq --version` reports the same string the registries published.
+          VERSION: ${{ needs.preflight.outputs.version }}
         run: |
+          set -euo pipefail
           SHA=$(git rev-parse --short HEAD)
-          DATE=$(TZ=UTC date +'%Y-%m-%d %H:%M')
-          VERSION="${DATE} main ${SHA} release"
+          DATE=$(TZ=UTC date +'%Y-%m-%d')
+          BUILD_VERSION="v${VERSION} (${SHA}) ${DATE}"
           if [ "${{ matrix.target }}" = "aarch64-unknown-linux-musl" ]; then
-            BUILD_VERSION="$VERSION" cross build --release --target ${{ matrix.target }}
+            BUILD_VERSION="$BUILD_VERSION" cross build --release --target ${{ matrix.target }}
           else
-            BUILD_VERSION="$VERSION" cargo build --release --target ${{ matrix.target }}
+            BUILD_VERSION="$BUILD_VERSION" cargo build --release --target ${{ matrix.target }}
           fi
           cp target/${{ matrix.target }}/release/pq ${{ matrix.asset }}
 
@@ -104,11 +198,16 @@ jobs:
           path: ${{ matrix.asset }}
 
   release:
-    needs: [build, ci]
+    # `licenses` because the release assets now carry LICENSE and
+    # THIRD-PARTY-LICENSES: the curl-a-binary user is otherwise the one
+    # channel that receives a statically-linked binary with no attribution
+    # at all (npm packages and wheels already embed both).
+    needs: [preflight, build, ci, licenses]
     runs-on: ubuntu-latest
-    # `gh release create/delete` and the `git push origin :refs/tags/latest`
-    # tag deletion below both write to the repo, so this job — and only this
-    # job — needs contents: write.
+    # `gh release create` writes to the repo, so this job — and only this
+    # job — needs contents: write. It creates one release for the tag that
+    # triggered the run and deletes nothing: there is no `gh release delete`
+    # and no tag deletion anywhere in this workflow.
     permissions:
       contents: write
     steps:
@@ -120,29 +219,75 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Create or update release
+      - name: Download third-party licenses
+        uses: actions/download-artifact@v4
+        with:
+          name: third-party-licenses
+          # Repo root, next to the checked-out LICENSE, so the staging step
+          # below can copy both from one place.
+          path: .
+
+      # Staged into a directory of its own, by explicit name, so a build
+      # matrix leg that produced nothing fails here - before the release
+      # exists - rather than producing a release that is quietly missing a
+      # platform. `cp` of a missing file exits non-zero under `set -e`.
+      - name: Stage release assets and checksum them
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          cp dist/pq-darwin-arm64 dist/pq-linux-amd64 dist/pq-linux-arm64 release-assets/
+          # LICENSE from the checkout, THIRD-PARTY-LICENSES from the licenses
+          # job. Both by name: if the licenses artifact failed to download,
+          # this fails here rather than publishing binaries that statically
+          # link ~52 Apache-2.0 crates with no attribution.
+          cp LICENSE THIRD-PARTY-LICENSES release-assets/
+          chmod +x release-assets/pq-*
+          cd release-assets
+          # Names listed explicitly, not `*`: a glob would silently include
+          # SHA256SUMS itself or omit an asset that failed to stage.
+          sha256sum pq-darwin-arm64 pq-linux-amd64 pq-linux-arm64 \
+            LICENSE THIRD-PARTY-LICENSES > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.preflight.outputs.version }}
         run: |
-          chmod +x dist/*
-          gh release delete latest --yes 2>/dev/null || true
-          git push origin :refs/tags/latest 2>/dev/null || true
-          gh release create latest \
-            dist/pq-darwin-arm64 \
-            dist/pq-linux-amd64 \
-            dist/pq-linux-arm64 \
-            --title "Latest" \
-            --notes "Built from main at $(git rev-parse --short HEAD)" \
+          set -euo pipefail
+          # Built from the validated version, not from github.ref_name, so a
+          # release can only ever be created for a tag preflight accepted.
+          TAG="v${VERSION}"
+          # --verify-tag: abort rather than create a tag, if the tag has gone
+          # away between the push and this job.
+          # --latest: makes GitHub's /releases/latest/download/<asset>
+          # redirect - the URL README.md documents - resolve here. That
+          # pointer is why this workflow no longer needs a mutable `latest`
+          # release of its own; see DIARY.md 2026-09-02.
+          gh release create "$TAG" \
+            release-assets/pq-darwin-arm64 \
+            release-assets/pq-linux-amd64 \
+            release-assets/pq-linux-arm64 \
+            release-assets/LICENSE \
+            release-assets/THIRD-PARTY-LICENSES \
+            release-assets/SHA256SUMS \
+            --title "$TAG" \
+            --notes "pq $TAG - built from $(git rev-parse --short HEAD)" \
+            --verify-tag \
             --latest
 
   publish-npm:
-    needs: [build, release, ci, licenses]
+    needs: [preflight, build, release, ci, licenses]
     runs-on: ubuntu-latest
     # id-token for `npm publish --provenance`; contents: read for checkout.
     # No write scope: this job only reads the repo and pushes to npm.
     permissions:
       contents: read
       id-token: write
+    env:
+      # The single version for the whole run, from the tag. Nothing in this
+      # job may compute a version of its own.
+      VERSION: ${{ needs.preflight.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -172,15 +317,11 @@ jobs:
             cp THIRD-PARTY-LICENSES "$d/"
           done
 
-      - name: Set version
-        run: |
-          VERSION="0.1.$(date +%Y%m%d%H%M)"
-          echo "VERSION=$VERSION" >> $GITHUB_ENV
-
       - name: Prepare and publish platform packages
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
+          set -euo pipefail
           chmod +x dist/*
 
           # darwin-arm64
@@ -202,6 +343,7 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
+          set -euo pipefail
           cd npm/pqtool
           jq --arg v "$VERSION" \
             '.version = $v | .optionalDependencies["@pqtool/darwin-arm64"] = $v | .optionalDependencies["@pqtool/linux-x64"] = $v | .optionalDependencies["@pqtool/linux-arm64"] = $v' \
@@ -209,13 +351,16 @@ jobs:
           npm publish --provenance --access public
 
   publish-pypi:
-    needs: [build, release, ci, licenses]
+    needs: [preflight, build, release, ci, licenses]
     runs-on: ubuntu-latest
     # id-token for PyPI trusted publishing (OIDC); contents: read for checkout.
     permissions:
       contents: read
       id-token: write
     environment: pypi
+    env:
+      # Same single version as publish-npm, from the same job output.
+      VERSION: ${{ needs.preflight.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -234,17 +379,17 @@ jobs:
           # fails loudly if either is missing.
           path: .
 
-      - name: Set version
-        run: |
-          VERSION="0.1.$(date +%Y%m%d%H%M)"
-          echo "VERSION=$VERSION" >> $GITHUB_ENV
-
       - name: Build wheels
         run: |
+          set -euo pipefail
           chmod +x dist/*
           python3 pypi/build_wheels.py --version "$VERSION" --binaries-dir dist/
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        # Pinned to a commit: `release/v1` is a *branch*, and this step is
+        # handed an OIDC token that can publish to PyPI. The commit below is
+        # what release/v1 pointed at when this was pinned, and is also the
+        # v1.14.2 tag.
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           packages-dir: pypi/dist/
