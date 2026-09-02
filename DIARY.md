@@ -4,6 +4,25 @@ Latest entries first. Record significant decisions, architecture changes, and no
 
 ---
 
+## 2026-09-02 — Published tutorials left un-migrated; README claim narrowed instead
+
+`docs/src/tutorials/*.md` (rendered onto the docs site by `docs/build.py`,
+a plain-Markdown-to-HTML pipeline) and `tests/golden/tutorials/*.md` (the
+same five tutorials, executed by `tests/golden/run.py` against real
+command output) have diverged by ~58-172 changed lines each — confirmed by
+diff, not by inspection. README.md claimed "the tutorials" double as tests,
+which is only true of the golden copies; a reader has no way to know the
+published copies aren't the ones being checked. Real fix is `docs/build.py`
+parsing the golden `console`/`file:` DSL directly and rendering it in the
+docs site's current style, so there is exactly one tutorial source; that's
+a genuine (if bounded) parser-plus-renderer addition, and getting it wrong
+would break `make docs` for every future writer of these files with no
+test of its own to catch that. Chose the smaller honest fix instead:
+narrowed the README claim to name `tests/golden/tutorials/` specifically
+and say plainly that the published copies aren't covered, and logged the
+migration as a tracked TODO item rather than leaving it undiscoverable. An
+accurate README plus a disclosed gap beats a half-migrated docs build.
+
 ## 2026-09-02 — `-f` semantics for `export`/`sql -o`: extension by default, explicit flag wins, undetermined is an error
 
 Confirmed bug: `pq export a.parquet -o a.parquet -f csv` wrote JSONL into a

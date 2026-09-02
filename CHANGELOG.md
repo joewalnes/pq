@@ -31,6 +31,11 @@
   `date`/`decimal`/`fixed_binary`); replaced with real, verified output.
   `docs/src/faq.md` updated to describe the new `-f`-vs-extension
   semantics on `export`/`sql -o`
+- Correct the README's "tutorials double as tests" claim: only
+  `tests/golden/tutorials/` is executed by the test harness. The published
+  `docs/src/tutorials/` copies are hand-formatted and have drifted
+  (~58-172 changed lines per file across all five); tracked in TODO.md
+  rather than silently migrated
 
 ## 2026-09-02 (3)
 

@@ -202,10 +202,14 @@ make docs-serve   # build + start local server on :8000
 The CLI reference page is auto-generated from `pq --help` output, so it
 stays in sync with the code. The generator runs as part of `make docs`.
 
-The tutorials double as integration tests - each one is a markdown file in
-`tests/golden/tutorials/` that the test harness executes, comparing actual
-output against the expected output embedded in the doc. This means tutorials
-can't go stale: if the CLI output changes, the tests fail.
+The tutorial *sources* in `tests/golden/tutorials/` double as integration
+tests: `python3 tests/golden/run.py` executes each command block and
+compares actual output against the expected output embedded in the doc, so
+those files can't go stale. The *published* tutorials under
+`docs/src/tutorials/` are a hand-formatted copy for the docs site (rendered
+by `docs/build.py`'s plain Markdown pipeline, which can't parse the golden
+runner's `console`/`file:` fences) and are **not** covered by that test -
+they can and do drift from the tested originals. See `TODO.md`.
 
 ## Author
 
