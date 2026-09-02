@@ -15,6 +15,14 @@
   "timestamp", every same-arity `Struct` prints as "struct<N fields>") and
   could show two IDENTICAL-looking lists for a real, unmergeable mismatch.
   The error now renders the exact `DataType` instead.
+- Narrow README.md's `-o`/`-O` format-detection claim: it stated `-f`
+  overrides the extension-based default on `sql`/`jq`/`export -o` and
+  `cat -O` alike. Confirmed true only for `sql`/`export`; `jq -o`/`cat -O`
+  silently ignore `-f` and always use the extension (`pq jq f.parquet '.'
+  -o out.csv -f json` writes CSV). Chose to fix the README rather than the
+  behavior: closing the gap needs `write_output.rs`, which another agent
+  owns right now. Logged as a TODO instead of leaving it undiscoverable.
+  See DIARY.md.
 
 ## 2026-09-02 (4)
 

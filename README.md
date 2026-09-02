@@ -152,12 +152,15 @@ above render via `-f`/`--format`:
 - `-f csv` - RFC 4180 CSV
 - `-f plain` - tab-separated values
 
-Commands that write a *file* (`-o` on `sql`/`jq`/`export`, `-O` on `cat`)
-instead of stdout pick the format from the output file's extension by
-default; an explicit `-f` overrides that (see the
-[FAQ](https://pqtool.dev/faq.html)). The transformation commands
-(`select`, `slice`, `merge`, `split`) and `import` always write an actual
-Parquet file and ignore `-f`.
+Commands that write a *file* instead of stdout pick the format from the
+output file's extension by default. `-o` on `sql`/`export` honor an
+explicit `-f` override (with a note on stderr) and refuse to guess when the
+extension is unrecognized and `-f` isn't given either (see the
+[FAQ](https://pqtool.dev/faq.html)). `-o` on `jq` and `-O` on `cat`
+currently always use the extension and silently ignore `-f`
+(tracked in `TODO.md`). The transformation commands (`select`, `slice`,
+`merge`, `split`) and `import` always write an actual Parquet file and
+ignore `-f`.
 
 **Other**
 - `pq capabilities` - machine-readable tool description for AI agents
