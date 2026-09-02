@@ -8,11 +8,27 @@ use clap::{Parser, Subcommand, ValueEnum};
 pub const TAGLINE: &str =
     "A Parquet Swiss Army Knife - inspect, query, transform, and view Parquet files";
 
+/// The single source of truth for pq's version string, shared verbatim
+/// between `pq --version` (via clap's `version`) and `pq capabilities`
+/// (machine-readable output). Previously `pq --version` used this same
+/// `PQ_VERSION` build-time env var (set from `BUILD_VERSION` by build.rs,
+/// e.g. a release build's `2026-09-02 12:34 main abc1234 release`) while
+/// `pq capabilities` independently read `CARGO_PKG_VERSION`, which is
+/// pinned to the literal `0.1.0` in Cargo.toml and never changes at
+/// release time -- so the two disagreed on every build that set
+/// `BUILD_VERSION` (i.e. every real release). `CARGO_PKG_VERSION` is not
+/// used here at all, deliberately: the release workflow derives the
+/// published version from a `v*` git tag and passes it through
+/// `BUILD_VERSION`, so `PQ_VERSION` (falling back to `"{CARGO_PKG_VERSION} dev"`
+/// only for unreleased local builds, see build.rs) is the only value that
+/// can ever be correct for a shipped binary.
+pub const VERSION: &str = env!("PQ_VERSION");
+
 #[derive(Parser)]
 #[command(
     name = "pq",
     about = TAGLINE,
-    version = env!("PQ_VERSION"),
+    version = VERSION,
     after_help = "Examples:\n  pq data.parquet                              # open in TUI viewer\n  pq info data.parquet\n  pq cat data.parquet --limit 100\n  pq sql \"SELECT count(*) FROM 'data.parquet'\"\n  pq jq data.parquet '.name'",
     help_template = "\
 {about}

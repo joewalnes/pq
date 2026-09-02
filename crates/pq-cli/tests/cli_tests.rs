@@ -636,6 +636,38 @@ fn test_tagline_matches_between_help_and_capabilities() {
         .stdout(predicate::str::contains(tagline));
 }
 
+/// `pq --version` and `pq capabilities`'s `"version"` field used to read
+/// from two different sources -- `env!("PQ_VERSION")` (the real build
+/// version, e.g. a release's `2026-09-02 12:34 main abc1234 release`) and
+/// `env!("CARGO_PKG_VERSION")` (permanently `0.1.0`, from Cargo.toml) --
+/// so they disagreed on every build that set `BUILD_VERSION`, i.e. every
+/// real release. Both now read `cli::VERSION`. This locks the two outputs
+/// together the same way `test_tagline_matches_between_help_and_capabilities`
+/// locks the tagline, so a future edit reintroducing a second version
+/// source fails a test instead of shipping two different answers to
+/// "what version is this" depending on which subcommand you ask.
+#[test]
+fn test_version_matches_between_version_flag_and_capabilities() {
+    let version_output = pq().arg("--version").assert().success();
+    let version_stdout = String::from_utf8(version_output.get_output().stdout.clone()).unwrap();
+    // `clap`'s `--version` prints "pq <VERSION>\n".
+    let version = version_stdout
+        .trim()
+        .strip_prefix("pq ")
+        .expect("--version output should start with 'pq '")
+        .to_string();
+    assert!(!version.is_empty());
+
+    // `-f json` pretty-prints one `"key": value` pair per line, so this is
+    // an exact match on the field, not a loose substring that could also
+    // match e.g. a version *mentioned inside* some other field.
+    let expected_line = format!("\"version\": \"{version}\"");
+    pq().args(["capabilities", "-f", "json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(&expected_line));
+}
+
 // ── Complex / nested type tests ─────────────────────────────────────────
 
 /// Unlike `test_data.parquet`, `nested_data.parquet` is NOT tracked in git —

@@ -1,10 +1,10 @@
-use crate::cli::TAGLINE;
+use crate::cli::{TAGLINE, VERSION};
 use crate::output::Format;
 
 pub fn run(format: Format) -> anyhow::Result<()> {
     let capabilities = serde_json::json!({
         "tool": "pq",
-        "version": env!("CARGO_PKG_VERSION"),
+        "version": VERSION,
         "description": TAGLINE,
         "commands": [
             {

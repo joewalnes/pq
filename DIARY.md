@@ -4,6 +4,16 @@ Latest entries first. Record significant decisions, architecture changes, and no
 
 ---
 
+## 2026-09-02 — One version read from two places
+
+`pq --version` and `pq capabilities`'s `"version"` field read from different
+env vars (`PQ_VERSION`, build-time and tag-derived, vs. `CARGO_PKG_VERSION`,
+permanently `0.1.0`) and so disagreed on every build that set
+`BUILD_VERSION` — i.e. every real release. Routed both through one constant
+and added a test that pins them together (proved it bites by reintroducing
+the old `CARGO_PKG_VERSION` read and watching it fail with the exact
+disagreement shown in the assertion message).
+
 ## 2026-09-02 — Three flags nobody read
 
 `--color`, `-q`/`--quiet`, `-v`/`--verbose` were all declared, parsed, stored on
