@@ -227,6 +227,81 @@ fn is_descriptor_alias(path: &Path) -> bool {
         || (cfg!(target_os = "linux") && path.starts_with("/proc/self/fd"))
 }
 
+/// True when `path` names *this process's standard error* specifically —
+/// `/dev/stderr`, `/dev/fd/2`, or (on Linux) `/proc/self/fd/2` — whether the
+/// caller typed one of those or reached it through a symlink.
+///
+/// **Why this exists.** Every `-o` command finishes by printing a status line
+/// to stderr (`Exported 3 rows to ...`, `Wrote 3 rows to ...`). When the user
+/// has made stderr the *data* destination — `pq export f -o /dev/stderr -f
+/// jsonl 2> out.jsonl` — that status line is written to the same descriptor
+/// the rows just went to, and lands in the user's data file. What it does
+/// there is platform-dependent, and *both* outcomes are wrong:
+///
+/// - **macOS** (`/dev/stderr -> /dev/fd/2`; opening `/dev/fd/N` is a `dup`,
+///   so the new descriptor shares fd 2's file offset). Measured on the
+///   binary built from this tree: `out.jsonl` came back 106 bytes — the 75
+///   bytes of JSONL followed by the 31-byte status line. Valid rows, then a
+///   trailing line that is not JSON: corrupt JSONL, exit 0.
+/// - **Linux** (`/dev/stderr -> /proc/self/fd/2`; opening that is a *fresh*
+///   open of the underlying file, with its own offset and `O_TRUNC`
+///   honoured). The rows are written at offset 0 through the new
+///   description while fd 2's own offset is still 0, so the status line
+///   overwrites the *start* of the data. Predicted result for the same
+///   command: still 75 bytes, but the first 31 are the status line and the
+///   first row is gone entirely. Silent data loss, exit 0.
+///
+/// The fix is not to pick a platform: it is that a status line must never be
+/// written to the stream carrying the data. Callers consult this and stay
+/// quiet. See `pq_cli::commands::write_output::print_status`.
+///
+/// **Bounded, deliberately.** This answers "did the user *name* stderr", not
+/// "does this path happen to resolve to the same inode fd 2 is open on". The
+/// latter would need an `fstat(2)` comparison against fd 2 and would also
+/// claim cases like `-o out.jsonl 2>> out.jsonl` that nobody asks for. The
+/// four names above are the ones `is_descriptor_alias` already promises to
+/// support as destinations, so they are the ones that can be corrupted this
+/// way.
+pub fn names_stderr(path: &str) -> bool {
+    let mut current = PathBuf::from(path);
+    // Same bound `resolve_symlinks` uses. Every hop is checked, not just the
+    // endpoints, because on Linux `/dev/stderr` resolves *through*
+    // `/proc/self/fd/2` and out the other side to the real backing file —
+    // so the tell is only visible mid-chain.
+    for _ in 0..40 {
+        if is_stderr_alias(&current) {
+            return true;
+        }
+        let is_link = fs::symlink_metadata(&current)
+            .map(|md| md.file_type().is_symlink())
+            .unwrap_or(false);
+        if !is_link {
+            return false;
+        }
+        let Ok(target) = fs::read_link(&current) else {
+            return false;
+        };
+        current = if target.is_absolute() {
+            target
+        } else {
+            match current.parent() {
+                Some(parent) => parent.join(target),
+                None => target,
+            }
+        };
+    }
+    false
+}
+
+/// The stderr half of [`is_descriptor_alias`]. `/proc/self/fd/2` is gated on
+/// Linux for the same reason it is there: on macOS/BSD `/proc` typically
+/// isn't mounted, so claiming it would be an unverifiable guess.
+fn is_stderr_alias(path: &Path) -> bool {
+    path == Path::new("/dev/stderr")
+        || path == Path::new("/dev/fd/2")
+        || (cfg!(target_os = "linux") && path == Path::new("/proc/self/fd/2"))
+}
+
 /// True when we can safely stage-and-rename onto `dest`.
 ///
 /// `original` is the destination exactly as the caller named it, before
@@ -855,6 +930,68 @@ mod tests {
             "a destination originally named /proc/self/fd/N must never be staged, \
              regardless of what it resolves to"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // `names_stderr`: which destinations must silence a command's status line.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn the_names_for_this_process_stderr_are_recognised() {
+        assert!(names_stderr("/dev/stderr"));
+        assert!(names_stderr("/dev/fd/2"));
+        assert_eq!(names_stderr("/proc/self/fd/2"), cfg!(target_os = "linux"));
+    }
+
+    #[test]
+    fn other_descriptors_and_ordinary_paths_do_not_name_stderr() {
+        // Only fd 2 collides with the status line. Silencing the status for
+        // `-o /dev/stdout` would remove a line users legitimately see while
+        // their data goes to a *different* stream.
+        assert!(!names_stderr("/dev/stdout"));
+        assert!(!names_stderr("/dev/fd/1"));
+        assert!(!names_stderr("/dev/fd/3"));
+        assert!(!names_stderr("/dev/fd/22"));
+        assert!(!names_stderr("/dev/null"));
+        assert!(!names_stderr("out.jsonl"));
+        assert!(!names_stderr("/tmp/out.jsonl"));
+        // Must not match on substring: this is a real directory a user could
+        // make, and its status line has nowhere else to go.
+        assert!(!names_stderr("/tmp/dev/stderr"));
+    }
+
+    #[test]
+    fn a_symlink_pointing_at_stderr_names_stderr() {
+        // The reason the walk checks *every* hop rather than the endpoints:
+        // on Linux `/dev/stderr` resolves through `/proc/self/fd/2` and out
+        // the other side to the real backing file, so an endpoint-only check
+        // would see an ordinary path and let the status line through.
+        let dir = tmpdir();
+        let link = dir.path().join("mystderr");
+        std::os::unix::fs::symlink("/dev/stderr", &link).unwrap();
+        assert!(names_stderr(link.to_str().unwrap()));
+    }
+
+    #[test]
+    fn a_symlink_to_an_ordinary_file_does_not_name_stderr() {
+        // Control for the walk above: it must terminate on a normal chain and
+        // answer no, not follow its way into a yes.
+        let dir = tmpdir();
+        let real = dir.path().join("real.jsonl");
+        fs::write(&real, "x").unwrap();
+        let link = dir.path().join("link.jsonl");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        assert!(!names_stderr(link.to_str().unwrap()));
+    }
+
+    #[test]
+    fn a_symlink_cycle_does_not_hang_names_stderr() {
+        let dir = tmpdir();
+        let a = dir.path().join("a");
+        let b = dir.path().join("b");
+        std::os::unix::fs::symlink(&b, &a).unwrap();
+        std::os::unix::fs::symlink(&a, &b).unwrap();
+        assert!(!names_stderr(a.to_str().unwrap()));
     }
 
     #[test]

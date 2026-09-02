@@ -267,8 +267,46 @@ fn dev_stdout_redirected_to_a_file_is_deterministic_across_five_runs() {
 // /dev/stderr and bare /dev/fd/N: the same class, different names.
 // ---------------------------------------------------------------------------
 
+/// The exact bytes `make_parquet(_, _, FEW)` round-trips to as JSONL. Spelled
+/// out so the assertions below can be equality, not a substring probe.
+const FEW_ROWS_JSONL: &str = concat!(
+    "{\"id\":0,\"name\":\"user_0\"}\n",
+    "{\"id\":1,\"name\":\"user_1\"}\n",
+    "{\"id\":2,\"name\":\"user_2\"}\n",
+);
+
 #[test]
-fn dev_stderr_redirected_to_a_file_works() {
+fn dev_stderr_redirected_to_a_file_gets_the_rows_and_nothing_else() {
+    // ------------------------------------------------------------------
+    // This assertion used to be `text.contains("\"id\":0") &&
+    // text.contains("\"id\":2")`, with a comment explaining that the
+    // "Exported N rows to /dev/stderr" status line "also lands on stderr, so
+    // the row count is a lower bound check via substring". That comment was
+    // describing a bug, not a constraint. `-o /dev/stderr` makes stderr the
+    // *data* stream; a status line written to the same descriptor lands in
+    // the user's data file, and the two platforms corrupt different ends of
+    // it:
+    //
+    //   macOS  `/dev/stderr -> /dev/fd/2`, and opening `/dev/fd/N` is a
+    //          `dup` — shared offset — so the status line was *appended*.
+    //          Measured pre-fix: 106 bytes, the 75 bytes of JSONL plus a
+    //          31-byte trailing line that is not JSON. The substring check
+    //          passed over the top of it.
+    //   Linux  `/dev/stderr -> /proc/self/fd/2`, and opening that is a fresh
+    //          open of the backing file with its own offset. The rows go in
+    //          through the new description while fd 2's offset is still 0,
+    //          so the status line overwrote the *first* 31 bytes — the whole
+    //          of row 0 and the head of row 1. `contains("\"id\":0")` was
+    //          false and CI went red here, four merges running.
+    //
+    // `print_status` now keeps quiet when the destination names stderr, so
+    // the captured file is exactly the rows on both platforms and this can
+    // be an equality check. See
+    // `dev_fd_alias_open_semantics` below for the platform difference as a
+    // standalone executable fact, and
+    // `an_ordinary_destination_still_prints_its_status_line` for the control
+    // that the suppression is narrow.
+    // ------------------------------------------------------------------
     let dir = TempDir::new().unwrap();
     let src = make_parquet(dir.path(), "src.parquet", FEW);
     let captured = dir.path().join("out.jsonl");
@@ -285,11 +323,143 @@ fn dev_stderr_redirected_to_a_file_works() {
         String::from_utf8_lossy(&out.stderr)
     );
     let text = fs::read_to_string(&captured).unwrap();
-    // The "Exported N rows to /dev/stderr" status line also lands on stderr,
-    // so the row count is a lower bound check via substring, not a line count.
+    assert_eq!(
+        text, FEW_ROWS_JSONL,
+        "export -o /dev/stderr 2> file must capture the rows and nothing else; \
+         anything extra (or missing) is the status line colliding with the data"
+    );
+}
+
+/// The same collision through the other name for fd 2. `/dev/stderr` is a
+/// symlink on both platforms; `/dev/fd/2` is the thing it points at on macOS
+/// and a differently-routed alias on Linux, so a classifier that only knew
+/// the one name would leave this reachable.
+#[test]
+fn dev_fd_2_redirected_to_a_file_gets_the_rows_and_nothing_else() {
+    let dir = TempDir::new().unwrap();
+    let src = make_parquet(dir.path(), "src.parquet", FEW);
+    let captured = dir.path().join("out.jsonl");
+    let script = format!(
+        "{} export {} -o /dev/fd/2 -f jsonl 2> {} 1>/dev/null",
+        sh_quote(pq_bin().to_str().unwrap()),
+        sh_quote(src.to_str().unwrap()),
+        sh_quote(captured.to_str().unwrap()),
+    );
+    let out = run_sh(&script);
     assert!(
-        text.contains("\"id\":0") && text.contains("\"id\":2"),
-        "export -o /dev/stderr > file: rows missing from {text:?}"
+        out.status.success(),
+        "export -o /dev/fd/2 2> file failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(&captured).unwrap(),
+        FEW_ROWS_JSONL,
+        "export -o /dev/fd/2 2> file: captured bytes are not exactly the rows"
+    );
+}
+
+/// Control for the suppression: it must be narrow. Without this, "never print
+/// a status line at all" would satisfy every assertion above, silently
+/// removing the line that eight commands print and that the golden tutorials
+/// (`tests/golden/tutorials/*.md`) show in their transcripts.
+#[test]
+fn an_ordinary_destination_still_prints_its_status_line() {
+    let dir = TempDir::new().unwrap();
+    let src = make_parquet(dir.path(), "src.parquet", FEW);
+    let dest = dir.path().join("out.jsonl");
+    let out = pq()
+        .args([
+            "export",
+            src.to_str().unwrap(),
+            "-o",
+            dest.to_str().unwrap(),
+            "-f",
+            "jsonl",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "export -o <file> failed");
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(
+        stderr.contains(&format!("Exported {FEW} rows to {}", dest.display())),
+        "the status line vanished for an ordinary destination: {stderr:?}"
+    );
+    assert_eq!(fs::read_to_string(&dest).unwrap(), FEW_ROWS_JSONL);
+}
+
+/// **Diagnostic, not a pq test.** What does this platform do when a process
+/// opens `/dev/fd/N` for a descriptor it already holds? Two behaviours exist
+/// and every `-o /dev/...` path in pq sits directly on the difference, so it
+/// is worth holding as an executable fact rather than a claim in a comment.
+///
+/// The probe writes `AAAAAAAAAA` through a descriptor (offset -> 10), opens
+/// that same descriptor by its `/dev/fd/N` name with `O_TRUNC`
+/// (`File::create`), writes `BBB` through the new handle, then writes `CCC`
+/// through the *original* handle. The two platforms disagree completely:
+///
+/// - **DUP** (macOS/devfs — `fd(4)`: "opening the file /dev/fd/N is
+///   equivalent to duplicating file descriptor N"). Shared offset, `O_TRUNC`
+///   has nothing to truncate past: `AAAAAAAAAABBBCCC`.
+/// - **REOPEN** (Linux — `/dev/fd -> /proc/self/fd`, whose entries are magic
+///   symlinks; opening one is a fresh open of the backing file). The file is
+///   truncated to zero, `BBB` lands at offset 0, and the original handle's
+///   offset is still 10, so `CCC` lands at 10 over a hole:
+///   `BBB\0\0\0\0\0\0\0CCC`.
+///
+/// If this ever fails, the panic prints the observed bytes, which is the
+/// whole point: the message is the measurement.
+///
+/// No `/dev/stdout`, `/dev/stderr` or fd 0/1/2 is touched — the property is
+/// about `/dev/fd/N` for *any* N, and borrowing the harness's own standard
+/// streams to test it would disturb the harness.
+#[test]
+fn dev_fd_alias_open_semantics() {
+    use std::io::Write as _;
+    use std::os::unix::io::AsRawFd;
+
+    let dir = TempDir::new().unwrap();
+    let probe = dir.path().join("probe");
+
+    let mut original = fs::File::create(&probe).unwrap();
+    original.write_all(b"AAAAAAAAAA").unwrap();
+    original.flush().unwrap();
+
+    let alias = format!("/dev/fd/{}", original.as_raw_fd());
+    assert!(
+        Path::new(&alias).exists(),
+        "{alias} does not exist; this platform has no /dev/fd and the probe \
+         cannot reach its subject"
+    );
+    {
+        let mut through_alias = fs::File::create(&alias).unwrap();
+        through_alias.write_all(b"BBB").unwrap();
+        through_alias.flush().unwrap();
+    }
+    original.write_all(b"CCC").unwrap();
+    original.flush().unwrap();
+    drop(original);
+
+    let observed = fs::read(&probe).unwrap();
+    const DUP: &[u8] = b"AAAAAAAAAABBBCCC";
+    const REOPEN: &[u8] = b"BBB\0\0\0\0\0\0\0CCC";
+    let class = match observed.as_slice() {
+        DUP => "DUP",
+        REOPEN => "REOPEN",
+        _ => "UNKNOWN",
+    };
+    let expected = if cfg!(target_os = "linux") {
+        "REOPEN"
+    } else {
+        "DUP"
+    };
+    assert_eq!(
+        class,
+        expected,
+        "opening /dev/fd/N behaved as {class}, not {expected}, on {}. \
+         Observed bytes: {observed:?}. Everything the descriptor-alias output \
+         paths assume about this platform is derived from this behaviour, so \
+         a change here is a finding, not a flake.",
+        std::env::consts::OS,
     );
 }
 

@@ -94,7 +94,7 @@ fn write_batch_output(
             // are already fully in memory here, which is why `cat X -O X`
             // worked in spite of that; staging makes the *failure* safe too.
             let rows = super::write_output::write_batches_to_file(path, batches)?;
-            eprintln!("Wrote {rows} rows to {path}");
+            super::write_output::print_status(path, &format!("Wrote {rows} rows to {path}"));
         }
         None => {
             let stdout = std::io::stdout();
@@ -116,7 +116,7 @@ fn write_jq_output(
             // `cat --jq '.' -O <existing file>` on a full disk used to leave
             // the destination emptied or half-written.
             let rows = super::write_output::json_values_to_file(path, results)?;
-            eprintln!("Wrote {rows} rows to {path}");
+            super::write_output::print_status(path, &format!("Wrote {rows} rows to {path}"));
         }
         None => {
             let stdout = std::io::stdout();

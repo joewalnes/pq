@@ -10,6 +10,6 @@ pub fn run(file: &str, offset: usize, limit: usize, output: &str) -> anyhow::Res
     };
 
     let rows = pq_transform::slice::slice_rows(path, &opts)?;
-    eprintln!("Wrote {rows} rows to {output}");
+    super::write_output::print_status(output, &format!("Wrote {rows} rows to {output}"));
     Ok(())
 }

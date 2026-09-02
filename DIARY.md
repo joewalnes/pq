@@ -4,6 +4,101 @@ Latest entries first. Record significant decisions, architecture changes, and no
 
 ---
 
+## 2026-09-02 — The test that was weakened to accommodate a bug, and the platform that made it shout
+
+`main` went red on CI four merges running. The last of them failed on one
+assertion: `output_devfd_tests.rs`, `dev_stderr_redirected_to_a_file_works`,
+the *content* check, not the success check. The command exited 0 and the
+captured file simply didn't have the rows in it. The local merge gate runs on
+macOS, CI runs on ubuntu-latest, and a macOS-only gate is blind to this entire
+class by construction — which is why it took four merges rather than one.
+
+The standing hypothesis was that Linux `/dev/stderr` is `/proc/self/fd/2`, so
+opening it re-opens the *underlying file* at offset 0, where macOS's
+`/dev/fd/2` is a `dup` that shares the offset. That turned out to be right,
+but the interesting part is what it made visible rather than what it broke.
+
+**The measurement.** A standalone probe (`python3`, no pq involved): write ten
+bytes through a descriptor, open that descriptor by its `/dev/fd/N` name with
+`O_TRUNC`, write three more, then write three more through the *original*
+handle. macOS returns `AAAAAAAAAABBBCCC` — one shared offset, `O_TRUNC` with
+nothing to do. Linux is predicted to return `BBB` + seven NUL bytes + `CCC` —
+the file truncated, the new handle writing at 0, the old handle still at 10.
+This is now a Rust test (`dev_fd_alias_open_semantics`) so the difference is an
+executable fact rather than a claim in a comment, and so CI states the Linux
+half rather than anyone assuming it.
+
+**What that exposed.** `pq export f -o /dev/stderr -f jsonl 2> out.jsonl`
+writes the rows to fd 2 and then writes `Exported 3 rows to /dev/stderr` to fd
+2 as well. On Linux the status line lands at offset 0 and eats the first row.
+On macOS it lands at the end. The macOS outcome is what the test had been
+written around: its assertion was `text.contains("\"id\":0") &&
+text.contains("\"id\":2")`, with a comment explaining that "the row count is a
+lower bound check via substring, not a line count" *because* the status line
+also lands there.
+
+That comment was describing a bug and calling it a constraint. Measured on the
+binary built from this tree, `out.jsonl` on macOS is 106 bytes: 75 bytes of
+valid JSONL followed by a 31-byte line that is not JSON. A user who asked for
+JSONL got a file that no JSONL reader will accept, exit 0. Linux was not
+introducing a defect; it was refusing to hide one, by corrupting the head
+instead of the tail. So this is **not** a test artefact and it was never a
+macOS-vs-Linux question: writing status output to the stream carrying the data
+is wrong on every platform, and the two platforms merely disagree about which
+end of the file to damage.
+
+**The fix, and where it goes.** Not "suppress the status line for
+`/dev/stderr` in `export.rs`". The unconditional `eprintln!` at the end of a
+`-o` write exists in eight commands — `export`, `cat -O`, `cat --jq -O`,
+`jq -o`, `sql -o`, `select`, `slice`, `merge`, `convert` — and every one of
+them had the identical defect. Fixing only the one CI happened to catch is the
+shape LESSONS.md calls out: a confirmed finding split across instances leaks,
+because each instance looks complete on its own. They all go through
+`write_output::print_status(dest, msg)` now, which consults
+`output_guard::names_stderr(dest)` and stays quiet.
+
+Suppressed rather than diverted to stdout, deliberately: stdout is a data
+destination too (`-o /dev/stdout`), so "send it to the other stream" just
+relocates the same bug. A user who pointed the data stream somewhere asked for
+that stream to carry data; the exit code and the output are the confirmation.
+
+**Scope of `names_stderr`.** It answers "did the caller *name* stderr", not
+"does this resolve to the same inode fd 2 is open on". The latter wants an
+`fstat(2)` against fd 2 and would also claim `-o out.jsonl 2>> out.jsonl`,
+which nobody asks for. The four names it knows are exactly the ones
+`is_descriptor_alias` already promises to support as destinations, so they are
+the ones reachable this way. It walks every hop of a symlink chain rather than
+comparing endpoints, because on Linux `/dev/stderr` resolves *through*
+`/proc/self/fd/2` and comes out the far side as the real backing file — the
+tell is only visible mid-chain.
+
+**Proving the guards bite.** The two strengthened tests were run against the
+old behaviour by neutering the suppression in place: both fail, printing the
+trailing status line verbatim, while the new control
+(`an_ordinary_destination_still_prints_its_status_line`) keeps passing — so
+they test the suppression specifically, not merely "something changed". The
+control matters more than it looks: without it, "never print a status line at
+all" satisfies every other assertion in the file and silently deletes a line
+that eight commands print and that the golden tutorials show in their
+transcripts.
+
+**What this did not fix, and it is a real one.** `pq export f -o /dev/stdout
+>> out.jsonl` — *append* — is fine on macOS (measured: the pre-existing content
+survives) and is expected to destroy `out.jsonl`'s prior content on Linux,
+because `File::create` on `/proc/self/fd/1` truncates where a `dup` cannot.
+That is a second, distinct defect: it lives in the `File::create` every writer
+in the workspace uses, including `pq_core::writer`, and the honest fix is to
+write to the descriptor the process already holds instead of re-opening its
+name. Logged in TODO.md rather than folded in here — it is a different
+mechanism, it reaches outside this change's file scope, and bundling it would
+have made the CI fix unreviewable.
+
+**Honest limit.** Everything above was measured on macOS. The Linux half is
+reasoned from `/proc/self/fd` semantics and from the precise shape of the CI
+failure — a 31-byte status line over a 25-byte first row predicts exactly the
+observed "`id`:0 missing, `id`:2 present" — but this machine has no Linux, and
+CI is the only instrument that can confirm it.
+
 ## 2026-09-02 — Two registries, no transaction: what the release workflow can and cannot promise
 
 `publish-npm` and `publish-pypi` were parallel siblings. Either could fail
