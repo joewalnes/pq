@@ -273,3 +273,354 @@ fn describe_type_mismatch_error_names_the_actual_difference() {
          to \"timestamp\": {stderr}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// `--sample-size` across multiple files.
+//
+// `pq stats --describe a.parquet b.parquet --sample-size N` used to read
+// data with a shrinking `limit`, opening each file only as long as the
+// budget wasn't yet exhausted, and `break`-ing the instant it hit zero. Two
+// files holding [1,2,3] and [100,200,300] with `--sample-size 2` reported
+// `count: 2, max: 2` — drawn entirely from the first file — with exit 0 and
+// no indication `b.parquet` was never opened. Because the second file was
+// never opened, its schema was never checked either, so a genuinely
+// incompatible file could sit unread and unnoticed right where the sample
+// happened to stop.
+//
+// Ground truth for every numeric assertion below (concatenated count, min,
+// max, mean, stddev) is computed independently by hand from the literal
+// input arrays, mirroring what `pyarrow.concat_tables` would report — never
+// by comparing pq's output against another pq invocation.
+// ---------------------------------------------------------------------------
+
+/// Writes a single-column `Int64` file named `<name>.parquet` under `dir`.
+fn write_ints(dir: &Path, name: &str, values: Vec<i64>) -> PathBuf {
+    let schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Int64, true)]));
+    let batch = RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(values))]).unwrap();
+    write_batch(dir, name, batch)
+}
+
+/// Runs `pq stats --describe <files...> [--sample-size N] -f json` and
+/// parses stdout as JSON. A parse failure or non-success exit is itself a
+/// test failure (never silently swallowed), so a broken harness cannot
+/// masquerade as a passing assertion.
+fn describe_json(files: &[&Path], sample_size: Option<usize>) -> serde_json::Value {
+    let mut cmd = pq();
+    cmd.arg("stats").arg("--describe");
+    for f in files {
+        cmd.arg(f);
+    }
+    if let Some(n) = sample_size {
+        cmd.arg("--sample-size").arg(n.to_string());
+    }
+    cmd.arg("-f").arg("json");
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).to_string();
+    serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("describe -f json produced invalid JSON: {e}\n{stdout}"))
+}
+
+fn file_entry<'a>(sampling: &'a serde_json::Value, path: &Path) -> &'a serde_json::Value {
+    let path_str = path.to_str().unwrap();
+    sampling["files"]
+        .as_array()
+        .expect("sampling.files must be an array")
+        .iter()
+        .find(|f| f["path"] == path_str)
+        .unwrap_or_else(|| panic!("no sampling.files entry for {path_str}: {sampling}"))
+}
+
+/// `--sample-size` below the total row count, with the first file alone
+/// already exceeding it: the classic repro. Values must be drawn only from
+/// what was actually read (first 2 rows of `a`, per the concatenation-order
+/// rule shared with `tail`/`sample`), `b` must appear in `sampling.files`
+/// with `opened: false`, and `sampling.sampled` must be true.
+#[test]
+fn describe_sample_size_below_first_files_total_discloses_unread_file_in_json() {
+    let dir = TempDir::new().unwrap();
+    let a = write_ints(dir.path(), "a", vec![1, 2, 3]);
+    let b = write_ints(dir.path(), "b", vec![100, 200, 300]);
+
+    let json = describe_json(&[&a, &b], Some(2));
+
+    // Ground truth: reading only the first 2 rows of the concatenation
+    // (a's rows in order) gives count=2, min=1, max=2, mean=1.5,
+    // stddev=0.5 (population stddev of [1,2]).
+    let col = &json["columns"][0];
+    assert_eq!(
+        col["count"], 2,
+        "must count only the rows actually read: {json}"
+    );
+    assert_eq!(col["min"], 1);
+    assert_eq!(
+        col["max"], 2,
+        "max must come from the rows read, not the full dataset: {json}"
+    );
+    assert_eq!(col["mean"], 1.5);
+
+    let sampling = &json["sampling"];
+    assert_eq!(
+        sampling["sampled"], true,
+        "sampling.sampled must be true: {json}"
+    );
+    assert_eq!(sampling["sample_size"], 2);
+    assert_eq!(sampling["rows_read"], 2);
+    assert_eq!(
+        sampling["rows_total"], 6,
+        "must know the TRUE total across both files: {json}"
+    );
+    assert_eq!(sampling["files_total"], 2);
+    assert_eq!(sampling["files_read"], 1);
+
+    let a_entry = file_entry(sampling, &a);
+    assert_eq!(a_entry["opened"], true);
+    assert_eq!(a_entry["rows_read"], 2);
+    assert_eq!(a_entry["rows_total"], 3);
+
+    let b_entry = file_entry(sampling, &b);
+    assert_eq!(
+        b_entry["opened"], false,
+        "b.parquet must be disclosed as NOT opened, not silently omitted: {json}"
+    );
+    assert_eq!(b_entry["rows_read"], 0);
+    assert_eq!(
+        b_entry["rows_total"], 3,
+        "b's own total must still be known from its metadata: {json}"
+    );
+}
+
+/// The `table` and `plain` renderers must also name the unread file, not
+/// just the generic "sampled" note.
+#[test]
+fn describe_sample_size_below_total_names_unread_file_in_table_and_plain_notes() {
+    let dir = TempDir::new().unwrap();
+    let a = write_ints(dir.path(), "a", vec![1, 2, 3]);
+    let b = write_ints(dir.path(), "b", vec![100, 200, 300]);
+
+    for fmt in ["table", "plain"] {
+        let assert = pq()
+            .args([
+                "stats",
+                "--describe",
+                a.to_str().unwrap(),
+                b.to_str().unwrap(),
+                "--sample-size",
+                "2",
+                "-f",
+                fmt,
+            ])
+            .assert()
+            .success();
+        let stdout = String::from_utf8_lossy(&assert.get_output().stdout).to_string();
+        assert!(
+            stdout.contains("b.parquet"),
+            "-f {fmt} must name the unread file in its sampled note: {stdout}"
+        );
+    }
+}
+
+/// `--sample-size` exactly equal to the true total: every file must be
+/// fully read and `sampling.sampled` must be false — the boundary must not
+/// be misreported as a partial sample just because a cap was given.
+#[test]
+fn describe_sample_size_equal_to_total_reads_every_file_and_is_not_sampled() {
+    let dir = TempDir::new().unwrap();
+    let a = write_ints(dir.path(), "a", vec![1, 2, 3]);
+    let b = write_ints(dir.path(), "b", vec![4, 5, 6]);
+
+    let json = describe_json(&[&a, &b], Some(6));
+
+    // Ground truth: concatenation of [1,2,3,4,5,6] has count=6, max=6.
+    let col = &json["columns"][0];
+    assert_eq!(col["count"], 6);
+    assert_eq!(col["max"], 6);
+    assert_eq!(col["min"], 1);
+
+    let sampling = &json["sampling"];
+    assert_eq!(
+        sampling["sampled"], false,
+        "sample_size == true total must not be reported as sampled: {json}"
+    );
+    assert_eq!(sampling["files_read"], 2);
+    for f in sampling["files"].as_array().unwrap() {
+        assert_eq!(
+            f["opened"], true,
+            "every file must be opened when the budget covers the full total: {json}"
+        );
+        assert_eq!(f["rows_read"], f["rows_total"]);
+    }
+}
+
+/// `--sample-size` above the true total (the common case in practice, since
+/// the default is 100000): behaviour must match the fully-unsampled
+/// control exactly.
+#[test]
+fn describe_sample_size_above_total_matches_unsampled_control() {
+    let dir = TempDir::new().unwrap();
+    let a = write_ints(dir.path(), "a", vec![1, 2, 3]);
+    let b = write_ints(dir.path(), "b", vec![4, 5, 6]);
+
+    let sampled = describe_json(&[&a, &b], Some(1000));
+    let unsampled = describe_json(&[&a, &b], None);
+
+    assert_eq!(sampled["columns"], unsampled["columns"]);
+    assert_eq!(sampled["sampling"]["sampled"], false);
+    assert_eq!(unsampled["sampling"]["sampled"], false);
+    assert_eq!(sampled["sampling"]["rows_read"], 6);
+}
+
+/// The dangerous half of the original bug: with a row budget that saturates
+/// on the first file, a second file with a genuinely incompatible schema
+/// used to be skipped along with its data, reaching exit 0. The schema
+/// guard must now fire regardless of whether the row budget would ever
+/// have reached that file.
+#[test]
+fn describe_sample_size_below_first_file_total_still_catches_incompatible_second_file() {
+    let dir = TempDir::new().unwrap();
+    let a = write_ints(dir.path(), "a", vec![1, 2, 3]);
+
+    let string_schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Utf8, true)]));
+    let string_batch = RecordBatch::try_new(
+        string_schema,
+        vec![Arc::new(StringArray::from(vec!["x", "y", "z"]))],
+    )
+    .unwrap();
+    let b = write_batch(dir.path(), "b", string_batch);
+
+    // --sample-size 1 is smaller than a's own row count, so the pre-fix
+    // code would never have opened b.parquet at all.
+    let assert = pq()
+        .args([
+            "stats",
+            "--describe",
+            a.to_str().unwrap(),
+            b.to_str().unwrap(),
+            "--sample-size",
+            "1",
+        ])
+        .assert()
+        .failure();
+
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    assert!(
+        stderr.contains("different schemas"),
+        "an incompatible file behind a saturated sample budget must still \
+         be rejected, not silently skipped: {stderr}"
+    );
+    assert!(
+        stderr.contains("a.parquet") && stderr.contains("b.parquet"),
+        "error must name both files: {stderr}"
+    );
+}
+
+/// A zero-row file sitting between two non-empty files must not be
+/// misreported as "not read" (it WAS opened; it simply holds nothing) and
+/// must not break the row accounting for the files around it.
+#[test]
+fn describe_zero_row_file_among_nonempty_files_is_opened_and_accounted() {
+    let dir = TempDir::new().unwrap();
+    let a = write_ints(dir.path(), "a", vec![1, 2, 3]);
+    let empty = write_ints(dir.path(), "empty", vec![]);
+    let b = write_ints(dir.path(), "b", vec![10, 20]);
+
+    // Sample size covers the whole dataset (5 rows) so every file is
+    // expected to be opened.
+    let json = describe_json(&[&a, &empty, &b], Some(100));
+
+    let col = &json["columns"][0];
+    assert_eq!(
+        col["count"], 5,
+        "the empty file must not distort the total row count: {json}"
+    );
+    assert_eq!(col["max"], 20);
+    assert_eq!(col["min"], 1);
+
+    let sampling = &json["sampling"];
+    assert_eq!(sampling["files_total"], 3);
+    assert_eq!(
+        sampling["files_read"], 3,
+        "the empty file counts as opened, not skipped: {json}"
+    );
+
+    let empty_entry = file_entry(sampling, &empty);
+    assert_eq!(
+        empty_entry["opened"], true,
+        "an empty file that was genuinely opened must not be reported the \
+         same way as a file the budget skipped: {json}"
+    );
+    assert_eq!(empty_entry["rows_read"], 0);
+    assert_eq!(empty_entry["rows_total"], 0);
+}
+
+/// Control: a single file must behave exactly as before the fix, modulo the
+/// new `sampling` envelope in the JSON output. This guards against the
+/// metadata-first-pass restructuring changing single-file results.
+#[test]
+fn describe_single_file_is_unaffected_control() {
+    let dir = TempDir::new().unwrap();
+    let a = write_ints(dir.path(), "a", vec![1, 2, 3, 4, 5]);
+
+    let json = describe_json(&[&a], None);
+    let col = &json["columns"][0];
+    assert_eq!(col["count"], 5);
+    assert_eq!(col["min"], 1);
+    assert_eq!(col["max"], 5);
+    assert_eq!(col["mean"], 3.0);
+
+    let sampling = &json["sampling"];
+    assert_eq!(sampling["sampled"], false);
+    assert_eq!(sampling["files_total"], 1);
+    assert_eq!(sampling["files_read"], 1);
+    assert_eq!(sampling["rows_read"], 5);
+    assert_eq!(sampling["rows_total"], 5);
+
+    // A sample size smaller than the single file's own row count must
+    // still correctly mark it sampled (single-file sampling already worked
+    // before this fix; this is the non-regression check).
+    let sampled = describe_json(&[&a], Some(2));
+    assert_eq!(sampled["sampling"]["sampled"], true);
+    assert_eq!(sampled["columns"][0]["count"], 2);
+    assert_eq!(sampled["columns"][0]["max"], 2);
+}
+
+/// Plain `stats` (no `--describe`) is dispatched once per resolved file
+/// (`main.rs`'s `for f in &resolved { commands::stats::run(f, format)?; }`)
+/// rather than being pooled and sampled like `--describe`. It takes no
+/// `--sample-size` flag at all, so every named file's own stats are always
+/// printed — there is no budget to silently exhaust. This test exists to
+/// pin that shape down: if `stats` (no `--describe`) is ever changed to
+/// pool multiple files, this must be revisited for the same bug.
+#[test]
+fn plain_stats_prints_every_file_independently_no_shared_bug() {
+    let dir = TempDir::new().unwrap();
+    let a = write_ints(dir.path(), "a", vec![1, 2, 3]);
+    let b = write_ints(dir.path(), "b", vec![100, 200, 300]);
+
+    let assert = pq()
+        .args([
+            "stats",
+            a.to_str().unwrap(),
+            b.to_str().unwrap(),
+            "-f",
+            "jsonl",
+        ])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).to_string();
+    // `-f jsonl` prints one compact line per file (see main.rs's per-file
+    // loop: `for f in &resolved { commands::stats::run(f, format)?; }`).
+    let lines: Vec<&str> = stdout.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert_eq!(
+        lines.len(),
+        2,
+        "expected one stats block per file: {stdout}"
+    );
+    assert!(
+        lines[0].contains("\"min_value\":\"1\""),
+        "first block must be a's stats: {stdout}"
+    );
+    assert!(
+        lines[1].contains("\"min_value\":\"100\""),
+        "second block must be b's stats: {stdout}"
+    );
+}

@@ -4,6 +4,50 @@ Latest entries first. Record significant decisions, architecture changes, and no
 
 ---
 
+## 2026-09-02 — `stats --describe --sample-size`: budget the concatenation, not the file-open order
+
+`stats --describe`'s row-budget loop opened files in argument order with a
+shrinking `limit`, and `break`-ed the read loop the instant the budget hit
+zero. That meant the budget gated which files were even *opened*: with files
+`[1,2,3]` and `[100,200,300]`, `--sample-size 2` never opened the second file
+at all, so its data was silently absent from the stats AND its schema was
+never checked against the first file's — a genuinely incompatible second
+file (wrong column type) would have passed unnoticed the same way the row
+data did.
+
+Chose to keep the existing multi-file rule rather than invent a new one:
+per the earlier "Multi-file semantics for `tail`/`sample`: concatenation, not
+per-file" entry, multiple files are one logical concatenation in argument
+order, and a row-budget flag applies to the whole concatenation, not per
+file. `--sample-size` is worded exactly like `tail -n`/`sample -n` ("N rows"),
+so a per-file cap would have the same defect that decision already rejected:
+silently multiplying the amount read by the file count for an unchanged
+flag. So a file the budget never reaches still contributes 0 rows to the
+sample — that much of the old behaviour is *correct* under "first N rows of
+the concatenation" and is kept.
+
+What changed is that the file is no longer allowed to vanish. Metadata
+(schema + row count) is now read for every named file up front, in a
+separate pass, before the row budget is spent — cheap, footer-only, no data
+read — so the schema-compatibility guard fires for every file regardless of
+where the budget runs out, and the true total row count is known before
+deciding how far the second pass gets. Every file is named in the output's
+new `sampling.files` list with an explicit `opened` flag, distinct from
+`rows_read == 0`: a genuinely empty file that *was* opened must not be
+reported the same way as a file the budget skipped outright, or a machine
+consumer would conflate "this file behind the sample boundary" with "this
+file happens to have nothing in it" — caught by a dedicated test before it
+shipped, not found by inspection.
+
+The `json`/`jsonl` output previously carried no sampling information at
+all — `table`/`plain` printed a note, but a machine consumer of the other
+two formats had no way to know it received a sample, or which files were
+behind it. Rather than bolt disclosure onto the existing bare array, the
+array now lives under `columns` alongside a `sampling` object, which is a
+breaking shape change for anyone parsing today's array directly. Judged
+worth it: a bare array had no room to carry the fact honestly, and no
+golden test or documented consumer depends on the old shape.
+
 ## 2026-09-02 — Table renderer's positional zip, and a marker for "no such column"
 
 `render_table`/`render_plain` built their header from `batches[0].schema()` and
