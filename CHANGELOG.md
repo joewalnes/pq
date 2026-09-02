@@ -2,6 +2,22 @@
 
 ## 2026-09-02
 
+- Fix `pq sql` error messages tripling for parser/type/schema errors (e.g.
+  `DataFusion error: SQL error: ParserError("..."): SQL error:
+  ParserError("..."): sql parser error: ...`). `SqlError::DataFusion`
+  (`crates/pq-query/src/sql.rs`) both embedded `DataFusionError`'s full,
+  already-complete `Display` in its own message and exposed the same value
+  via `source()`, so `anyhow`'s chain walk in `pq-cli/src/main.rs` printed
+  pieces of it again — twice more for `DataFusionError` variants that wrap
+  a further error (parser, schema, cast errors), once more for the rest
+  (unknown table, planning errors). Fixed by severing `source()` for this
+  variant (a hand-written `From` impl instead of `#[from]`); the message —
+  query text, position, table/column names — is unchanged, just no longer
+  repeated. One golden expectation updated
+  (`tests/golden/tests/error-handling.md`).
+
+## 2026-09-02
+
 - Record in LESSONS.md that confirmed findings leak between being reported and being dispatched: a sweep of nine found two never assigned, after a fourth was discovered live in main all run
 ## 2026-09-02
 

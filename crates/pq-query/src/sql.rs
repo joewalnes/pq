@@ -22,14 +22,46 @@ use pq_core::source;
 
 #[derive(Error, Debug)]
 pub enum SqlError {
+    // Deliberately *not* `#[from]`/`#[source]` here — see the `From` impl
+    // below for why. `DataFusionError::Display` (datafusion-common's
+    // `error.rs`) is self-contained: each variant's `fmt` writes
+    // `"{prefix}{message}"` where `message()` already recurses into the
+    // *Display* of whatever it wraps (`"Arrow error: " + arrow_err`,
+    // `"SQL error: " + format!("{parser_err:?}")`, etc.), so by the time we
+    // have a `DataFusionError` in hand, its own `to_string()` is already the
+    // complete, final rendering of the whole nested error — table names,
+    // column lists, the parser's position, all of it. If this variant also
+    // implemented `source()` returning that same `DataFusionError` (what
+    // `#[from]` gives you for free), `anyhow`'s `{:#}` in `pq-cli/main.rs`
+    // would walk into it and print pieces of that already-complete text a
+    // second and third time — measured as
+    // `DataFusion error: SQL error: ParserError("..."): SQL error:
+    // ParserError("..."): sql parser error: ...` for a bad query, three
+    // copies of one sentence in decreasing wrapping. That is a different
+    // mechanism from the `pq-core` doubling (DIARY.md, 2026-09-02): there,
+    // a `PqError` variant's own `Display` redundantly embedded its source's
+    // text *next to* a `source()` that also exposed it, and the fix was to
+    // stop the `Display` from embedding it. Here the embedding is
+    // `DataFusionError`'s own design (an external crate we can't and
+    // shouldn't change) and it is *already complete* — the bug is solely
+    // that we *also* exposed it as `source()`, so the convention this
+    // variant follows is the opposite one: `Display` carries the entire
+    // message, `source()` carries nothing, because there is nothing left
+    // for a chain-walking printer to usefully add.
     #[error("DataFusion error: {0}")]
-    DataFusion(#[from] datafusion::error::DataFusionError),
+    DataFusion(datafusion::error::DataFusionError),
 
     #[error("No results returned")]
     NoResults,
 
     #[error("{0}")]
     Other(String),
+}
+
+impl From<datafusion::error::DataFusionError> for SqlError {
+    fn from(e: datafusion::error::DataFusionError) -> Self {
+        SqlError::DataFusion(e)
+    }
 }
 
 pub async fn execute_sql(query: &str) -> std::result::Result<Vec<RecordBatch>, SqlError> {

@@ -203,6 +203,99 @@ fn dev_stdout_repro_is_flaky_under_concurrent_load_see_comment() {
     assert_error_shape_ok(&stderr, &["/dev/stdout"]);
 }
 
+/// Writes a tiny parquet fixture (columns `id: Int64`, `name: Utf8`, two
+/// rows) into `dir`, for the `pq sql` error-shape tests below. Built with
+/// arrow/parquet directly, same approach as `sql_duplicate_columns_tests.rs`.
+fn small_parquet(dir: &std::path::Path) -> std::path::PathBuf {
+    use arrow::array::{Int64Array, RecordBatch, StringArray};
+    use arrow::datatypes::{DataType, Field, Schema};
+    use std::sync::Arc;
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("name", DataType::Utf8, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(Int64Array::from(vec![1, 2])),
+            Arc::new(StringArray::from(vec!["alice", "bob"])),
+        ],
+    )
+    .unwrap();
+    let out = dir.join("small.parquet");
+    let file = fs::File::create(&out).unwrap();
+    let mut writer = parquet::arrow::ArrowWriter::try_new(file, schema, None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+    out
+}
+
+/// `pq sql`'s error chain used to triple, not double: `SqlError::DataFusion`
+/// (`crates/pq-query/src/sql.rs`) both interpolated `datafusion::DataFusionError`'s
+/// full `Display` into its own message *and* derived `source()` from it via
+/// `#[from]`, so `anyhow`'s `{:#}` chain walk printed that same text a second
+/// time — and then, for `DataFusionError` variants that themselves wrap a
+/// further error (`SQL`, `ArrowError`, `SchemaError`), a third time via one
+/// more `source()` hop, e.g.:
+///
+///   Error: DataFusion error: SQL error: ParserError("..."): SQL error:
+///   ParserError("..."): sql parser error: ...
+///
+/// A different mechanism from the `pq-core` doubling (DIARY.md 2026-09-02):
+/// there, the fix stopped a `Display` from embedding its own source's text.
+/// Here `DataFusionError`'s `Display` is already the complete, self-contained
+/// rendering of the whole nested error by the external crate's own design —
+/// the fix instead severs `SqlError::DataFusion`'s `source()` link entirely
+/// (a hand-written `From` impl, no `#[from]`/`#[source]`), so `anyhow` has
+/// nothing left to chain-walk into. This test covers the parser, planning,
+/// schema, and type-error families, since each wraps a different
+/// `DataFusionError` variant and the doubling mechanism inside DataFusion's
+/// own `Display`/`source()` differs by variant (`Plan`/`Execution` have no
+/// `source()` at all and only doubled via *our* bug; `SQL`/`ArrowError`/
+/// `SchemaError` wrap a further error and would have tripled).
+#[test]
+fn sql_error_chains_are_not_doubled_or_tripled() {
+    let dir = tmp();
+    let file = small_parquet(dir.path());
+    let file_str = file.to_str().unwrap();
+
+    // 1. Parser error (SqlError::DataFusion(DataFusionError::SQL), which
+    //    wraps a further sqlparser::ParserError with its own source()).
+    let stderr = stderr_of(pq().arg("sql").arg("SELECT"));
+    assert_error_shape_ok(&stderr, &["Expected"]);
+
+    // 2. Unknown table (DataFusionError::Plan, a leaf with no source()).
+    let stderr = stderr_of(pq().arg("sql").arg("SELECT * FROM nonexistent_table_xyz"));
+    assert_error_shape_ok(&stderr, &["nonexistent_table_xyz"]);
+
+    // 3. Unknown column (DataFusionError::SchemaError, which wraps a further
+    //    SchemaError with its own source()). Context: the bad column name and
+    //    at least one real column name must both survive.
+    let query = format!("SELECT nope_col FROM '{file_str}'");
+    let stderr = stderr_of(pq().arg("sql").arg(&query));
+    assert_error_shape_ok(&stderr, &["nope_col", "id"]);
+
+    // 4. Type error: an invalid CAST (DataFusionError::ArrowError, which
+    //    wraps a further arrow::error::ArrowError with its own source()).
+    //    Context: the offending value must survive.
+    let query = format!("SELECT CAST(name AS INT) FROM '{file_str}'");
+    let stderr = stderr_of(pq().arg("sql").arg(&query));
+    assert_error_shape_ok(&stderr, &["alice"]);
+
+    // 5. Type error in a predicate, via an arithmetic type mismatch
+    //    (DataFusionError::Plan again, exercised through a WHERE-adjacent
+    //    expression rather than a bare SELECT).
+    let query = format!("SELECT * FROM '{file_str}' WHERE name + 1 > 0");
+    let stderr = stderr_of(pq().arg("sql").arg(&query));
+    assert_error_shape_ok(&stderr, &[]);
+
+    // 6. Unknown function (DataFusionError::Plan).
+    let query = format!("SELECT nonexistent_func_xyz(id) FROM '{file_str}'");
+    let stderr = stderr_of(pq().arg("sql").arg(&query));
+    assert_error_shape_ok(&stderr, &["nonexistent_func_xyz"]);
+}
+
 #[test]
 fn detector_catches_a_known_doubled_string() {
     // Guards the guard: if `find_doubled_sentence` regresses (e.g. someone
