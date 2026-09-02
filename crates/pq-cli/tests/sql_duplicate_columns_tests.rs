@@ -40,6 +40,19 @@ fn pq() -> Command {
 /// because no import path can *produce* duplicate names — that is the whole
 /// point of the fixture.
 fn dup_parquet(dir: &Path, name: &str, columns: &[&str]) -> PathBuf {
+    write_parquet(dir, name, columns, false)
+}
+
+/// Same fixture with *nullable* columns. Needed wherever DataFusion has to
+/// union files with different schemas: the gaps it fills are nulls, and a
+/// non-nullable column rejects them ("Column 'c' is declared as non-nullable
+/// but contains null values") — a property of the fixture, not of anything
+/// under test here.
+fn nullable_parquet(dir: &Path, name: &str, columns: &[&str]) -> PathBuf {
+    write_parquet(dir, name, columns, true)
+}
+
+fn write_parquet(dir: &Path, name: &str, columns: &[&str], nullable: bool) -> PathBuf {
     use arrow::array::{ArrayRef, Int64Array, RecordBatch};
     use arrow::datatypes::{DataType, Field, Schema};
     use std::sync::Arc;
@@ -47,7 +60,7 @@ fn dup_parquet(dir: &Path, name: &str, columns: &[&str]) -> PathBuf {
     let schema = Arc::new(Schema::new(
         columns
             .iter()
-            .map(|c| Field::new(*c, DataType::Int64, false))
+            .map(|c| Field::new(*c, DataType::Int64, nullable))
             .collect::<Vec<_>>(),
     ));
     let arrays: Vec<ArrayRef> = (0..columns.len())
@@ -416,9 +429,12 @@ fn a_directory_table_still_works() {
     let dir = TempDir::new().unwrap();
     let table_dir = dir.path().join("parts.parquet");
     fs::create_dir(&table_dir).unwrap();
+    // Two files, so this exercises a real multi-file listing and schema
+    // merge, not the degenerate one-file case.
     dup_parquet(&table_dir, "part0", &["a", "b", "c"]);
+    dup_parquet(&table_dir, "part1", &["a", "b", "c"]);
 
-    let (stdout, _) = run_ok(&[
+    let (stdout, stderr) = run_ok(&[
         "sql",
         &format!("SELECT * FROM '{}'", table_dir.to_str().unwrap()),
         "-f",
@@ -430,7 +446,12 @@ fn a_directory_table_still_works() {
         vec!["a", "b", "c"],
         "a directory-of-parquet table stopped working"
     );
-    assert_eq!(rows.len(), 2, "directory table returned no rows: {rows:?}");
+    assert_eq!(rows.len(), 4, "directory table returned no rows: {rows:?}");
+    assert!(
+        !stderr.contains("duplicate"),
+        "a directory of unique-named files must not be warned about or \
+         refused: {stderr:?}"
+    );
 }
 
 #[test]
@@ -471,4 +492,252 @@ fn sql_aggregate_over_duplicate_column_file_works() {
     let (h, rows) = parse_csv(&out);
     assert_eq!(h, vec!["n"]);
     assert_eq!(rows, vec![vec!["2".to_string()]]);
+}
+
+// ---------------------------------------------------------------------------
+// Directory tables (BUG 1): the same bytes must not answer correctly through
+// one path and silently wrongly through another.
+// ---------------------------------------------------------------------------
+//
+// Reproduced before the fix, one directory holding one file whose two int64
+// columns are both named `id`, holding [1,2,3] and [10,20,30]:
+//
+//   pq sql "SELECT * FROM '.../dir.parquet/part0.parquet'"   (the file)
+//     note: ... renamed column 2 'id' -> 'id_1'
+//     {"id":1,"id_1":10}  {"id":2,"id_1":20}  {"id":3,"id_1":30}   rc=0
+//
+//   pq sql "SELECT * FROM '.../dir.parquet'"                 (the directory)
+//     {"id":10}  {"id":20}  {"id":30}                              rc=0
+//
+// One column gone, the survivor carrying the *second* column's data under the
+// *first* column's name, exit 0, no note. Ground truth from pyarrow 21.0.0:
+// `ParquetFile(...).read()` on that file gives names ['id','id'] with
+// [1,2,3] and [10,20,30], and `pyarrow.parquet.read_table` on the directory
+// raises `ArrowInvalid: Can't unify schema with duplicate field names` — pq
+// was answering where the reference implementation declines.
+//
+// pq now refuses too. These guards assert the refusal is loud (non-zero exit,
+// a message naming the file and the reason) and that it never emits data.
+
+/// Run `pq` expecting failure, returning (stdout, stderr). Both are returned
+/// because a refusal that still printed rows would be worse than the bug.
+fn run_fail(args: &[&str]) -> (Vec<u8>, String) {
+    let out = pq().args(args).assert().failure().get_output().clone();
+    (out.stdout, String::from_utf8_lossy(&out.stderr).to_string())
+}
+
+/// Assert a refusal is usable: it names the offending file, says why, and
+/// emitted no rows.
+fn assert_refused(stdout: &[u8], stderr: &str, offending_file: &str, case: &str) {
+    assert!(
+        stderr.contains("duplicate"),
+        "[{case}] the refusal does not say the columns are duplicated: {stderr:?}"
+    );
+    assert!(
+        stderr.contains(offending_file),
+        "[{case}] the refusal does not name the offending file {offending_file:?}: {stderr:?}"
+    );
+    assert!(
+        stdout.is_empty(),
+        "[{case}] pq refused and still wrote rows to stdout: {:?}",
+        String::from_utf8_lossy(stdout)
+    );
+}
+
+#[test]
+fn directory_with_a_duplicate_column_file_is_refused_not_silently_wrong() {
+    let dir = TempDir::new().unwrap();
+    let table_dir = dir.path().join("dir.parquet");
+    fs::create_dir(&table_dir).unwrap();
+    let file = dup_parquet(&table_dir, "part0", &["id", "id"]);
+
+    // Instrument check first: the *file* route on the same bytes still
+    // answers, and answers with both columns. If this half fails the fixture
+    // is broken, not the directory handling.
+    let (file_out, _) = run_ok(&[
+        "sql",
+        &format!("SELECT * FROM '{}'", file.to_str().unwrap()),
+        "-f",
+        "csv",
+    ]);
+    assert_all_columns_present(&file_out, 2, "the file inside the directory");
+
+    let (stdout, stderr) = run_fail(&[
+        "sql",
+        &format!("SELECT * FROM '{}'", table_dir.to_str().unwrap()),
+        "-f",
+        "csv",
+    ]);
+    assert_refused(
+        &stdout,
+        &stderr,
+        "part0.parquet",
+        "directory of one dup file",
+    );
+    // The specific silent-wrong-answer shape must be gone, not merely
+    // reworded: no row of the second column's data may appear anywhere.
+    assert!(
+        !String::from_utf8_lossy(&stdout).contains(&expected_col(1)[0]),
+        "the directory route still emitted the second column's data: {:?}",
+        String::from_utf8_lossy(&stdout)
+    );
+}
+
+#[test]
+fn directory_of_several_duplicate_column_files_is_refused() {
+    let dir = TempDir::new().unwrap();
+    let table_dir = dir.path().join("dir.parquet");
+    fs::create_dir(&table_dir).unwrap();
+    dup_parquet(&table_dir, "part0", &["id", "id"]);
+    dup_parquet(&table_dir, "part1", &["id", "id"]);
+
+    let (stdout, stderr) = run_fail(&[
+        "sql",
+        &format!("SELECT * FROM '{}'", table_dir.to_str().unwrap()),
+        "-f",
+        "csv",
+    ]);
+    assert!(
+        stderr.contains("duplicate"),
+        "several duplicate files were not refused: {stderr:?}"
+    );
+    assert!(stdout.is_empty(), "refused and still wrote rows");
+}
+
+/// The duplicate file need not be the first one listed, and the presence of
+/// well-formed siblings must not launder it.
+#[test]
+fn directory_mixing_unique_and_duplicate_column_files_is_refused() {
+    let dir = TempDir::new().unwrap();
+    let table_dir = dir.path().join("dir.parquet");
+    fs::create_dir(&table_dir).unwrap();
+    dup_parquet(&table_dir, "aaa_ok", &["id", "other"]);
+    dup_parquet(&table_dir, "zzz_bad", &["id", "id"]);
+
+    let (stdout, stderr) = run_fail(&[
+        "sql",
+        &format!("SELECT * FROM '{}'", table_dir.to_str().unwrap()),
+        "-f",
+        "csv",
+    ]);
+    assert_refused(&stdout, &stderr, "zzz_bad.parquet", "mixed directory");
+}
+
+/// `pq cat --where` goes through the same registration (`query_with_where`),
+/// so it had the identical silent wrong answer and must refuse identically.
+#[test]
+fn cat_where_on_a_duplicate_column_directory_is_refused() {
+    let dir = TempDir::new().unwrap();
+    let table_dir = dir.path().join("dir.parquet");
+    fs::create_dir(&table_dir).unwrap();
+    dup_parquet(&table_dir, "part0", &["id", "id"]);
+
+    let (stdout, stderr) = run_fail(&[
+        "cat",
+        table_dir.to_str().unwrap(),
+        "--where",
+        "1 = 1",
+        "-f",
+        "csv",
+    ]);
+    assert_refused(
+        &stdout,
+        &stderr,
+        "part0.parquet",
+        "cat --where on a directory",
+    );
+}
+
+/// Hive-partition subdirectories *are* read by DataFusion (segments
+/// containing `=` survive `listing_table_ignore_subdirectory`), so a
+/// duplicate hidden one level down under `k=1/` is still answered wrongly and
+/// must still be refused. Measured on the release binary: a directory holding
+/// `top.parquet`, `k=1/hive.parquet` and `nested/deep.parquet` returns rows
+/// from the first two only.
+#[test]
+fn duplicate_columns_in_a_hive_partition_are_refused() {
+    let dir = TempDir::new().unwrap();
+    let table_dir = dir.path().join("dir.parquet");
+    let part = table_dir.join("k=1");
+    fs::create_dir_all(&part).unwrap();
+    dup_parquet(&table_dir, "top", &["id", "other"]);
+    dup_parquet(&part, "hive", &["id", "id"]);
+
+    let (stdout, stderr) = run_fail(&[
+        "sql",
+        &format!("SELECT * FROM '{}'", table_dir.to_str().unwrap()),
+        "-f",
+        "csv",
+    ]);
+    assert_refused(&stdout, &stderr, "hive.parquet", "hive partition");
+}
+
+/// The other half of the same contract, and the guard against over-refusal:
+/// a plain (non-Hive) subdirectory is *not* read by DataFusion, so a
+/// duplicate-named file sitting there cannot corrupt the answer and must not
+/// be refused. A hand-rolled recursive walk would fail this test; a flat one
+/// would fail the Hive test above. Only asking DataFusion for its own file
+/// list passes both.
+#[test]
+fn a_subdirectory_datafusion_never_reads_does_not_trigger_a_refusal() {
+    let dir = TempDir::new().unwrap();
+    let table_dir = dir.path().join("dir.parquet");
+    let nested = table_dir.join("nested");
+    fs::create_dir_all(&nested).unwrap();
+    dup_parquet(&table_dir, "top", &["a", "b"]);
+    dup_parquet(&nested, "deep", &["id", "id"]);
+
+    let (stdout, stderr) = run_ok(&[
+        "sql",
+        &format!("SELECT * FROM '{}'", table_dir.to_str().unwrap()),
+        "-f",
+        "csv",
+    ]);
+    let (header, rows) = parse_csv(&stdout);
+    assert_eq!(
+        header,
+        vec!["a", "b"],
+        "an unread subdirectory changed the table's schema"
+    );
+    assert_eq!(
+        rows.len(),
+        2,
+        "an unread subdirectory changed the rows returned: {rows:?}"
+    );
+    assert!(
+        !stderr.contains("duplicate"),
+        "refused on a file DataFusion never reads: {stderr:?}"
+    );
+}
+
+/// Control: a directory whose files have *different* schemas that merge
+/// cleanly must keep working. DataFusion unions them and fills the gaps with
+/// nulls; the duplicate check must not disturb that.
+#[test]
+fn a_directory_of_different_but_mergeable_schemas_still_works() {
+    let dir = TempDir::new().unwrap();
+    let table_dir = dir.path().join("merge.parquet");
+    fs::create_dir(&table_dir).unwrap();
+    nullable_parquet(&table_dir, "part0", &["a", "b"]);
+    nullable_parquet(&table_dir, "part1", &["a", "c"]);
+
+    let (stdout, stderr) = run_ok(&[
+        "sql",
+        &format!("SELECT * FROM '{}' ORDER BY a", table_dir.to_str().unwrap()),
+        "-f",
+        "csv",
+    ]);
+    let (header, rows) = parse_csv(&stdout);
+    let mut sorted = header.clone();
+    sorted.sort();
+    assert_eq!(
+        sorted,
+        vec!["a", "b", "c"],
+        "differing-but-mergeable schemas stopped merging: {header:?}"
+    );
+    assert_eq!(rows.len(), 4, "mergeable directory lost rows: {rows:?}");
+    assert!(
+        !stderr.contains("duplicate"),
+        "a mergeable-schema directory was warned about or refused: {stderr:?}"
+    );
 }
