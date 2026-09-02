@@ -39,6 +39,33 @@
   and then failing — the note announced an override that never took effect.
   A format that can't be written to a file is now rejected before any note.
 
+- Fix `stats --describe`: the panic-avoidance fix for cross-file schema
+  mismatches over-corrected by comparing whole `arrow::datatypes::Field`s,
+  whose equality also covers nullability and field metadata —
+  `arrow::compute::concat` (the operation being guarded) only cares about
+  `data_type()`. Two files that differed only in nullability (e.g. one
+  written `NOT NULL`, one not) were rejected even though `concat` handles
+  them fine. Now compares column count and `DataType` only. Also: when a
+  real mismatch remains, the error used to render both files' column lists
+  through the friendly `format_dtype`, which can collapse genuinely
+  different types onto the same string (every `Timestamp` unit prints as
+  "timestamp", every same-arity `Struct` prints as "struct<N fields>") and
+  could show two IDENTICAL-looking lists for a real, unmergeable mismatch.
+  The error now renders the exact `DataType` instead.
+- Narrow README.md's `-o`/`-O` format-detection claim: it stated `-f`
+  overrides the extension-based default on `sql`/`jq`/`export -o` and
+  `cat -O` alike. Confirmed true only for `sql`/`export`; `jq -o`/`cat -O`
+  silently ignore `-f` and always use the extension (`pq jq f.parquet '.'
+  -o out.csv -f json` writes CSV). Chose to fix the README rather than the
+  behavior: closing the gap needs `write_output.rs`, which another agent
+  owns right now. Logged as a TODO instead of leaving it undiscoverable.
+  See DIARY.md.
+- Strengthen `remote_tests.rs::test_http_truncated_response_produces_clear_error`,
+  found vacuous by mutation (a `pq` shim that fails `cat` without touching
+  the network passed its old `.failure()` + no-"panicked" checks). Now
+  asserts the test server actually served a short `206` body and that the
+  error text names an incomplete transfer, not just any failure.
+
 ## 2026-09-02 (4)
 
 - Fix `export`/`sql -o`: an explicit `-f`/`--format` was silently ignored

@@ -4,6 +4,32 @@ Latest entries first. Record significant decisions, architecture changes, and no
 
 ---
 
+## 2026-09-02 — README's `-o`/`-O` format claim narrowed, not extended, to stay true
+
+The "make the docs true" pass a few entries below fixed `-f` handling for
+`sql`/`export -o` and then wrote one sentence covering all four file-writing
+flags (`sql`/`jq -o`, `export -o`, `cat -O`) as if they'd all gotten the same
+treatment. Confirmed only two had: `pq jq src.parquet '.' -o jq.csv -f json`
+writes CSV (the `-f json` is silently dropped), and `pq cat src.parquet -O
+cat.txt` silently writes JSONL with no note — same silent-default shape the
+`sql`/`export` fix just closed, just not closed here too. Two ways to make
+the sentence true: narrow it to what's real, or extend the fix to `jq`/`cat`.
+The product case for extending is clean — it's the identical bug, just
+unfixed in two more places — but `jq -o`/`cat -O` funnel through
+`write_output.rs`'s `write_batches_to_file`/`json_values_to_file`, which
+take no format parameter at all and call `File::create` directly, bypassing
+`output_guard.rs::with_atomic_output` entirely (contradicting that module's
+own doc comment that every `-o`-writing command goes through it). Giving
+`jq`/`cat` the real fix means touching `write_output.rs` to add an explicit-
+format parameter mirroring `sql.rs`'s `resolve_output_format`, and probably
+`output_guard.rs` too — both owned by another agent working the write paths
+right now. Half-implementing it in `jq.rs`/`cat.rs` alone (duplicating
+private helpers that aren't visible outside `write_output.rs`) would produce
+two more silently-inconsistent format resolvers, exactly the kind of partial
+fix this project has been burned by before. Narrowed the README instead and
+filed the real fix as a TODO naming both root causes precisely, so the gap
+is disclosed rather than papered over.
+
 ## 2026-09-02 — Multi-file semantics for `tail`/`sample`: concatenation, not per-file
 
 `tail`, `sample`, `count`, `merge` all silently mishandled >1 file (`tail`
