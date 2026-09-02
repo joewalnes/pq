@@ -19,9 +19,7 @@ fn main() {
             // isn't already a known subcommand.  Otherwise `pq sql` (missing
             // required arg) would be rewritten to `pq view sql` and silently
             // try to open a file called "sql".
-            let first_positional = args[1..]
-                .iter()
-                .find(|a| !a.starts_with('-'));
+            let first_positional = args[1..].iter().find(|a| !a.starts_with('-'));
             let is_subcommand = first_positional.map_or(false, |a| is_known_subcommand(a));
 
             if args.len() > 1 && !is_subcommand {
@@ -117,14 +115,19 @@ fn run(cli: Cli, format: Format, explicit_format: bool) -> anyhow::Result<()> {
             let resolved = files::resolve_files(files)?;
             // TTY mode: default limit to 1000 to prevent hanging on large files
             // (skip when writing to a file — user wants all rows)
-            let effective_limit = if limit.is_none() && output.is_none() && console::Term::stdout().is_term() {
-                eprintln!("(showing first 1,000 rows; use --limit to override)");
-                Some(1000)
-            } else {
-                limit
-            };
+            let effective_limit =
+                if limit.is_none() && output.is_none() && console::Term::stdout().is_term() {
+                    eprintln!("(showing first 1,000 rows; use --limit to override)");
+                    Some(1000)
+                } else {
+                    limit
+                };
             // When --jq is used, default to compact JSONL like the jq command
-            let cat_format = if jq.is_some() && !explicit_format { Format::JsonLines } else { format };
+            let cat_format = if jq.is_some() && !explicit_format {
+                Format::JsonLines
+            } else {
+                format
+            };
             commands::cat::run(
                 &resolved,
                 effective_limit,
@@ -231,8 +234,19 @@ fn run(cli: Cli, format: Format, explicit_format: bool) -> anyhow::Result<()> {
         } => {
             let resolved = files::resolve_files(files)?;
             // jq defaults to compact JSONL (like real jq), unless user explicitly picks a format
-            let jq_format = if explicit_format { format } else { Format::JsonLines };
-            commands::jq::run(&resolved, filter, slurp, raw_output, output.as_deref(), jq_format)
+            let jq_format = if explicit_format {
+                format
+            } else {
+                Format::JsonLines
+            };
+            commands::jq::run(
+                &resolved,
+                filter,
+                slurp,
+                raw_output,
+                output.as_deref(),
+                jq_format,
+            )
         }
 
         Command::Export {

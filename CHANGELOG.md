@@ -2,6 +2,7 @@
 
 ## 2026-09-01
 
+- Reformat `pq-cli` sources with `cargo fmt` to green the `cargo fmt --all -- --check` gate (write_output.rs, main.rs); whitespace only, no behavior change
 - Add project process docs: CLAUDE.md, engineering diary, changelog
 - Ignore .wrangler/ directory
 
