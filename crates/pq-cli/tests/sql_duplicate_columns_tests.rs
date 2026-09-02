@@ -741,3 +741,101 @@ fn a_directory_of_different_but_mergeable_schemas_still_works() {
         "a mergeable-schema directory was warned about or refused: {stderr:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Registration cost (BUG 2): a path that is only ever a string literal must
+// not be read.
+// ---------------------------------------------------------------------------
+//
+// `pq sql` registers every `.parquet` string literal it finds anywhere in the
+// query as a table — pre-existing behaviour. Registering a duplicate-named
+// file used to build a `MemTable` eagerly, so a path mentioned only in a
+// `WHERE ... = '...'` comparison was read into memory in full, and a rename
+// note was printed about a file the query never selects from. Measured with
+// `/usr/bin/time -l` on macOS against a 132 MB two-column file:
+//
+//   literal is a duplicate-named file : 168,591,912 peak footprint,
+//                                       698,284,988 instructions, + a note
+//   CONTROL, unique-named twin        :   6,832,512 peak footprint,
+//                                        66,052,831 instructions, no note
+//
+// 24x memory and 10x instructions for a file that is not a table here.
+
+/// Zero every byte of a parquet file's data pages, leaving the 4-byte magic
+/// header and the whole footer (thrift metadata + length + `PAR1`) intact.
+///
+/// This turns the file into a direct instrument for "was the data read?":
+/// its schema still parses, so registration succeeds, but any attempt to
+/// decode a page fails. Stronger than watching for the stderr note, because
+/// it cannot be satisfied by suppressing a message.
+fn blank_the_data_pages(path: &Path) {
+    let mut bytes = fs::read(path).unwrap();
+    let len = bytes.len();
+    assert!(len > 12, "not a parquet file: {path:?}");
+    assert_eq!(
+        &bytes[len - 4..],
+        b"PAR1",
+        "no parquet footer magic: {path:?}"
+    );
+    let meta_len = u32::from_le_bytes(bytes[len - 8..len - 4].try_into().unwrap()) as usize;
+    let footer_start = len - 8 - meta_len;
+    assert!(
+        footer_start > 4,
+        "footer covers the whole file, nothing to blank: {path:?}"
+    );
+    for b in &mut bytes[4..footer_start] {
+        *b = 0;
+    }
+    fs::write(path, &bytes).unwrap();
+}
+
+#[test]
+fn a_duplicate_column_path_mentioned_only_as_a_literal_is_never_read() {
+    let dir = TempDir::new().unwrap();
+    let table = dup_parquet(dir.path(), "small", &["a", "b"]);
+    let literal = dup_parquet(dir.path(), "unreadable", &["id", "id"]);
+    blank_the_data_pages(&literal);
+
+    // Instrument check: the blanked file must genuinely be unreadable when it
+    // *is* the table. Without this the test below could pass because the
+    // corruption did nothing.
+    let (_, table_err) = run_fail(&[
+        "sql",
+        &format!("SELECT * FROM '{}'", literal.to_str().unwrap()),
+        "-f",
+        "csv",
+    ]);
+    assert!(
+        !table_err.is_empty(),
+        "the blanked file was read without complaint — the instrument is dead, \
+         so the assertion below would prove nothing"
+    );
+
+    // The real assertion: as a bare string literal it must never be opened.
+    let (stdout, stderr) = run_ok(&[
+        "sql",
+        &format!(
+            "SELECT * FROM '{}' WHERE '{}' <> 'not-this-path'",
+            table.to_str().unwrap(),
+            literal.to_str().unwrap()
+        ),
+        "-f",
+        "csv",
+    ]);
+    let (header, rows) = parse_csv(&stdout);
+    assert_eq!(
+        header,
+        vec!["a", "b"],
+        "the query's real table was disturbed: {header:?}"
+    );
+    assert_eq!(
+        rows.len(),
+        2,
+        "the query returned no rows, so an empty stdout would satisfy every \
+         assertion here vacuously: {rows:?}"
+    );
+    assert!(
+        !stderr.contains("duplicate"),
+        "a rename note was printed for a file the query never selects from: {stderr:?}"
+    );
+}

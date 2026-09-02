@@ -1,11 +1,17 @@
+use std::any::Any;
 use std::collections::HashSet;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use arrow::array::RecordBatch;
 use arrow::datatypes::{Field, Schema, SchemaRef};
+use async_trait::async_trait;
+use datafusion::catalog::{Session, TableProvider};
 use datafusion::datasource::listing::ListingTableUrl;
 use datafusion::datasource::MemTable;
+use datafusion::error::DataFusionError;
+use datafusion::logical_expr::{Expr, TableType};
+use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::*;
 use futures::TryStreamExt;
 use thiserror::Error;
@@ -220,10 +226,13 @@ fn is_parquet_ref(s: &str) -> bool {
 // — and it is not reversible in general, since a file may legitimately
 // contain both `id` and `id_1`.
 //
-// The cost, stated plainly: a duplicate-named file is read through
-// `MemTable`, so it is materialized in memory and gets no predicate or
-// projection pushdown. Files with unique names — everything anyone has unless
-// they went looking — take the unchanged `register_parquet` path.
+// The cost, stated plainly: a duplicate-named file that is scanned is read
+// through `MemTable`, so it is materialized in memory and gets no predicate
+// or projection pushdown. The read is deferred to the first scan
+// (`RenamedDuplicatesTable`), so a path that merely appears as a string
+// literal costs nothing beyond its footer. Files with unique names —
+// everything anyone has unless they went looking — take the unchanged
+// `register_parquet` path.
 //
 // A local *directory* is a third case and is handled separately: duplicates
 // there cannot be repaired, only refused. See
@@ -398,7 +407,8 @@ async fn listed_parquet_files(
 ///    `[id, x, id]` in another, "the second `id`" is a different column in
 ///    each, and any rule pq picked would be a guess presented as data.
 /// 2. The only mechanism pq has for preserving duplicates is reading the file
-///    and re-registering it under new names, which materializes it. A directory table is precisely the case that
+///    and re-registering it under new names (see `RenamedDuplicatesTable`),
+///    which materializes it. A directory table is precisely the case that
 ///    does not fit in memory. Trading silent wrong data for a silent OOM is
 ///    not a fix.
 /// 3. The obvious lazy alternative — hand `ListingTable` a pre-disambiguated
@@ -451,6 +461,106 @@ async fn reject_directory_with_duplicate_columns(
     Ok(())
 }
 
+/// A parquet file with duplicate top-level column names, registered under
+/// unique ones, read **only when the table is actually scanned**.
+///
+/// Laziness is the point. `register_files_from_query` registers every
+/// `.parquet` string literal it finds anywhere in the query, including ones
+/// that are only ever compared against — `WHERE src = '.../fat.parquet'`.
+/// When this was a plain `MemTable` built at registration time, such a
+/// literal was read into memory in full and a rename note was printed about a
+/// file the query never selects from. Measured with `/usr/bin/time -l` on a
+/// 132 MB file: 168,591,912 bytes peak footprint and 698,284,988 instructions
+/// against 6,832,512 / 66,052,831 for a unique-named twin — 24x memory for a
+/// file that is not a table in that query.
+///
+/// The note moves with the read, so it is now printed if and only if the
+/// table is scanned. That is also what makes the guard against this
+/// measurable from a test: no note means no materialization, by construction.
+///
+/// Not fixed by this: a table that *is* scanned is still materialized whole,
+/// so a duplicate-named file still loses predicate and projection pushdown
+/// and still reads everything for `LIMIT 1`. That cost is accepted and
+/// recorded in TODO.md; deferring it does not remove it.
+struct RenamedDuplicatesTable {
+    read_from: String,
+    display: String,
+    original: SchemaRef,
+    renamed: SchemaRef,
+    loaded: OnceLock<Arc<MemTable>>,
+}
+
+impl std::fmt::Debug for RenamedDuplicatesTable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RenamedDuplicatesTable")
+            .field("display", &self.display)
+            .field("renamed", &self.renamed)
+            .field("materialized", &self.loaded.get().is_some())
+            .finish()
+    }
+}
+
+impl RenamedDuplicatesTable {
+    /// Read and relabel the file, once. Concurrent scans may both do the work
+    /// but only one result is kept, so every scan sees the same batches.
+    fn materialize(&self) -> std::result::Result<Arc<MemTable>, SqlError> {
+        if let Some(table) = self.loaded.get() {
+            return Ok(table.clone());
+        }
+
+        announce_renames(&self.display, &self.original, &self.renamed);
+
+        let (batches, _) = pq_core::reader::open_batches(&self.read_from, &ReadOptions::default())
+            .map_err(|e| SqlError::Other(e.to_string()))?;
+        let relabelled = batches
+            .into_iter()
+            .map(|b| RecordBatch::try_new(self.renamed.clone(), b.columns().to_vec()))
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| {
+                SqlError::Other(format!(
+                    "failed to relabel the duplicate columns of '{}': {e}",
+                    self.display
+                ))
+            })?;
+
+        let table = Arc::new(MemTable::try_new(self.renamed.clone(), vec![relabelled])?);
+        let _ = self.loaded.set(table);
+        Ok(self
+            .loaded
+            .get()
+            .expect("OnceLock is set above or was already set")
+            .clone())
+    }
+}
+
+#[async_trait]
+impl TableProvider for RenamedDuplicatesTable {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn schema(&self) -> SchemaRef {
+        self.renamed.clone()
+    }
+
+    fn table_type(&self) -> TableType {
+        TableType::Base
+    }
+
+    async fn scan(
+        &self,
+        state: &dyn Session,
+        projection: Option<&Vec<usize>>,
+        filters: &[Expr],
+        limit: Option<usize>,
+    ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
+        let table = self
+            .materialize()
+            .map_err(|e| DataFusionError::Execution(e.to_string()))?;
+        table.scan(state, projection, filters, limit).await
+    }
+}
+
 /// Register `read_from` under `table_ref`, disambiguating duplicate top-level
 /// column names first if there are any. `display` is the location as the user
 /// typed it, used only for diagnostics.
@@ -485,22 +595,13 @@ async fn register_parquet_source(
         return Ok(());
     };
 
-    let renamed = schema_with_names(&schema, &names);
-    announce_renames(display, &schema, &renamed);
-
-    let (batches, _) = pq_core::reader::open_batches(read_from, &ReadOptions::default())
-        .map_err(|e| SqlError::Other(e.to_string()))?;
-    let relabelled = batches
-        .into_iter()
-        .map(|b| RecordBatch::try_new(renamed.clone(), b.columns().to_vec()))
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| {
-            SqlError::Other(format!(
-                "failed to relabel the duplicate columns of '{display}': {e}"
-            ))
-        })?;
-
-    let table = MemTable::try_new(renamed, vec![relabelled])?;
+    let table = RenamedDuplicatesTable {
+        read_from: read_from.to_string(),
+        display: display.to_string(),
+        renamed: schema_with_names(&schema, &names),
+        original: schema,
+        loaded: OnceLock::new(),
+    };
     let _ = ctx.register_table(table_ref, Arc::new(table))?;
     Ok(())
 }

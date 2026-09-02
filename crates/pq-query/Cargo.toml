@@ -10,6 +10,7 @@ parquet.workspace = true
 datafusion.workspace = true
 object_store.workspace = true
 url.workspace = true
+async-trait.workspace = true
 futures.workspace = true
 jaq-interpret.workspace = true
 jaq-core.workspace = true
