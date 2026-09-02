@@ -164,12 +164,7 @@ fn run(cli: Cli, format: Format, explicit_format: bool) -> anyhow::Result<()> {
             ref columns,
         } => {
             let resolved = files::resolve_files(files)?;
-            let file = resolved.last().unwrap();
-            let (batches, _schema) = pq_core::reader::open_tail(file, lines, columns.clone())?;
-            let stdout = std::io::stdout();
-            let mut writer = stdout.lock();
-            output::render_batches(&mut writer, &batches, format)?;
-            Ok(())
+            run_tail(&resolved, lines, columns.clone(), format)
         }
 
         Command::Sample {
@@ -295,6 +290,55 @@ fn run(cli: Cli, format: Format, explicit_format: bool) -> anyhow::Result<()> {
 
         Command::Completions { shell } => commands::completions::run(shell),
     }
+}
+
+/// Last N rows of the *concatenation* of `files`, in the order given — the
+/// same treatment `cat`/`head` give multiple files (one logical stream), so
+/// `tail` mirrors `head`'s precedent rather than inventing a per-file rule.
+/// A per-file "last N of each" would silently multiply the output size by
+/// the file count for the same `-n`, which is surprising for a flag whose
+/// whole meaning is "how many rows do I get".
+fn run_tail(
+    files: &[String],
+    n: usize,
+    columns: Option<Vec<String>>,
+    format: Format,
+) -> anyhow::Result<()> {
+    // Row counts are metadata-only reads (cheap) and let us work out, before
+    // touching any data pages, exactly which files the last N rows fall in.
+    let counts: Vec<i64> = files
+        .iter()
+        .map(|f| pq_core::reader::open_row_count(f).map_err(anyhow::Error::from))
+        .collect::<anyhow::Result<_>>()?;
+    let total: i64 = counts.iter().sum();
+
+    let n = n.min(total.max(0) as usize) as i64;
+    let global_start = total - n;
+
+    let mut tail_batches: Vec<arrow::array::RecordBatch> = Vec::new();
+    let mut file_start: i64 = 0;
+    for (file, &count) in files.iter().zip(counts.iter()) {
+        let file_end = file_start + count;
+        // Intersect this file's [file_start, file_end) with [global_start, total).
+        let lo = global_start.max(file_start);
+        let hi = total.min(file_end);
+        if lo < hi {
+            let opts = pq_core::reader::ReadOptions {
+                columns: columns.clone(),
+                limit: Some((hi - lo) as usize),
+                offset: Some((lo - file_start) as usize),
+                batch_size: 8192,
+            };
+            let (batches, _schema) = pq_core::reader::open_batches(file, &opts)?;
+            tail_batches.extend(batches);
+        }
+        file_start = file_end;
+    }
+
+    let stdout = std::io::stdout();
+    let mut writer = stdout.lock();
+    output::render_batches(&mut writer, &tail_batches, format)?;
+    Ok(())
 }
 
 fn run_sample(

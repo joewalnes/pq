@@ -1418,6 +1418,98 @@ fn test_validate_json() {
     assert_eq!(result["num_rows"], 100);
 }
 
+// ── Multi-file correctness tests ────────────────────────────────────────
+//
+// `tail`, `sample`, `count` and `merge` all take `Vec<String>` file
+// arguments but historically diverged from `cat`/`head`/`grep` in how (or
+// whether) they handled more than one: `tail` silently used only the last
+// file, `sample` silently used only the first, and `count`/`merge` never
+// ran their arguments through `files::resolve_files`, so a glob pattern
+// that reaches the process unexpanded (quoted, or on a shell/platform that
+// doesn't glob) was never expanded. These fixtures give each file a
+// distinguishing `tag` and a known row count so a test can tell "touched
+// every file" apart from "touched one file and got lucky".
+
+/// Write a parquet file with `n` rows of `{"id": 0..n, "tag": tag}`, via
+/// `pq import` — the same path real users hit, so these tests exercise the
+/// actual CLI glob/multi-file handling rather than a synthetic writer.
+fn write_tagged_fixture(dir: &Path, name: &str, tag: &str, n: usize) -> PathBuf {
+    let jsonl_path = dir.join(format!("{name}.jsonl"));
+    let parquet_path = dir.join(format!("{name}.parquet"));
+    let mut body = String::new();
+    for i in 0..n {
+        body.push_str(&format!("{{\"id\":{i},\"tag\":\"{tag}\"}}\n"));
+    }
+    fs::write(&jsonl_path, body).unwrap();
+    pq().args([
+        "import",
+        jsonl_path.to_str().unwrap(),
+        "-o",
+        parquet_path.to_str().unwrap(),
+    ])
+    .assert()
+    .success();
+    parquet_path
+}
+
+/// `tail` over several files must be the last N rows of the
+/// *concatenation*, in argument order — matching `head`'s existing
+/// treatment of multiple files as one logical stream (see `cat::run`,
+/// which `head` dispatches into). a=5 rows, b=10, c=20 (ids 0..n-1 each);
+/// asking for the last 25 of 35 total rows must cross the b/c boundary:
+/// rows 5..9 of b (not 0..4) plus all of c, and none of a.
+#[test]
+fn test_tail_multi_file_concatenates_across_files() {
+    let tmp = TempDir::new().unwrap();
+    let a = write_tagged_fixture(tmp.path(), "a", "A", 5);
+    let b = write_tagged_fixture(tmp.path(), "b", "B", 10);
+    let c = write_tagged_fixture(tmp.path(), "c", "C", 20);
+
+    let output = pq()
+        .args([
+            "tail",
+            a.to_str().unwrap(),
+            b.to_str().unwrap(),
+            c.to_str().unwrap(),
+            "-n",
+            "25",
+            "-f",
+            "jsonl",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+
+    assert_eq!(
+        stdout.matches("\"tag\":\"A\"").count(),
+        0,
+        "no rows from `a` should appear in the last 25 of a 35-row concatenation:\n{stdout}"
+    );
+    assert_eq!(
+        stdout.matches("\"tag\":\"B\"").count(),
+        5,
+        "exactly the last 5 rows of `b` (ids 5-9) should appear:\n{stdout}"
+    );
+    assert_eq!(
+        stdout.matches("\"tag\":\"C\"").count(),
+        20,
+        "all 20 rows of `c` should appear:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("\"id\":5,\"tag\":\"B\""),
+        "expected the first row of b's tail slice (id 5):\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("\"id\":4,\"tag\":\"B\""),
+        "id 4 of b is before the 25-row tail boundary and must not appear:\n{stdout}"
+    );
+}
+
 // ── Layout correctness tests ────────────────────────────────────────────
 
 /// `pq layout` must accumulate row offsets across row groups and account
