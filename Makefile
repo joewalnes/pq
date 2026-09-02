@@ -29,7 +29,10 @@ install: build
 # using about.toml/about.hbs for config/formatting. The file is NOT committed:
 # it is ~500KB and tracks Cargo.lock exactly, so it would go stale the moment
 # a dependency version bumps without anyone noticing. Regenerate it with
-# `make licenses` before packaging a release.
+# `make licenses` before packaging a release, which also copies it (and
+# pq's own LICENSE) into each npm package directory so `npm pack`/`npm
+# publish` picks them up (pypi/build_wheels.py instead reads both files
+# directly from the repo root and embeds them in the wheel itself).
 #
 # Also appends verbatim any dependency NOTICE files (Apache-2.0 section 4(d)
 # requires preserving these; cargo-about only handles LICENSE text, not NOTICE
@@ -85,6 +88,8 @@ print(f"licenses: appended {len(notices)} unique NOTICE text(s) covering "
 endef
 export NOTICE_APPENDIX_PY
 
+LICENSE_DEST_DIRS := npm/darwin-arm64 npm/linux-arm64 npm/linux-x64 npm/pqtool
+
 licenses:
 	@command -v cargo-about >/dev/null 2>&1 || { \
 		echo "error: cargo-about is not installed."; \
@@ -95,7 +100,11 @@ licenses:
 	cargo about generate --workspace --format json -o /tmp/pq-about.json
 	python3 -c "$$NOTICE_APPENDIX_PY" /tmp/pq-about.json THIRD-PARTY-LICENSES
 	@rm -f /tmp/pq-about.json
-	@echo "licenses: wrote THIRD-PARTY-LICENSES ($$(wc -l < THIRD-PARTY-LICENSES) lines)"
+	@for d in $(LICENSE_DEST_DIRS); do \
+		cp LICENSE THIRD-PARTY-LICENSES $$d/; \
+	done
+	@echo "licenses: wrote THIRD-PARTY-LICENSES ($$(wc -l < THIRD-PARTY-LICENSES) lines) and copied LICENSE + THIRD-PARTY-LICENSES into: $(LICENSE_DEST_DIRS)"
+	@echo "licenses: pypi/build_wheels.py reads LICENSE/THIRD-PARTY-LICENSES from the repo root directly - no copy needed there."
 
 # -- Documentation ------------------------------------------------------------
 
