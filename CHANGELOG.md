@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-09-02 (4)
+
+- Fix `export`/`sql -o`: an explicit `-f`/`--format` was silently ignored
+  whenever output went to a file (extension always won, and an
+  unrecognized extension silently fell back to JSONL — confirmed:
+  `export -o a.parquet -f csv` wrote JSONL into a file named `.parquet`,
+  exit 0). Now: extension governs by default, an explicit `-f` overrides
+  it with a stderr note, and an undetermined format is a hard error
+  instead of a silent guess. Also fixed `export -f csv` to stdout, which
+  had no CSV branch at all and silently emitted JSONL.
+
 ## 2026-09-02 (3)
 
 - Give HTTP remote-file access real, running test coverage: 10 `test_http_*`

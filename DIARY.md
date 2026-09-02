@@ -4,6 +4,34 @@ Latest entries first. Record significant decisions, architecture changes, and no
 
 ---
 
+## 2026-09-02 — `-f` semantics for `export`/`sql -o`: extension by default, explicit flag wins, undetermined is an error
+
+Confirmed bug: `pq export a.parquet -o a.parquet -f csv` wrote JSONL into a
+file named `.parquet`, exit 0, no diagnostic — `-f` was never consulted
+once output went to a file; the extension always won, and an unrecognized
+extension (including `.parquet` itself, which `export` can't produce)
+silently fell back to JSONL. `sql -o` had the identical shape via
+`write_output::write_batches_to_file`, which only ever infers from the
+path. Considered three options: extension always wins (matches existing
+`cat -O`/`jq -o` precedent, but a typed flag being silently discarded is
+exactly the bug); `-f` always wins (breaks the common, unremarkable case of
+`-o out.csv` picking csv with no flag typed); explicit-`-f`-wins (chosen).
+Rule: extension governs when `-f` wasn't typed or agrees with it; an
+explicit, disagreeing `-f` overrides the extension but prints a stderr note
+naming both, so the loser is never silent; if neither a recognized
+extension nor an explicit `-f` pins down a format, that's a hard error
+instead of a guess. `sql -o out.parquet` is the one asymmetry: `-f` has no
+"parquet" value, so `.parquet` always wins there, `-f` or not (noted on
+stderr when an explicit `-f` is thus overridden). Also fixed, same file:
+`export -f csv` to stdout had no CSV branch at all and silently fell
+through to JSONL — CSV writing already existed for the to-file path
+(`write_csv`, extracted and shared by both). Not fixed: `cat -O` and `jq
+-o` have the identical extension-always-wins shape and are out of this
+worker's file scope (`export.rs`/`sql.rs`/`cli.rs` only); `select`/`slice`/
+`merge`/`split`/`import` all show `-f` in `--help` (it's a global flag) but
+silently ignore it since they only ever write real Parquet — confirmed by
+running each, left as a separate finding.
+
 ## 2026-09-02 — HTTP remote tests run for real, no Docker
 
 The previous entry accepted "remote regressions won't be caught by CI"
