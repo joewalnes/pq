@@ -32,7 +32,7 @@ pub fn run(
         // `File::create` on the user's file, so a write that failed part way
         // through (a full disk) replaced the destination with partial output.
         let rows = super::write_output::json_values_to_file(path, &results)?;
-        eprintln!("Wrote {rows} rows to {path}");
+        super::write_output::print_status(path, &format!("Wrote {rows} rows to {path}"));
         return Ok(());
     }
 

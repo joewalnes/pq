@@ -9,6 +9,6 @@ pub fn run(file: &str, columns: &[String], output: &str) -> anyhow::Result<()> {
     };
 
     let rows = pq_transform::select::select_columns(path, &opts)?;
-    eprintln!("Wrote {rows} rows to {output}");
+    super::write_output::print_status(output, &format!("Wrote {rows} rows to {output}"));
     Ok(())
 }

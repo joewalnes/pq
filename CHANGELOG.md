@@ -2,6 +2,36 @@
 
 ## 2026-09-02
 
+- Fix a command's status line landing inside the user's data. Every `-o`
+  command finishes with an unconditional `eprintln!` (`Exported 3 rows to
+  ...`, `Wrote 3 rows to ...`). When the destination *is* stderr —
+  `pq export f -o /dev/stderr -f jsonl 2> out.jsonl`, `-o /dev/fd/2`, and on
+  Linux `-o /proc/self/fd/2` — that line went to the same descriptor the rows
+  had just been written to, and ended up in the output file. Measured on
+  macOS: `out.jsonl` came back as 75 bytes of valid JSONL plus a trailing
+  `Exported 3 rows to /dev/stderr`, exit 0 — a JSONL file with a non-JSON
+  last line. On Linux the same command loses the *first* row instead, because
+  `/dev/stderr` is `/proc/self/fd/2` there and opening it is a fresh open at
+  offset 0 rather than macOS's `dup`. All eight single-destination commands
+  (`export`, `cat -O`, `cat --jq -O`, `jq -o`, `sql -o`, `select`, `slice`,
+  `merge`, `convert`) now route their status line through
+  `write_output::print_status`, which stays quiet when the destination names
+  stderr and is otherwise unchanged. `split` is unaffected — its destinations
+  are generated names inside a directory.
+
+- `pq_transform::output_guard::names_stderr`: recognise the names for this
+  process's own standard error, checking every hop of a symlink chain rather
+  than just its endpoints (on Linux `/dev/stderr` resolves *through*
+  `/proc/self/fd/2` and out the other side to the real backing file, so an
+  endpoint-only check sees an ordinary path).
+
+- New guard `output_devfd_tests::dev_fd_alias_open_semantics` records, as an
+  executable fact, what the running platform does when a process opens
+  `/dev/fd/N` for a descriptor it already holds: a `dup` sharing the offset
+  (macOS/devfs) or a fresh open with `O_TRUNC` honoured (Linux/procfs). Every
+  `-o /dev/...` path sits on that difference; the test prints the observed
+  bytes when it disagrees.
+
 - Release workflow: close the partial-publish hazard. `publish-npm` and
   `publish-pypi` ran in parallel, so a failure in either left the version
   live on one registry, absent from the other, and reusable on neither.

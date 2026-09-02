@@ -26,7 +26,7 @@ pub fn run(
                     write_output_file(staged, path, &batches, format, explicit_format)
                 },
             )?;
-            eprintln!("Wrote {rows} rows to {path}");
+            super::write_output::print_status(path, &format!("Wrote {rows} rows to {path}"));
         }
         None => {
             let stdout = std::io::stdout();

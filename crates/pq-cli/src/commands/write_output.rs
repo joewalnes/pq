@@ -64,6 +64,35 @@ where
     Ok(value)
 }
 
+/// Print a command's completion status line (`Wrote 3 rows to out.parquet`)
+/// to stderr — **unless `dest` is stderr**, in which case say nothing.
+///
+/// Every `-o` command ends with one of these, and until now every one of them
+/// was an unconditional `eprintln!`. That is wrong whenever the user has made
+/// stderr the data destination (`pq export f -o /dev/stderr -f jsonl 2>
+/// out.jsonl`, `pq cat f -O /dev/fd/2 2> out.parquet`, ...), because the
+/// status line then goes to the same descriptor the rows just went to and
+/// ends up inside the user's output. Measured on macOS with the binary built
+/// from this tree: `out.jsonl` came back as 75 bytes of valid JSONL followed
+/// by `Exported 3 rows to /dev/stderr` — a data file with a non-JSON line
+/// glued to the end, exit 0. On Linux the same command loses the *first* row
+/// instead; see `pq_transform::output_guard::names_stderr` for why the two
+/// platforms corrupt different ends of the same file.
+///
+/// Suppressed rather than diverted to stdout: stdout is a data destination
+/// too (`-o /dev/stdout`), and a user who redirected the data stream
+/// somewhere asked for that stream to carry data. The exit code and the
+/// output itself are the confirmation. Ordinary destinations — every
+/// invocation that is not naming stderr — are unaffected and still print,
+/// which the golden tutorials (`tests/golden/tutorials/*.md`) assert
+/// verbatim.
+pub fn print_status(dest: &str, message: &str) {
+    if pq_transform::output_guard::names_stderr(dest) {
+        return;
+    }
+    eprintln!("{message}");
+}
+
 pub fn format_from_extension(path: &str) -> OutputFileFormat {
     match Path::new(path).extension().and_then(|e| e.to_str()) {
         Some("parquet") => OutputFileFormat::Parquet,

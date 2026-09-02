@@ -27,6 +27,6 @@ pub fn run(input: &str, output: &str, input_format: Option<&InputFormatArg>) -> 
     };
 
     let rows = pq_transform::convert::convert_json_to_parquet(path, &opts)?;
-    eprintln!("Converted {rows} rows to {output}");
+    super::write_output::print_status(output, &format!("Converted {rows} rows to {output}"));
     Ok(())
 }

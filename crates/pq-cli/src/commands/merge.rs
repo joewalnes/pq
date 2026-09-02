@@ -17,9 +17,12 @@ pub fn run(files: &[String], output: &str, schema_mode: &SchemaModeArg) -> anyho
     };
 
     let rows = pq_transform::merge::merge_files(&paths, &opts)?;
-    eprintln!(
-        "Merged {} files, wrote {rows} rows to {output}",
-        files.len()
+    super::write_output::print_status(
+        output,
+        &format!(
+            "Merged {} files, wrote {rows} rows to {output}",
+            files.len()
+        ),
     );
     Ok(())
 }

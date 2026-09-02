@@ -133,7 +133,10 @@ fn write_to_file(
         |staged| -> anyhow::Result<usize> { write_rows(files, staged, opts, format) },
     )?;
 
-    eprintln!("Exported {total_rows} rows to {output_path}");
+    super::write_output::print_status(
+        output_path,
+        &format!("Exported {total_rows} rows to {output_path}"),
+    );
     Ok(())
 }
 
