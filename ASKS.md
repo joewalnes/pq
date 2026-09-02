@@ -36,6 +36,23 @@ they are urgent, in which case say so explicitly.
   `preflight` having created and published nothing — the tag stays reusable. See
   the P1 Infrastructure entry in `TODO.md`.
 
+  **Added 2026-09-02 (branch `l2-publish-atomicity`), after an adversarial pass:**
+
+  - [x] the two publishes are no longer parallel siblings — `publish-pypi` now
+        needs `publish-npm`, so the version can no longer end up live on PyPI
+        and absent from npm. The reverse is still reachable; there is no way
+        to make two registries atomic, and the workflow no longer implies
+        there is.
+  - [x] a new `package-check` job runs before `release` cuts anything
+        immutable: artifacts present, neither registry already holds the
+        version, all four npm packages pack cleanly, three wheels build and
+        pass `twine check`.
+  - [x] the run's job summary is now a ledger written as each publish
+        succeeds, plus a pre-written playbook for a failed PyPI upload, so a
+        partial release names itself instead of being discovered later.
+  - [x] `publish-npm` would have failed on its first `cp` — `npm/<platform>/bin/`
+        is not in git. Fixed. See DIARY.md 2026-09-02.
+
   Not verified by any agent: nothing here has been observed in a real Actions run.
   Verification was YAML parse, in-file `needs:` resolution, and executing the
   workflow's own shell scripts locally against good and bad inputs. Publishing,

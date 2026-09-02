@@ -2,6 +2,28 @@
 
 ## 2026-09-02
 
+- Release workflow: close the partial-publish hazard. `publish-npm` and
+  `publish-pypi` ran in parallel, so a failure in either left the version
+  live on one registry, absent from the other, and reusable on neither.
+  They are now sequenced (npm, then PyPI — npm is the only one of the two
+  with any unpublish window at all), and a new `package-check` job runs
+  before the GitHub release is cut: it asserts all three binaries arrived,
+  refuses to publish a version either registry already holds, `npm publish
+  --dry-run`s all four packages, and builds and `twine check`s the wheels.
+  Each publish appends to the run's job summary as it succeeds, so the run
+  always says exactly which registries hold the version. This is not
+  atomic and does not claim to be — see DIARY.md for the window that
+  remains.
+
+- Fix `publish-npm` failing on its first command. `npm/<platform>/bin/`
+  is not in git (git does not track empty directories), so `cp
+  dist/pq-darwin-arm64 npm/darwin-arm64/bin/pq` failed with "No such file
+  or directory" — after `release` had already created the immutable GitHub
+  release. Reproduced by extracting the step from `main` with a YAML
+  parser and running it under bash against a fresh checkout. `mkdir -p`
+  added; this is the likeliest cause of the npm half of the never-explained
+  double publish failure on `578a2b6` (TODO.md).
+
 - Fix `pq sql` error messages tripling for parser/type/schema errors (e.g.
   `DataFusion error: SQL error: ParserError("..."): SQL error:
   ParserError("..."): sql parser error: ...`). `SqlError::DataFusion`

@@ -4,6 +4,64 @@ Latest entries first. Record significant decisions, architecture changes, and no
 
 ---
 
+## 2026-09-02 — Two registries, no transaction: what the release workflow can and cannot promise
+
+`publish-npm` and `publish-pypi` were parallel siblings. Either could fail
+independently, both ran after `release` had cut an immutable GitHub release, and
+nothing reconciled them — so npm-live/PyPI-absent and PyPI-live/npm-absent were
+both reachable, silently, on a version number neither registry will ever reissue.
+
+**Atomicity is not available.** npm's `unpublish` is restricted to 72 hours;
+PyPI's is effectively never. There is no transaction spanning the two, and even
+npm alone is four sequential publishes. So the design goal is not atomicity but:
+commit nothing irreversible until everything checkable has been checked, commit
+the irreversible things one at a time in a fixed order, and leave an exact ledger.
+
+Three changes, in that order:
+
+1. **`package-check`**, a new job before `release`. Asserts all three binaries
+   and `THIRD-PARTY-LICENSES` arrived; refuses to publish a version either
+   registry already holds (and treats "could not reach the registry" as a
+   refusal, not a pass); `npm publish --dry-run`s all four packages and asserts
+   each tarball actually contains `bin/pq`; builds the wheels and runs `twine
+   check`. Verified locally that `npm publish --dry-run` never contacts a
+   registry — it succeeds unauthenticated against `http://127.0.0.1:9`.
+2. **Sequencing**: `publish-pypi` now `needs: publish-npm`. npm goes first
+   because it is the only one of the two with any escape hatch. This removes the
+   PyPI-live/npm-absent state outright and makes the surviving one legible from
+   the job graph alone.
+3. **A ledger, not a reconciler.** Each `npm publish` appends its own line to
+   `$GITHUB_STEP_SUMMARY` the moment it succeeds, and `publish-pypi` writes its
+   "if the step below is red" playbook *before* uploading. Under `set -e` the
+   summary is therefore exactly the set of things that are live, with no `if:`
+   condition and no post-hoc job needed to produce it. After the upload, the
+   workflow asks PyPI whether it is actually serving all three wheels, so green
+   means verified rather than "twine exited 0".
+
+**The window that remains:** everything after `gh release create`. npm can still
+publish 1–4 of its packages and stop; PyPI can still take 0–3 wheels. What
+changed is that no such state is silent any more, and there is one fewer of them.
+
+`release` still runs *before* both publishes. Considered moving it last — a
+failed publish would then leave no GitHub release at all — and rejected it:
+recovery from a burned version is "bump the patch and retag" in either order, and
+release-first at least leaves a complete, checksummed, downloadable v0.1.0 that
+the README's `curl` URL resolves to. Release-last would instead leave registries
+advertising a version whose binaries are nowhere. The one case release-last
+handles better is a lone `release` failure, where GitHub's "re-run failed jobs"
+would fix it without re-running the publishes; that failure mode (a deleted tag,
+an immutable-release conflict) is not one a re-run fixes anyway.
+
+Separately, and not hypothetically: `publish-npm` would have failed on its very
+first command. `npm/<platform>/bin/` is not in git — git does not track empty
+directories, and only `npm/pqtool/bin/pq` is committed — so `cp
+dist/pq-darwin-arm64 npm/darwin-arm64/bin/pq` fails. Extracted the step from
+`main` with a YAML parser and ran it: `cp: npm/darwin-arm64/bin/pq: No such file
+or directory`, exit 1. Tagging `v0.1.0` on `main` would have produced the exact
+partial state described above, with certainty rather than by bad luck. This is
+also the likeliest explanation for the npm half of run `578a2b6`, where both
+publish jobs failed and the logs have since expired.
+
 ## 2026-09-02 — `pq sql`'s error tripling was the same disease, opposite cure
 
 `SqlError::DataFusion` (`crates/pq-query/src/sql.rs`) had exactly the shape
