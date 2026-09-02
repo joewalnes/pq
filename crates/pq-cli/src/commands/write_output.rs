@@ -1,7 +1,9 @@
+use std::collections::HashSet;
 use std::io::Write;
 use std::path::Path;
 
 use arrow::array::RecordBatch;
+use arrow::datatypes::SchemaRef;
 
 /// Output file format, auto-detected from extension.
 pub enum OutputFileFormat {
@@ -94,25 +96,7 @@ fn write_batches_text(
                 }
             }
         }
-        OutputFileFormat::Csv => {
-            let mut wrote_header = false;
-            for batch in batches {
-                let rows = pq_query::convert::batch_to_json_rows(batch);
-                if !wrote_header {
-                    if let Some(obj) = rows.first().and_then(|r| r.as_object()) {
-                        let keys: Vec<&str> = obj.keys().map(|k| k.as_str()).collect();
-                        writeln!(writer, "{}", keys.join(","))?;
-                        wrote_header = true;
-                    }
-                }
-                for row in &rows {
-                    if let Some(obj) = row.as_object() {
-                        let vals: Vec<String> = obj.values().map(csv_escape).collect();
-                        writeln!(writer, "{}", vals.join(","))?;
-                    }
-                }
-            }
-        }
+        OutputFileFormat::Csv => write_batches_csv(writer, batches)?,
         OutputFileFormat::Parquet => unreachable!(),
     }
     Ok(())
@@ -134,40 +118,126 @@ fn write_values_text(
                 writeln!(writer)?;
             }
         }
-        OutputFileFormat::Csv => {
-            // Collect headers from first object value
-            let mut wrote_header = false;
-            for value in values {
-                if let Some(obj) = value.as_object() {
-                    if !wrote_header {
-                        let keys: Vec<&str> = obj.keys().map(|k| k.as_str()).collect();
-                        writeln!(writer, "{}", keys.join(","))?;
-                        wrote_header = true;
-                    }
-                    let vals: Vec<String> = obj.values().map(csv_escape).collect();
-                    writeln!(writer, "{}", vals.join(","))?;
-                } else {
-                    // Non-object values: write as single column
-                    serde_json::to_writer(&mut *writer, value)?;
-                    writeln!(writer)?;
-                }
-            }
-        }
+        OutputFileFormat::Csv => write_values_csv(writer, values)?,
         OutputFileFormat::Parquet => unreachable!(),
     }
     Ok(())
 }
 
-fn csv_escape(v: &serde_json::Value) -> String {
-    match v {
-        serde_json::Value::String(s) => {
-            if s.contains(',') || s.contains('"') || s.contains('\n') {
-                format!("\"{}\"", s.replace('"', "\"\""))
-            } else {
-                s.clone()
+/// Header for a batch-derived CSV: the union of every batch's schema field
+/// names, in first-seen order — not just the first batch's.
+///
+/// `pq cat a.parquet b.parquet --output out.csv` combines files that can
+/// have different schemas with no per-row key lookup on the naive approach:
+/// a header frozen from batch 0 either shifts a later batch's values under
+/// the wrong column name (if key sets merely differ) or silently drops a
+/// column batch 0 didn't have. Dropping a value that the user has but that
+/// never reaches the output is the same class of bug as shifting it.
+///
+/// `batches` is already fully resident in memory by the time this runs (the
+/// caller collected every batch before calling in), so building the union
+/// costs one extra pass over already-known field lists, not extra
+/// buffering. See `union_header_from_values` for the analogous, non-schema
+/// case.
+pub(crate) fn union_header(schemas: impl IntoIterator<Item = SchemaRef>) -> Vec<String> {
+    let mut header = Vec::new();
+    let mut seen = HashSet::new();
+    for schema in schemas {
+        for field in schema.fields() {
+            if seen.insert(field.name().clone()) {
+                header.push(field.name().clone());
             }
         }
-        serde_json::Value::Null => String::new(),
-        other => other.to_string(),
     }
+    header
+}
+
+/// Same idea as `union_header`, but for jq output: there is no Arrow schema
+/// to consult (jq can add, rename, or drop fields per row), so the union is
+/// computed from the values' own keys instead, in first-seen order.
+fn union_header_from_values(values: &[serde_json::Value]) -> Vec<String> {
+    let mut header = Vec::new();
+    let mut seen = HashSet::new();
+    for value in values {
+        if let Some(obj) = value.as_object() {
+            for key in obj.keys() {
+                if seen.insert(key.clone()) {
+                    header.push(key.clone());
+                }
+            }
+        }
+    }
+    header
+}
+
+/// A row's value for one header column: empty for a key this row's object
+/// doesn't have (or a JSON null), so a column absent from one file/row never
+/// causes it to be dropped or to appear at all under a different column.
+fn csv_cell(value: Option<&serde_json::Value>) -> String {
+    match value {
+        None | Some(serde_json::Value::Null) => String::new(),
+        Some(serde_json::Value::String(s)) => s.clone(),
+        Some(other) => other.to_string(),
+    }
+}
+
+/// Build one CSV record from an object row, keyed by column name against
+/// `header` — never by positional/iteration order, which is what let a
+/// `val` land under `name` in the original bug.
+pub(crate) fn csv_record(
+    header: &[String],
+    obj: &serde_json::Map<String, serde_json::Value>,
+) -> Vec<String> {
+    header.iter().map(|k| csv_cell(obj.get(k))).collect()
+}
+
+/// Render one CSV record (with correct quoting, via the `csv` crate) to a
+/// byte buffer. Writing record-by-record into a scratch buffer, rather than
+/// holding one long-lived `csv::Writer` over the whole output, lets the
+/// caller freely interleave non-CSV raw writes (see `write_values_csv`'s
+/// non-object fallback) without fighting the writer's ownership of the
+/// underlying `dyn Write`.
+pub(crate) fn csv_record_bytes<T: AsRef<str>>(fields: &[T]) -> anyhow::Result<Vec<u8>> {
+    let mut wtr = csv::WriterBuilder::new().from_writer(Vec::new());
+    wtr.write_record(fields.iter().map(|f| f.as_ref()))?;
+    wtr.into_inner()
+        .map_err(|e| anyhow::anyhow!("failed to flush CSV record: {e}"))
+}
+
+fn write_batches_csv(writer: &mut dyn Write, batches: &[RecordBatch]) -> anyhow::Result<()> {
+    let header = union_header(batches.iter().map(|b| b.schema()));
+    if !header.is_empty() {
+        writer.write_all(&csv_record_bytes(&header)?)?;
+    }
+    for batch in batches {
+        for row in pq_query::convert::batch_to_json_rows(batch) {
+            if let Some(obj) = row.as_object() {
+                writer.write_all(&csv_record_bytes(&csv_record(&header, obj))?)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn write_values_csv(writer: &mut dyn Write, values: &[serde_json::Value]) -> anyhow::Result<()> {
+    let header = union_header_from_values(values);
+    if !header.is_empty() {
+        writer.write_all(&csv_record_bytes(&header)?)?;
+    }
+    for value in values {
+        match value.as_object() {
+            Some(obj) => {
+                writer.write_all(&csv_record_bytes(&csv_record(&header, obj))?)?;
+            }
+            None => {
+                // Non-object jq output (a bare scalar) doesn't fit the
+                // column model; preserve the pre-existing fallback of
+                // emitting it as a raw JSON line rather than as a CSV
+                // record.
+                serde_json::to_writer(&mut *writer, value)?;
+                writeln!(writer)?;
+            }
+        }
+    }
+    Ok(())
 }
