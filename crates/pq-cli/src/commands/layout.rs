@@ -72,7 +72,11 @@ pub fn run(file: &str, format: Format) -> anyhow::Result<()> {
                 )?;
 
                 for col in &rg.columns {
-                    let byte_start = col.data_page_offset;
+                    // A dictionary page, when present, precedes the data page
+                    // in the column chunk and is included in
+                    // `compressed_size` — so the chunk's true start is the
+                    // dictionary page offset, not the data page offset.
+                    let byte_start = col.dictionary_page_offset.unwrap_or(col.data_page_offset);
                     let byte_end = byte_start + col.compressed_size;
                     writeln!(
                         writer,

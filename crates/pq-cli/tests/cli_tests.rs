@@ -1417,3 +1417,130 @@ fn test_validate_json() {
     assert_eq!(result["valid"], true);
     assert_eq!(result["num_rows"], 100);
 }
+
+// ── Layout correctness tests ────────────────────────────────────────────
+
+/// `pq layout` must accumulate row offsets across row groups and account
+/// for a preceding dictionary page in a column chunk's byte start. Ground
+/// truth is read independently via the `parquet` crate's own metadata
+/// reader (`SerializedFileReader`), not via `extract_physical_layout` or
+/// any code path the CLI command shares — so this doesn't just check that
+/// `layout.rs` agrees with itself.
+#[test]
+fn test_layout_row_offsets_and_dictionary_byte_start() {
+    use arrow::array::{Int64Array, StringArray};
+    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::record_batch::RecordBatch;
+    use parquet::file::reader::FileReader;
+    use std::sync::Arc;
+
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("multi_rg.parquet");
+
+    let n: usize = 300;
+    let ids: Vec<i64> = (0..n as i64).collect();
+    let cats = ["alpha", "beta", "gamma", "delta"];
+    let categories: Vec<&str> = (0..n).map(|i| cats[i % 4]).collect();
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("category", DataType::Utf8, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(Int64Array::from(ids)),
+            Arc::new(StringArray::from(categories)),
+        ],
+    )
+    .unwrap();
+
+    let opts = pq_core::writer::WriteOptions {
+        compression: parquet::basic::Compression::SNAPPY,
+        max_row_group_size: 100,
+    };
+    pq_core::writer::write_batches(&path, &[batch], &opts).unwrap();
+
+    // Independent ground truth, read directly from the file's own Parquet
+    // metadata (bypasses layout.rs and extract_physical_layout entirely).
+    let file = std::fs::File::open(&path).unwrap();
+    let reader = parquet::file::reader::SerializedFileReader::new(file).unwrap();
+    let meta = reader.metadata();
+    assert!(
+        meta.num_row_groups() >= 3,
+        "fixture must have multiple row groups to exercise the row-offset bug; got {}",
+        meta.num_row_groups()
+    );
+
+    let mut expected_row_start: i64 = 0;
+    let mut expectations = Vec::new();
+    let mut saw_dictionary = false;
+    for rg_i in 0..meta.num_row_groups() {
+        let rg = meta.row_group(rg_i);
+        let row_start = expected_row_start;
+        let row_end = row_start + rg.num_rows() - 1;
+        expected_row_start += rg.num_rows();
+
+        let col = rg.column(1); // "category": dictionary-encoded low-cardinality string
+        let byte_start = col
+            .dictionary_page_offset()
+            .unwrap_or_else(|| col.data_page_offset());
+        if col.dictionary_page_offset().is_some() {
+            saw_dictionary = true;
+        }
+        let byte_end = byte_start + col.compressed_size();
+        expectations.push((row_start, row_end, byte_start, byte_end));
+    }
+    assert!(
+        saw_dictionary,
+        "fixture must dictionary-encode `category` to exercise the dictionary-offset bug"
+    );
+
+    let output = pq()
+        .args(["layout", path.to_str().unwrap(), "-f", "table"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+
+    for (row_start, row_end, byte_start, byte_end) in &expectations {
+        let row_marker = format!(
+            "rows {}\u{2013}{}",
+            format_thousands(*row_start),
+            format_thousands(*row_end)
+        );
+        assert!(
+            stdout.contains(&row_marker),
+            "expected row range {row_marker:?} in layout output:\n{stdout}"
+        );
+        let byte_marker = format!(
+            "{}\u{2013}{}",
+            format_thousands(*byte_start),
+            format_thousands(*byte_end)
+        );
+        assert!(
+            stdout.contains(&byte_marker),
+            "expected byte range {byte_marker:?} (dictionary-inclusive) in layout output:\n{stdout}"
+        );
+    }
+}
+
+/// Mirrors `commands::layout::format_number` (private to the `pq` binary,
+/// so not reachable from an integration test) — comma-grouped digits, exactly
+/// as the CLI renders them, so the markers above match the real output text.
+fn format_thousands(n: impl std::fmt::Display) -> String {
+    let s = n.to_string();
+    let bytes = s.as_bytes();
+    let mut result = String::with_capacity(s.len() + s.len() / 3);
+    for (i, &b) in bytes.iter().rev().enumerate() {
+        if i > 0 && i % 3 == 0 && b != b'-' {
+            result.insert(0, ',');
+        }
+        result.insert(0, b as char);
+    }
+    result
+}
