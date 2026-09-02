@@ -2,6 +2,8 @@
 
 ## 2026-09-02
 
+- **Breaking:** `pq cat`/`jq`/`grep`/`sql`/`export` (any JSON/JSONL output) now render `Decimal128` values as a JSON **string** with exact digits, not a JSON number. The old arm went through `v as f64 / 10^scale`, silently losing precision beyond `2^53` (`decimal128(38,2)` holding `12345678901234567.89` printed `1.2345678901234568e+16`). `Decimal256` was outright wrong, not just lossy: it appended `scale` as if it were the fractional digits after trimming the mantissa's trailing zeros, so `123.45` printed `"12345.2"` and `1.23`/`123.00` both printed `"123.2"` — two different values collapsing to one output, unrecoverable from the JSON alone. Both widths now render the unscaled integer's digit string directly (no float involved), exact at any precision, and identical in output type for a given value regardless of width. `-f csv`/`-f table` already went through arrow's `ArrayFormatter` and were already correct; unaffected
+
 - Close a hole in the release `preflight` version check: `grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'` accepted `v01.2.3` (npm and PyPI both silently rewrite the leading zero, splitting one release across differing version strings) and `v999999999999999999999.0.0` (accepted here, then rejected by npm's own "Invalid version" *after* `release` had already cut an immutable GitHub release — the exact burned-version scenario preflight exists to prevent). Also replaced grep's per-line `^...$` anchoring, which a multi-line input could satisfy one line at a time, with bash `[[ =~ ]]` matched against the whole string. New check: no leading zeros, 9 digits max per component; rejection message explains why and how to retag
 
 - Fix errors printing the same sentence twice, e.g. `Error: Failed to read
