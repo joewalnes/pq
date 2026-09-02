@@ -91,20 +91,22 @@ export NOTICE_APPENDIX_PY
 LICENSE_DEST_DIRS := npm/darwin-arm64 npm/linux-arm64 npm/linux-x64 npm/pqtool
 
 licenses:
-	@command -v cargo-about >/dev/null 2>&1 || { \
-		echo "error: cargo-about is not installed."; \
+	@cargo about --version >/dev/null 2>&1 || { \
+		echo "error: cargo-about is not installed (or not runnable via 'cargo about')."; \
 		echo "  install with: cargo install cargo-about --locked --features cli"; \
 		exit 1; \
 	}
-	cargo about generate --workspace -o THIRD-PARTY-LICENSES about.hbs
-	cargo about generate --workspace --format json -o /tmp/pq-about.json
-	python3 -c "$$NOTICE_APPENDIX_PY" /tmp/pq-about.json THIRD-PARTY-LICENSES
-	@rm -f /tmp/pq-about.json
-	@for d in $(LICENSE_DEST_DIRS); do \
+	@set -e; \
+	tmp=$$(mktemp -t pq-about-json); \
+	trap 'rm -f "$$tmp"' EXIT; \
+	cargo about generate --workspace -o THIRD-PARTY-LICENSES about.hbs; \
+	cargo about generate --workspace --format json -o "$$tmp"; \
+	python3 -c "$$NOTICE_APPENDIX_PY" "$$tmp" THIRD-PARTY-LICENSES; \
+	for d in $(LICENSE_DEST_DIRS); do \
 		cp LICENSE THIRD-PARTY-LICENSES $$d/; \
-	done
-	@echo "licenses: wrote THIRD-PARTY-LICENSES ($$(wc -l < THIRD-PARTY-LICENSES) lines) and copied LICENSE + THIRD-PARTY-LICENSES into: $(LICENSE_DEST_DIRS)"
-	@echo "licenses: pypi/build_wheels.py reads LICENSE/THIRD-PARTY-LICENSES from the repo root directly - no copy needed there."
+	done; \
+	echo "licenses: wrote THIRD-PARTY-LICENSES ($$(wc -l < THIRD-PARTY-LICENSES) lines) and copied LICENSE + THIRD-PARTY-LICENSES into: $(LICENSE_DEST_DIRS)"; \
+	echo "licenses: pypi/build_wheels.py reads LICENSE/THIRD-PARTY-LICENSES from the repo root directly - no copy needed there."
 
 # -- Documentation ------------------------------------------------------------
 
