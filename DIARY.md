@@ -34,6 +34,71 @@ when someone does run them without SeaweedFS up — confirmed each test
 now fails loudly (`s3 upload failed for ...`, assert panic, nonzero
 exit) rather than silently skipping or passing for the wrong reason.
 
+## 2026-09-01 — CSV header: union of all columns, not row 0's
+
+Every CSV writer in the crate froze its header from the first row/batch,
+then wrote each row's values by iteration order with no per-row key
+lookup. Combine two Parquet files with different schemas (`pq cat
+a.parquet b.parquet -o out.csv`) and a value from the second file lands
+either under the wrong column name or nowhere at all — silently, exit 0.
+It has nothing to do with key *order*: this codebase's `serde_json` has
+no `preserve_order` feature, so `Value::Object` is a `BTreeMap` and
+always iterates alphabetically; the corruption is entirely from
+differing key *sets* against a header that never grows.
+
+Decision: the header is now the union of every input's columns
+(first-seen order), and every row is looked up by column name against
+it — a column absent from a given row/file gets an empty field, never a
+dropped value. This costs a second pass to compute the union, but
+that pass is over data already fully resident: `write_output.rs`'s
+batch/values writers receive an already-collected slice, and
+`export.rs`'s CSV path gets its union from a cheap Parquet-footer-only
+metadata read per file (no row data), so the row-writing pass still
+streams file-by-file exactly as before. Emitting empty for a missing
+key was the only alternative that doesn't reintroduce the same class of
+bug (a value the user has that never reaches the output).
+
+Also replaced three independent hand-rolled CSV escapers (each checking
+only `,`, `"`, `\n` — missing a bare `\r`, which a compliant reader
+treats as its own record terminator) with the `csv` crate, already a
+declared-but-unused dependency.
+
+## 2026-09-02 — Peer review of the licensing/wheel work found real bugs
+
+A verifying peer built and installed the wheel/license changes below rather
+than trusting the report, and found four real defects: generated
+`THIRD-PARTY-LICENSES` files were untracked-but-not-gitignored (dirtied the
+shared checkout and blocked the merge gate for every other agent); the
+cargo-about install check used `command -v`, which misses `~/.cargo/bin`
+when it's off `$PATH` (it was, on this machine); the NOTICE-appendix scratch
+file used a fixed `/tmp` path (a collision hazard the CLAUDE.md singleton
+warnings already called out); and `release.yml` never actually ran `make
+licenses`, so the gap noted below as "deferred" would have failed the first
+real release. All four are fixed on this branch, each reproduced against
+the broken behavior before fixing, same as the original work. Lesson worth
+generalizing: "I noted the gap in a comment" is not the same as "someone
+will act on the gap" — a landmine documented next to where it will detonate
+is still a landmine.
+
+## 2026-09-02 — Third-party license bundling: generate at build time, don't commit
+
+Chose not to commit the `cargo-about`-generated `THIRD-PARTY-LICENSES` (~525KB,
+~250 dependencies). It tracks `Cargo.lock` exactly, so a committed copy would
+silently drift stale on the next dependency bump with nothing to catch it.
+Instead `make licenses` regenerates it and copies it (with pq's own `LICENSE`)
+into the npm package directories; `pypi/build_wheels.py` reads both straight
+from the repo root and embeds them in the wheel, failing loudly if
+`THIRD-PARTY-LICENSES` is missing rather than shipping unattributed. Wiring
+`make licenses` into `.github/workflows/release.yml` is deferred to whoever
+merges this with the in-flight release-workflow rewrite - until then it's a
+manual pre-release step.
+
+Also: `cargo-about` has no concept of dependency `NOTICE` files at all
+(confirmed by reading its source), so Apache-2.0 section 4(d) isn't satisfied
+by cargo-about alone. `make licenses` separately walks the resolved crate
+graph for `NOTICE`/`NOTICE.txt`/`NOTICE.md` files and appends every unique one
+found (2 unique texts covering 19 crates: 18 `datafusion-*` + `object_store`).
+
 ## 2026-09-01 — Tagline drift: picked the ASCII hyphen, deduplicated to one constant
 
 `pq --help` (from `cli.rs`'s clap `about`) and `pq capabilities` (a

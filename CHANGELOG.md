@@ -1,10 +1,38 @@
 # Changelog
 
+## 2026-09-02 (2)
+
+- Fix `make licenses` leaving generated `THIRD-PARTY-LICENSES` files
+  untracked and ungitignored (blocked the shared-checkout merge gate);
+  gitignore them instead of committing
+- Fix `make licenses`' cargo-about install check using `command -v`, which
+  misses `~/.cargo/bin` when it's off `$PATH`; probe with `cargo about
+  --version` instead
+- Fix `make licenses` writing its NOTICE-appendix scratch file to a fixed
+  `/tmp` path (collision risk with concurrent agents); use `mktemp` with
+  cleanup on both success and failure
+- Wire `make licenses` into `.github/workflows/release.yml` (new
+  `licenses` job feeding `publish-npm`/`publish-pypi`), pinning cargo-about
+  to an exact version — closes the gap where the first tagged release
+  would have failed at the wheel-build step
+
+## 2026-09-02
+
+- Fix PyPI wheel: removed a `[console_scripts]` entry point that made pip
+  clobber the real `pq` binary with a broken Python shim, and fixed the
+  binary's zip permission bits so pip actually marks it executable
+- Add `pypi/build_wheels.py --self-test` regression guard for both of the above
+- Add `about.toml`/`about.hbs` (cargo-about config) and `make licenses` to
+  generate `THIRD-PARTY-LICENSES` for the workspace's dependencies
+- Ship `LICENSE` and `THIRD-PARTY-LICENSES` in the npm packages and PyPI wheel
+
 ## 2026-09-01
 
 - Record three lessons in LESSONS.md: a harness must assert the identity of its subject rather than resolving it by name through an ambient PATH, and an intermittent gate must be explained rather than retried, and a fix that changes the mechanism must be attacked on what the new mechanism requires
 - Fix all 19 remote-file tests (`crates/pq-cli/tests/remote_tests.rs`): they used a non-existent `-O <format>` flag (real flag is `-f`); on `cat` specifically `-O` means `--output <file>`, so two tests silently wrote a stray file named `jsonl`. Also fixed a latent bug where the tests assumed `nested_data.parquet` had already been generated into `tests/fixtures/` by an unrelated test binary — `make test-integration` alone never produced it — and strengthened two assertions that only checked a nested value's top-level key was present (would still pass if nested struct/list fields were silently dropped). Kept `#[ignore]`d; see DIARY.md for why
 - Move `cli_tests.rs`'s `nested_data.parquet` fixture generation out of `tests/fixtures/` into a per-process `TempDir`, so it no longer shows up as an untracked file in `git status` or races with other test binaries / worktrees writing the same path. `test_data.parquet` stays tracked in git and is read directly, never regenerated
+
+- Fix CSV column-shift/data-loss bug: all four CSV emission paths (`cat --output`, `export`, `cat --jq -O`, and `cat -f csv` to stdout) froze the header from row/batch 0 with no per-row key lookup, so combining files with different schemas silently shifted values into the wrong-named column or dropped them entirely. Header is now the union of every input's columns, and each row is keyed by column name against it (missing key -> empty field, never dropped). Replaced three hand-rolled CSV escapers (which quoted `,`/`"`/`\n` but not a lone `\r`, letting a bare CR split one CSV record into two) with the already-declared-but-unused `csv` crate. Guarded with `crates/pq-cli/tests/csv_correctness_tests.rs` (10 tests, each proven to fail against the unfixed code)
 - Fix flaky/stale golden expectation in the SQL tutorial's JOIN example: `ORDER BY num_orders DESC` left a 3-way tie (Charlie/Diana/Eve, all num_orders=1) with unspecified order, so the expected row order was one DataFusion version bump from breaking. Added `, u.name` as a tie-break so the result is deterministic by construction, and hand-updated the expectation to the true output (Charlie, Diana, Eve alphabetically) in both `tests/golden/tutorials/sql-queries.md:160` and its diverged hand-copy `docs/src/tutorials/sql-queries.md` (same query, same stale tie order, not covered by the golden runner)
 - Fix tagline drift: `pq --help` had an ASCII hyphen, `pq capabilities` still had an em-dash, and the golden expectation expected the em-dash. Picked the hyphen (matches README.md/docs/ house style and pypi/build_wheels.py; see DIARY.md), extracted both to a shared `cli::TAGLINE` constant so it can't drift again, updated `tests/golden/tests/help-output.md`, and added `test_tagline_matches_between_help_and_capabilities` in `cli_tests.rs` (proven to fail pre-fix, pass post-fix)
 - Fix `tests/golden/run.py` silently testing the wrong binary: `find_pq_binary()` never checked that a `PQ=...` override actually existed before returning it, and console blocks invoke the bare name `pq` via a PATH with only the binary's directory prepended — so a bad/stale `PQ` silently fell through to whatever `pq` was already on the ambient PATH (a stale `brew`-installed build on this machine) instead of failing. Now exits non-zero immediately if `PQ` doesn't resolve to an existing, executable file, and again if prepending its directory to PATH doesn't make bare `pq` resolve to that exact binary. Proven: `PQ=/nonexistent/pq python3 tests/golden/run.py tests/golden/tests/help-output.md` used to print "4 passed, 1 failed" (measuring the homebrew binary); now exits 1 with a clear error before running any commands
