@@ -57,6 +57,57 @@ errors out instead of quietly falling back to the behaviour this change exists
 to remove. Directories of duplicate-named files remain collapsed; that is logged
 rather than papered over.
 
+## 2026-09-02 — Generating capabilities.rs instead of re-listing
+
+`capabilities.rs`'s 197-line hand-duplicate of the clap tree had already
+drifted once (its tagline diverged from `--help`'s). Rewriting it to
+*exactly* preserve every field the old JSON had turned out to be the wrong
+goal: several of those fields encoded semantic knowledge clap genuinely
+doesn't have (a `String` field being "a path" or "a regex"), and pretending
+otherwise would mean either lying via reflection tricks that behave
+differently in debug vs. release builds, or hand-listing per-command
+overrides that just reintroduce the 197 lines. The fix that actually
+removes the drift risk: everything clap *can* derive (which commands and
+args exist, required-ness, defaults, enum values) now comes straight from
+`Cli::command()`, and the only hand-written part left is a ~16-entry table
+mapping an argument's *id* (not per-command — the same field name means the
+same thing everywhere in this CLI, e.g. every `file` is a path) to the one
+semantic fact clap can't infer. That table is checked against the live clap
+tree on every invocation, and a deliberately injected stale entry proved it
+fails loudly rather than silently. Generating for real also surfaced two
+drifts nobody had caught: the hand list had never mentioned
+`stats --sample-size` or `cat --output`, and claimed `count`/`merge`'s file
+arguments were `required: true` when clap's actual parse behavior
+(confirmed by running `pq count` with zero files) lets them through to an
+application-level error instead.
+
+## 2026-09-02 — One version read from two places
+
+`pq --version` and `pq capabilities`'s `"version"` field read from different
+env vars (`PQ_VERSION`, build-time and tag-derived, vs. `CARGO_PKG_VERSION`,
+permanently `0.1.0`) and so disagreed on every build that set
+`BUILD_VERSION` — i.e. every real release. Routed both through one constant
+and added a test that pins them together (proved it bites by reintroducing
+the old `CARGO_PKG_VERSION` read and watching it fail with the exact
+disagreement shown in the assertion message).
+
+## 2026-09-02 — Three flags nobody read
+
+`--color`, `-q`/`--quiet`, `-v`/`--verbose` were all declared, parsed, stored on
+`Cli`, and never read again — confirmed by grep across every crate and, more
+importantly, by diffing real output with and without each flag (identical
+bytes in every case). Two different responses seemed right depending on the
+flag. `--color` had a specific claim riding on it: `pq capabilities` already
+asserted `"respects_no_color": true`, which was flatly false — there was no
+color output anywhere in the renderer to respect or not. So `--color` got
+wired for real (bold+cyan table headers, gated on `auto`/`always`/`never`
+resolved against `NO_COLOR` and a real TTY check), making that claim true
+for the first time. `-q`/`-v` had no such anchor — nothing in this codebase
+ever promised a quiet or verbose mode, and inventing what they should do is a
+product decision, not a cleanup. Deleted instead of implemented. That's a
+real behavior change (clap now rejects them with exit 2) and is called out
+in the changelog rather than absorbed silently.
+
 ## 2026-09-02 — One version, derived once, and a release that refuses to start half-doomed
 
 Two jobs each running `date +%Y%m%d%H%M` looked like duplication. It was worse

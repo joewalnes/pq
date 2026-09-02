@@ -1,7 +1,8 @@
 use arrow::array::RecordBatch;
 use arrow::util::display::ArrayFormatter;
 use comfy_table::{
-    modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL, Cell, ContentArrangement, Table,
+    modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL, Attribute, Cell, Color, ContentArrangement,
+    Table,
 };
 use std::io::Write;
 
@@ -18,11 +19,33 @@ pub fn render_table(writer: &mut dyn Write, batches: &[RecordBatch]) -> std::io:
         .apply_modifier(UTF8_ROUND_CORNERS)
         .set_content_arrangement(ContentArrangement::Dynamic);
 
-    // Header
+    // Header. Bold+cyan only when `--color` (and NO_COLOR / TTY detection,
+    // for the `auto` default) resolved to "on" -- see
+    // `output::configure_color`. comfy-table never emits ANSI codes of its
+    // own accord; it only styles a cell if we explicitly attach a color or
+    // attribute to it, so this `if` is the entire color feature.
+    //
+    // comfy-table *also* has its own independent tty check
+    // (`Table::should_style`) that silently drops any attached styling when
+    // real stdout isn't a terminal -- which would make `--color=always`
+    // into a lie again when output is piped or captured (as in tests, or
+    // under `PQ_FORCE_TTY`, which comfy-table doesn't know about). Force it
+    // to respect *our* decision instead of its own.
+    let color = super::color_enabled();
+    if color {
+        table.enforce_styling();
+    }
     let headers: Vec<Cell> = schema
         .fields()
         .iter()
-        .map(|f| Cell::new(f.name()))
+        .map(|f| {
+            let cell = Cell::new(f.name());
+            if color {
+                cell.add_attribute(Attribute::Bold).fg(Color::Cyan)
+            } else {
+                cell
+            }
+        })
         .collect();
     table.set_header(headers);
 

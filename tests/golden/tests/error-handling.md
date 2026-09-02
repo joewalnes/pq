@@ -37,8 +37,6 @@ Options:
   -F, --input-format <INPUT_FORMAT>  Input format (auto-detected from extension if not specified) [possible values: json, jsonl, csv]
   -f, --format <OUTPUT_FORMAT>       Output format (table, json, jsonl, csv, plain) [possible values: json, jsonl, csv, table, plain]
       --color <COLOR>                Color output [default: auto] [possible values: auto, always, never]
-  -q, --quiet                        Suppress non-essential output
-  -v, --verbose                      Increase verbosity
   -h, --help                         Print help
 ```
 
