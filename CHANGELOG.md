@@ -2,6 +2,18 @@
 
 ## 2026-09-02
 
+- Fix `pq cat`'s default table output (and `-f plain`) silently misaligning
+  columns when combining files whose column names appear in a different
+  order, or whose column sets differ. The header was frozen from the first
+  file and every batch's values were then zipped into it *positionally*, so
+  `pq cat a.parquet b.parquet` with `a={x,y}` and `b={y,x}` printed `b`'s `x`
+  value under the `y` header and vice versa — exit 0, no warning. Both
+  renderers now build a name-ordered union header and resolve each batch
+  against it by `(name, occurrence)`, matching what `-f csv` already does. A
+  column a given row's file lacks entirely now renders as `·`, kept visually
+  distinct from a genuine NULL (which still renders blank, unchanged).
+  Duplicate-named columns (e.g. two `id` fields) continue to render correctly
+
 - Close a hole in the release `preflight` version check: `grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'` accepted `v01.2.3` (npm and PyPI both silently rewrite the leading zero, splitting one release across differing version strings) and `v999999999999999999999.0.0` (accepted here, then rejected by npm's own "Invalid version" *after* `release` had already cut an immutable GitHub release — the exact burned-version scenario preflight exists to prevent). Also replaced grep's per-line `^...$` anchoring, which a multi-line input could satisfy one line at a time, with bash `[[ =~ ]]` matched against the whole string. New check: no leading zeros, 9 digits max per component; rejection message explains why and how to retag
 
 - Fix errors printing the same sentence twice, e.g. `Error: Failed to read

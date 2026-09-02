@@ -4,7 +4,34 @@ Latest entries first. Record significant decisions, architecture changes, and no
 
 ---
 
-## 2026-09-02 — The preflight version check guarded the credential, not the version
+## 2026-09-02 — Table renderer's positional zip, and a marker for "no such column"
+
+`render_table`/`render_plain` built their header from `batches[0].schema()` and
+zipped every later batch's columns in by *position*. Reordering column names
+between files (never mind disjoint sets) silently swapped values under the
+wrong header — `-f csv` had the identical bug and was already fixed by
+building a union header and resolving each batch against it by
+`(name, occurrence)` (`write_output::union_columns`/`column_indices`). Reused
+that exactly rather than writing a second alignment strategy: widened
+`column_indices` to `pub(crate)` and added `CsvColumn::name()` so
+`output::table` could consume it directly. Despite the name, `CsvColumn` is
+now the shared alignment unit for every side-by-side renderer, not just CSV's
+— renaming it felt like more churn than value for a one-line doc comment fix,
+so I left it and said so in a doc comment instead.
+
+The one real decision: what fills a cell for a column a row's file doesn't
+have. CSV already renders that as an empty field — same as it renders a
+genuine SQL NULL, since CSV has no way to say more. The table renderer, being
+for a human, doesn't have that constraint, and blank was already spoken for:
+`ArrayFormatter` with default `FormatOptions` prints NULL as blank, and that
+predates this fix. Reusing blank for "column absent" too would make "this
+file has no such column" indistinguishable from "this file has the column and
+it happens to be null" in a table stitched from files with different
+schemas — plausibly worse than the bug just fixed, since it would look
+plausible and be silently wrong in a different way. Cost of avoiding it was
+one constant: a dim middle-dot (`·`) marker, styled the same way the header
+picks up color — only when `--color` resolved on, text is identical either
+way so output stays deterministic for tests.
 
 `preflight`'s job comment says "one source, one value," but its actual check —
 `grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'` — validated shape, not value. Extracted the
