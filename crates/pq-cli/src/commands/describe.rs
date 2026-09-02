@@ -52,12 +52,36 @@ pub fn run(
     // Collect batches (limited to sample_size rows)
     let mut all_batches: Vec<RecordBatch> = Vec::new();
     let mut rows_remaining = effective_limit;
+    // Every later column lookup below indexes into `all_batches` by
+    // position (`b.column(col_idx)`) using the field list from the FIRST
+    // file's schema. If a later file has fewer columns, or the same count
+    // but a different order/type, that indexing panics instead of erroring
+    // (or worse, silently pairs up unrelated columns). `pq stats --describe`
+    // takes multiple files precisely to combine them, so a schema mismatch
+    // across files is a real, easy-to-hit user input — not an edge case —
+    // and needs a message that names the mismatched file, not a backtrace.
+    let mut reference_schema: Option<(&str, arrow::datatypes::SchemaRef)> = None;
     for f in files {
         let file_opts = pq_core::reader::ReadOptions {
             limit: rows_remaining,
             ..Default::default()
         };
-        let (batches, _schema) = pq_core::reader::open_batches(f, &file_opts)?;
+        let (batches, schema) = pq_core::reader::open_batches(f, &file_opts)?;
+        match &reference_schema {
+            None => reference_schema = Some((f.as_str(), schema)),
+            Some((first_file, first_schema)) => {
+                if schema.fields() != first_schema.fields() {
+                    anyhow::bail!(
+                        "Cannot describe files with different schemas: \
+                         '{first_file}' has columns [{}], but '{f}' has columns [{}]. \
+                         `stats --describe` combines rows across files by column \
+                         position, so all files must share the same schema.",
+                        describe_columns(first_schema),
+                        describe_columns(&schema),
+                    );
+                }
+            }
+        }
         let batch_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
         all_batches.extend(batches);
         if let Some(ref mut rem) = rows_remaining {
@@ -213,6 +237,16 @@ pub fn run(
     }
 
     Ok(())
+}
+
+/// Render a schema's fields as "name:type, name:type, ..." for error messages.
+fn describe_columns(schema: &Schema) -> String {
+    schema
+        .fields()
+        .iter()
+        .map(|f| format!("{}:{}", f.name(), format_dtype(f.data_type())))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn format_dtype(dt: &DataType) -> String {

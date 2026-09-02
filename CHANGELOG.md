@@ -8,6 +8,20 @@
   for 404 / Range-disabled / truncated-response error paths. S3 tests are
   untouched and remain `#[ignore]`d pending SeaweedFS/Docker.
 
+- Fix `pq stats --describe` panicking (index out of bounds) when given
+  multiple files whose schemas differ; now fails with an error naming both
+  mismatched files instead
+- Fix `pq view`'s TUI leaving the terminal in raw mode / alternate screen /
+  mouse-capture-on if a panic occurs mid-session; install a panic hook that
+  restores the terminal before the panic message prints
+- Fix a slice-index panic in the TUI's schema tree pane when rendered with
+  zero schema fields and a collapsed (zero-height) pane
+- Investigated (not changed, unreachable via any real input): `.unwrap()`s
+  on `ArrayFormatter::try_new` in `output/table.rs` and `output/csv.rs`, and
+  on `arrow::compute::take` in `commands/split.rs` — all three can only
+  fail for `DataType::ListView`/`LargeListView`, which neither Parquet nor
+  this codebase's DataFusion path can produce
+
 ## 2026-09-02 (2)
 
 - Fix `make licenses` leaving generated `THIRD-PARTY-LICENSES` files
