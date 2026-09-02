@@ -215,7 +215,10 @@ fn run(cli: Cli, format: Format, explicit_format: bool) -> anyhow::Result<()> {
             ref files,
             ref output,
             ref schema_mode,
-        } => commands::merge::run(files, output, schema_mode),
+        } => {
+            let resolved = files::resolve_files(files)?;
+            commands::merge::run(&resolved, output, schema_mode)
+        }
 
         Command::Import {
             ref input,

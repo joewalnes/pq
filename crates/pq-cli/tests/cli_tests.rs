@@ -1619,6 +1619,39 @@ fn test_count_glob_no_match_differs_from_missing_literal_path() {
     );
 }
 
+/// `merge` must expand a glob just like `count` does, not just accept
+/// pre-expanded literal file lists.
+#[test]
+fn test_merge_expands_glob() {
+    let tmp = TempDir::new().unwrap();
+    write_tagged_fixture(tmp.path(), "part-a", "A", 5);
+    write_tagged_fixture(tmp.path(), "part-b", "B", 10);
+    write_tagged_fixture(tmp.path(), "part-c", "C", 20);
+
+    let pattern = tmp.path().join("part-*.parquet");
+    let output = tmp.path().join("merged.parquet");
+    pq().args([
+        "merge",
+        pattern.to_str().unwrap(),
+        "-o",
+        output.to_str().unwrap(),
+        "--schema-mode",
+        "union",
+    ])
+    .assert()
+    .success()
+    .stderr(predicate::str::contains("35 rows"));
+
+    let count_output = pq()
+        .args(["count", output.to_str().unwrap(), "-f", "json"])
+        .output()
+        .unwrap();
+    assert!(count_output.status.success());
+    let stdout = String::from_utf8(count_output.stdout).unwrap();
+    let result: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(result["count"], 35, "merged output: {stdout}");
+}
+
 // ── Layout correctness tests ────────────────────────────────────────────
 
 /// `pq layout` must accumulate row offsets across row groups and account
