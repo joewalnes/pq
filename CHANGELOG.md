@@ -2,6 +2,24 @@
 
 ## 2026-09-02
 
+- Fix `pq stats --describe a.parquet b.parquet` silently mislabelling data
+  when files have different column names. The schema guard's most recent
+  fix (comparing only `DataType`, to stop rejecting files that merely
+  differed in nullability/metadata) over-corrected by dropping column
+  *name* from the comparison too: two files with completely disjoint
+  column names but the same `DataType` passed the guard, and `describe`
+  then concatenates by column *position*, so the second file's values were
+  silently reported under the first file's column name — exit 0, no note.
+  The guard now compares the full set of (name, type) pairs, still ignoring
+  nullability and field metadata. Column order is tolerated when the name
+  sets match (`amount, price` vs `price, amount`, a realistic case for
+  files from different writers) — the underlying columns are physically
+  realigned by name before concatenation, not merely waved through by the
+  check. A genuine name or type mismatch is still refused, naming the
+  actual differing columns.
+
+## 2026-09-02
+
 - Record in LESSONS.md that confirmed findings leak between being reported and being dispatched: a sweep of nine found two never assigned, after a fourth was discovered live in main all run
 ## 2026-09-02
 

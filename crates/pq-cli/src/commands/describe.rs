@@ -103,18 +103,42 @@ pub fn run(
     // of the sample size, and the true total row count is known before
     // deciding how the budget gets spent in pass 2.
     //
-    // The guard must reject exactly what the column-by-column
-    // `arrow::compute::concat` call below would reject, no more. An earlier
-    // version compared whole `arrow::datatypes::Field`s with `!=`, but
-    // `Field`'s `PartialEq` also compares `nullable` and per-field
-    // `metadata` (arrow-schema-53.4.1/src/field.rs:52-59) — properties
-    // `concat` never looks at (arrow-select-53.4.1/src/concat.rs:160-165
-    // compares only `data_type()`). That over-rejected files that `concat`
-    // handles fine: e.g. a file written with a NOT NULL column next to one
-    // without, or files from different writers that set field metadata
-    // differently. `schemas_concat_compatible` below checks only what
-    // `concat` actually requires: same column count, same `DataType` in
-    // each position.
+    // The guard's job is narrower than "these two `Schema`s are equal", and
+    // it was wrong in *both* directions at different times:
+    //
+    //   - Comparing whole `arrow::datatypes::Field`s with `!=` over-rejected:
+    //     `Field::eq` also compares `nullable` and per-field `metadata`
+    //     (arrow-schema-53.4.1/src/field.rs:52-58), which
+    //     `arrow::compute::concat` (arrow-select-53.4.1/src/concat.rs:150-161)
+    //     never looks at — it operates on bare `&dyn Array` values, which
+    //     don't carry field names or metadata at all, and only checks
+    //     `array.data_type() != d`. That rejected files `concat` handles
+    //     fine: a NOT NULL column next to a nullable one, or files from
+    //     different writers that set field metadata differently.
+    //
+    //   - The fix for that (comparing only `DataType`, dropping `name` from
+    //     the comparison along with `nullable`/`metadata`) *under*-rejected:
+    //     since `concat` itself never sees names, two files with completely
+    //     disjoint column names but matching types passed the guard, and
+    //     were then concatenated by column *position* and labelled with the
+    //     first file's names. `omega`'s values were silently reported under
+    //     the name `alpha`, exit 0, no note — a silent wrong answer, not
+    //     merely an over-strict refusal. Column *names* are pq's own
+    //     invariant for what "combine by position" is allowed to mean, not
+    //     `concat`'s: `concat` would happily paste unrelated columns
+    //     together, but `describe`'s output is only meaningful if position
+    //     N is the same logical column across every file.
+    //
+    // `schemas_concat_compatible` below checks what both requirements
+    // demand: the same set of (name, `DataType`) pairs, comparing names
+    // exactly (case-sensitive) — order-independent, because two files
+    // holding the same columns in a different order (e.g. `amount, price`
+    // vs `price, amount` — writers that don't agree on column order) are
+    // common and safe to combine. Order independence is paired with
+    // `reorder_batch_to_schema` below, which physically permutes a later
+    // file's columns to the first file's order before `concat` ever sees
+    // them, so a name-set match here is only ever used once the underlying
+    // data has actually been realigned to match.
     let mut file_meta: Vec<(&str, arrow::datatypes::SchemaRef, i64)> = Vec::new();
     for f in files {
         let (schema, rows) = pq_core::reader::open_metadata(f)?;
@@ -124,9 +148,9 @@ pub fn run(
                     "Cannot describe files with different schemas: \
                      '{first_file}' has columns [{}], but '{f}' has columns [{}]. \
                      `stats --describe` combines rows across files by column \
-                     position, so every file must have the same number of \
-                     columns with matching types (nullability and field \
-                     metadata may differ).",
+                     identity, so every file must have the same column names \
+                     and types (column order, nullability, and field metadata \
+                     may differ).",
                     describe_columns(first_schema),
                     describe_columns(&schema),
                 );
@@ -135,6 +159,7 @@ pub fn run(
         file_meta.push((f.as_str(), schema, rows));
     }
     let total_rows_meta: i64 = file_meta.iter().map(|(_, _, rows)| rows).sum();
+    let canonical_schema = file_meta[0].1.clone();
 
     let effective_limit = if sample_size > 0 {
         Some(sample_size)
@@ -181,7 +206,20 @@ pub fn run(
             rows_read: batch_rows,
             opened: true,
         });
-        all_batches.extend(batches);
+        // `schemas_concat_compatible` above accepts a later file whose
+        // columns are the same set as the first file's but in a different
+        // order. That check alone would be unsound without this: the
+        // column-by-column loop after this function names every position by
+        // the *first* file's schema (`all_batches[0].schema()`), so a batch
+        // whose physical column order doesn't match the first file's would
+        // still get concatenated position-by-position and mislabelled —
+        // exactly the silent-swap failure mode this fix exists to remove,
+        // just moved from "different names" to "same names, different
+        // order". Realigning here, once, keeps that loop's position-based
+        // indexing valid for every batch it touches.
+        for batch in batches {
+            all_batches.push(reorder_batch_to_schema(batch, &canonical_schema)?);
+        }
         if let Some(ref mut rem) = rows_remaining {
             *rem = rem.saturating_sub(batch_rows);
         }
@@ -366,18 +404,66 @@ pub fn run(
     Ok(())
 }
 
-/// True when `arrow::compute::concat` can combine these two schemas'
-/// columns position-by-position: same number of fields, and each pair
-/// sharing a `DataType`. This is deliberately narrower than `Schema`/`Field`
-/// equality — nullability and field metadata are irrelevant to `concat`
-/// (see the comment at its call site above) and must not cause a rejection
-/// here.
+/// True when `describe` may combine these two schemas' columns: the same
+/// multiset of (name, `DataType`) pairs, regardless of column order. Name
+/// comparison is exact and case-sensitive — `Alpha` and `alpha` are
+/// different columns. Nullability and per-field metadata are deliberately
+/// excluded, matching what `arrow::compute::concat` itself requires (see the
+/// comment at its call site above); order is deliberately tolerated because
+/// the caller (`run`, above) physically realigns later files' columns to the
+/// first file's order via `reorder_batch_to_schema` before concatenation, so
+/// a name-set match here is never used against misaligned data.
+///
+/// This is deliberately narrower than `Schema`/`Field` equality in the
+/// nullability/metadata direction, and deliberately *stricter* than a bare
+/// `DataType`-only comparison in the name direction: dropping names from
+/// this check (as a prior version did) let two files with entirely
+/// disjoint column names — both happening to share a `DataType` — pass
+/// silently, and `run`'s position-based indexing then mislabelled the
+/// second file's data under the first file's column names.
 fn schemas_concat_compatible(a: &Schema, b: &Schema) -> bool {
-    a.fields().len() == b.fields().len()
-        && a.fields()
-            .iter()
-            .zip(b.fields())
-            .all(|(fa, fb)| fa.data_type() == fb.data_type())
+    field_multiset(a) == field_multiset(b)
+}
+
+/// The sorted (name, `DataType`) pairs of a schema's fields, order-erased so
+/// two schemas that agree on columns but not their sequence compare equal.
+fn field_multiset(schema: &Schema) -> Vec<(&str, &DataType)> {
+    let mut pairs: Vec<(&str, &DataType)> = schema
+        .fields()
+        .iter()
+        .map(|f| (f.name().as_str(), f.data_type()))
+        .collect();
+    pairs.sort();
+    pairs
+}
+
+/// Permute `batch`'s columns into `canonical`'s field order by name. A
+/// no-op (returns `batch` unchanged) when the batch's fields are already in
+/// that order, which covers the overwhelmingly common case (every file
+/// agrees on order) without paying for a projection.
+///
+/// Only ever called after `schemas_concat_compatible` has confirmed the
+/// batch's schema has exactly the same (name, `DataType`) pairs as
+/// `canonical`, so `Schema::index_of` below is expected to succeed for
+/// every field; a failure here indicates that invariant was violated by the
+/// caller, not a normal data condition, so it is propagated as an error
+/// rather than panicking.
+fn reorder_batch_to_schema(batch: RecordBatch, canonical: &Schema) -> anyhow::Result<RecordBatch> {
+    let batch_schema = batch.schema();
+    let already_in_order = batch_schema
+        .fields()
+        .iter()
+        .zip(canonical.fields())
+        .all(|(a, b)| a.name() == b.name());
+    if already_in_order {
+        return Ok(batch);
+    }
+    let indices: Vec<usize> = canonical
+        .fields()
+        .iter()
+        .map(|f| batch_schema.index_of(f.name()))
+        .collect::<Result<_, _>>()?;
+    Ok(batch.project(&indices)?)
 }
 
 /// Render a schema's fields as "name:type, name:type, ..." for the
