@@ -29,6 +29,25 @@
   execute README code blocks too; logged instead of half-building it — see
   TODO.md.
 
+- Fix `pq count`/`pq cat`/`pq sql` silently reading the *wrong* file when a
+  literal filename contains a glob metacharacter (`data[1].parquet`) and a
+  different file also happens to match the resulting glob pattern
+  (`data1.parquet`): `crates/pq-cli/src/files.rs` and
+  `crates/pq-query/src/sql.rs` both treated any `*`/`?`/`[` in a path as a
+  glob without first checking whether the literal path existed, and even
+  after fixing that ordering, `sql`'s registration path handed the resolved
+  literal string straight to DataFusion's own `ListingTableUrl`, which
+  re-globs any bare filesystem path string on the same unconditional scan.
+  A literal path that exists on disk now always wins — `files.rs` checks
+  existence before treating a name as a pattern, and `sql.rs` additionally
+  rewrites a literal path containing glob characters into a `file://` URL
+  before registration, which DataFusion's glob scan never reaches. See
+  DIARY.md for the precedence rule when both a literal match and other
+  glob matches exist. Guard:
+  `crates/pq-query/src/sql.rs::tests::bracket_filename_reads_itself_not_a_glob_match`,
+  confirmed to fail against the pre-fix code; genuine globs (`data*.parquet`)
+  still match every file as before.
+
 - Release workflow: close the partial-publish hazard. `publish-npm` and
   `publish-pypi` ran in parallel, so a failure in either left the version
   live on one registry, absent from the other, and reusable on neither.

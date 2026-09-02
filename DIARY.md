@@ -4,6 +4,55 @@ Latest entries first. Record significant decisions, architecture changes, and no
 
 ---
 
+## 2026-09-02 — A literal path always wins over glob interpretation, even when both match
+
+`data[1].parquet` and `data1.parquet` can both exist in the same directory. The
+first is a plain filename that happens to contain a glob metacharacter; read
+as a glob, `[1]` is a one-character class matching the literal digit `1`, so
+the pattern also matches the second file. `pq count`/`cat`/`sql` all treated
+any `*`/`?`/`[` in a path as "this must be a glob" without ever checking
+whether the literal path existed, so quoting `'./data[1].parquet'` — precisely
+to stop a shell from globbing it — did not help: pq globbed it anyway and
+silently returned `data1.parquet`'s data at exit 0.
+
+**Decision: an existing literal path always wins, unconditionally, over glob
+interpretation.** Checked *before* any metacharacter scan, not after. This
+matches how tools that support both a literal filename and pattern matching
+already resolve the ambiguity (git pathspecs are the clearest precedent), and
+matches the direction of least surprise: a user who names a shell metacharacter
+in a real, existing filename gets that file, full stop.
+
+**What happens when both a literal match and other glob matches exist:** the
+literal wins outright and the other matches are never considered — `pq count
+'./data[1].parquet'` reports on `data[1].parquet` alone, not `data[1].parquet`
+plus `data1.parquet` unioned. This is a narrower rule than "does the pattern
+have any matches", deliberately: once a string is also somebody's real
+filename, treating it as a pattern *at all* — even a pattern that happens to
+include its own literal match among others — reintroduces the ambiguity the
+whole fix exists to remove. A pattern that does not name an existing file
+(`data*.parquet`, `data?.parquet` when only `data1.parquet` exists) still globs
+exactly as before; this only changes behavior for the specific case where the
+literal spelling itself resolves to a real file.
+
+**Two layers, not one.** `crates/pq-cli/src/files.rs` (used by `count`, `cat`,
+and every other data command) only had to reorder its own existence check
+ahead of its metacharacter scan. `crates/pq-query/src/sql.rs` (used by `sql`
+and `cat --where`) needed a second fix even after the same reordering: once a
+literal path is confirmed and handed to `ctx.register_parquet`, DataFusion's
+own `ListingTableUrl::parse` does an *independent*, unconditional scan of the
+same string for `*`/`?`/`[` (datafusion-44 `datasource/listing/url.rs`) with
+no existence check of its own — so the already-resolved literal path got
+re-globbed one layer down, silently reproducing the exact bug pq's own code
+had just avoided. `ListingTableUrl::parse`'s glob-detecting branch only fires
+for a bare filesystem path string; a well-formed `file://` URL parses
+successfully as a URL first and skips it. So a literal path containing glob
+characters is canonicalized and converted to a `file://` URL (percent-encoding
+`[`/`]`/etc.) immediately before the DataFusion call — same file, a string its
+parser can no longer second-guess. Confirmed necessary by testing: the
+`files.rs`-only fix alone left `sql`/`cat --where` still returning the wrong
+file, because they hand a path *string* to DataFusion rather than opening the
+file themselves the way `cat`/`count` do via `pq-core`.
+
 ## 2026-09-02 — Two registries, no transaction: what the release workflow can and cannot promise
 
 `publish-npm` and `publish-pypi` were parallel siblings. Either could fail
