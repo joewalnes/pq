@@ -1313,16 +1313,33 @@ fn test_describe() {
 
 #[test]
 fn test_describe_json() {
+    // `stats --describe -f json` used to emit a bare array of per-column
+    // stats. It now wraps that array under `columns`, alongside a
+    // `sampling` object disclosing whether the result is a sample and
+    // which named files were actually read — previously `json`/`jsonl`
+    // carried no such information at all, unlike `table`/`plain`'s printed
+    // note. See CHANGELOG.md and DIARY.md for the multi-file `--sample-size`
+    // fix this shape change is part of.
     ensure_fixture();
     let output = pq()
         .args(["stats", &fixture_path(), "--describe", "-f", "json"])
         .output()
         .unwrap();
     let stdout = String::from_utf8(output.stdout).unwrap();
-    let desc: Vec<serde_json::Value> = serde_json::from_str(&stdout).unwrap();
+    let report: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let desc = report["columns"].as_array().unwrap();
     assert_eq!(desc.len(), 6);
     assert!(desc[0]["column"].is_string());
     assert!(desc[0]["count"].is_number());
+
+    let sampling = &report["sampling"];
+    assert_eq!(
+        sampling["sampled"], false,
+        "single file under default sample size must not be marked sampled: {report}"
+    );
+    assert_eq!(sampling["files_total"], 1);
+    assert_eq!(sampling["files_read"], 1);
+    assert!(sampling["files"][0]["opened"].as_bool().unwrap());
 }
 
 // ── Grep tests ──────────────────────────────────────────────────────────

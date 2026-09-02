@@ -2,6 +2,37 @@
 
 ## 2026-09-02
 
+- Fix `pq stats --describe --sample-size N` silently reporting statistics
+  from the first file only when combining multiple files. `--sample-size`
+  used to gate which files were even *opened*: a shrinking row budget broke
+  out of the read loop the instant it hit zero, so `stats --describe
+  a.parquet b.parquet --sample-size 2` on files holding `[1,2,3]` and
+  `[100,200,300]` reported `count: 2, max: 2` drawn entirely from `a`, exit
+  0, no indication `b` was ignored — and because `b` was never opened, the
+  cross-file schema-compatibility guard never saw it either, so a
+  genuinely incompatible second file (e.g. a string column where the first
+  file has an int) passed through unnoticed the same way. The default
+  `--sample-size` is 100000, so any first file at or above that many rows
+  silently suppressed every file named after it — not an edge case for a
+  tool whose own subject matter is large Parquet files.
+  Semantics kept consistent with the existing multi-file rule for
+  `tail`/`sample` (concatenation in argument order, `--sample-size` a total
+  row budget, not per-file): a file the budget never reaches still
+  contributes 0 rows to the sample, but it is no longer silently dropped —
+  its schema is now checked up front (a cheap metadata-only read) against
+  every other named file regardless of the budget, and it is named,
+  honestly, in the output. `table`/`plain` now name the unread file in
+  their "sampled" note; `json`/`jsonl` (which previously carried no
+  sampling information at all, unlike `table`/`plain`) now carry a
+  `sampling` object (`sampled`, `sample_size`, `rows_read`, `rows_total`,
+  `files_total`, `files_read`, and a per-file `files` list with `opened`/
+  `rows_read`/`rows_total`), and the column stats move under a `columns`
+  key — a breaking shape change to `stats --describe -f json`/`jsonl`
+  output, made because a bare array had nowhere to carry this fact. Plain
+  `stats` (no `--describe`) does not share this bug: it dispatches once per
+  resolved file and prints each file's own stats independently, with no
+  row budget to exhaust.
+
 - Fix `pq cat`'s default table output (and `-f plain`) silently misaligning
   columns when combining files whose column names appear in a different
   order, or whose column sets differ. The header was frozen from the first

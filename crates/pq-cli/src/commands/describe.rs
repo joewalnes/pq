@@ -31,35 +31,77 @@ pub struct FreqEntry {
     pub count: usize,
 }
 
+/// Per-file accounting for the `--sample-size` row budget: how many rows a
+/// named file actually contributed, versus how many it holds. A file with
+/// `rows_read == 0` was schema-checked (see the metadata pass in `run`
+/// below) but never opened for data — the budget was exhausted before the
+/// reader reached it.
+#[derive(Debug, serde::Serialize)]
+pub struct FileSampling {
+    pub path: String,
+    pub rows_total: i64,
+    pub rows_read: usize,
+    /// False only when the row budget was exhausted before the reader ever
+    /// reached this file, so it contributed nothing to the sample. This is
+    /// distinct from `rows_read == 0`: a genuinely empty file that *was*
+    /// opened (its schema checked, its zero rows read) has `opened: true`,
+    /// `rows_read: 0` — it must not be reported as "not read" alongside a
+    /// file the budget skipped outright.
+    pub opened: bool,
+}
+
+/// Discloses the sampling fact to every output format, `json`/`jsonl`
+/// included. Before this existed, `table`/`plain` printed a "sampled" note
+/// but `json`/`jsonl` carried nothing at all — a machine consumer had no way
+/// to tell it had received a partial answer, let alone which of the named
+/// files were actually read.
+#[derive(Debug, serde::Serialize)]
+pub struct SamplingInfo {
+    /// True when fewer rows were read than exist across all named files.
+    pub sampled: bool,
+    /// The `--sample-size` value as given; 0 means unlimited (no cap).
+    pub sample_size: usize,
+    pub rows_read: usize,
+    pub rows_total: usize,
+    pub files_total: usize,
+    pub files_read: usize,
+    pub files: Vec<FileSampling>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct DescribeReport {
+    pub sampling: SamplingInfo,
+    pub columns: Vec<ColumnDescription>,
+}
+
 pub fn run(
     files: &[String],
     top_k: usize,
     sample_size: usize,
     format: Format,
 ) -> anyhow::Result<()> {
-    // Determine total row count from metadata (no data read)
-    let mut total_rows_meta: i64 = 0;
-    for f in files {
-        total_rows_meta += pq_core::reader::open_row_count(f)?;
+    if files.is_empty() {
+        anyhow::bail!("No files given");
     }
 
-    let effective_limit = if sample_size > 0 {
-        Some(sample_size)
-    } else {
-        None
-    };
-
-    // Collect batches (limited to sample_size rows)
-    let mut all_batches: Vec<RecordBatch> = Vec::new();
-    let mut rows_remaining = effective_limit;
-    // Every later column lookup below indexes into `all_batches` by
-    // position (`b.column(col_idx)`) using the field list from the FIRST
-    // file's schema. If a later file has fewer columns, or the same count
-    // but a different order/type, that indexing panics instead of erroring
-    // (or worse, silently pairs up unrelated columns). `pq stats --describe`
-    // takes multiple files precisely to combine them, so a schema mismatch
-    // across files is a real, easy-to-hit user input — not an edge case —
-    // and needs a message that names the mismatched file, not a backtrace.
+    // Pass 1: metadata only (schema + row count), for EVERY named file,
+    // before any row budget is applied.
+    //
+    // This exists because `--sample-size` used to gate which files were
+    // even *opened*: the old single loop read data with a shrinking `limit`
+    // and `break`-ed the moment the budget hit zero, so a file the budget
+    // never reached was never opened at all — not for data, and not for its
+    // schema. Two files holding [1,2,3] and [100,200,300], `--sample-size
+    // 2`, reported `count: 2, max: 2` drawn entirely from the first file,
+    // exit 0, no indication the second file was ignored. Worse, a second
+    // file with an outright incompatible schema (e.g. a string column where
+    // the first file has an int) passed through unnoticed the same way,
+    // because the schema-compatibility guard below never got to see it.
+    //
+    // Reading metadata for every file up front (cheap: footer only, no row
+    // data) fixes both: the guard now fires for every named file regardless
+    // of the sample size, and the true total row count is known before
+    // deciding how the budget gets spent in pass 2.
     //
     // The guard must reject exactly what the column-by-column
     // `arrow::compute::concat` call below would reject, no more. An earlier
@@ -73,37 +115,75 @@ pub fn run(
     // differently. `schemas_concat_compatible` below checks only what
     // `concat` actually requires: same column count, same `DataType` in
     // each position.
-    let mut reference_schema: Option<(&str, arrow::datatypes::SchemaRef)> = None;
+    let mut file_meta: Vec<(&str, arrow::datatypes::SchemaRef, i64)> = Vec::new();
     for f in files {
+        let (schema, rows) = pq_core::reader::open_metadata(f)?;
+        if let Some((first_file, first_schema, _)) = file_meta.first() {
+            if !schemas_concat_compatible(first_schema, &schema) {
+                anyhow::bail!(
+                    "Cannot describe files with different schemas: \
+                     '{first_file}' has columns [{}], but '{f}' has columns [{}]. \
+                     `stats --describe` combines rows across files by column \
+                     position, so every file must have the same number of \
+                     columns with matching types (nullability and field \
+                     metadata may differ).",
+                    describe_columns(first_schema),
+                    describe_columns(&schema),
+                );
+            }
+        }
+        file_meta.push((f.as_str(), schema, rows));
+    }
+    let total_rows_meta: i64 = file_meta.iter().map(|(_, _, rows)| rows).sum();
+
+    let effective_limit = if sample_size > 0 {
+        Some(sample_size)
+    } else {
+        None
+    };
+
+    // Pass 2: read up to the row budget, in file order. Multiple files are
+    // treated as one logical concatenation and `--sample-size` as a total
+    // row budget across it — the same rule already chosen for `tail`/
+    // `sample` (see DIARY.md, "Multi-file semantics for `tail`/`sample`:
+    // concatenation, not per-file"): a per-file cap would silently multiply
+    // the amount of data read by the file count for an unchanged flag.
+    //
+    // A file the budget never reaches contributes 0 rows here — that part
+    // of the old behaviour is unchanged and is the correct reading of "the
+    // first N rows of the concatenation" — but unlike before, it was still
+    // schema-checked above, and it is still named in `sampling.files` below
+    // with `rows_read: 0`. Silently vanishing from the report is what the
+    // old code did; being visibly and honestly excluded is what this does
+    // instead.
+    let mut all_batches: Vec<RecordBatch> = Vec::new();
+    let mut rows_remaining = effective_limit;
+    let mut file_reads: Vec<FileSampling> = Vec::new();
+    for (f, _schema, rows_total) in &file_meta {
+        if rows_remaining == Some(0) {
+            file_reads.push(FileSampling {
+                path: (*f).to_string(),
+                rows_total: *rows_total,
+                rows_read: 0,
+                opened: false,
+            });
+            continue;
+        }
         let file_opts = pq_core::reader::ReadOptions {
             limit: rows_remaining,
             ..Default::default()
         };
-        let (batches, schema) = pq_core::reader::open_batches(f, &file_opts)?;
-        match &reference_schema {
-            None => reference_schema = Some((f.as_str(), schema)),
-            Some((first_file, first_schema)) => {
-                if !schemas_concat_compatible(first_schema, &schema) {
-                    anyhow::bail!(
-                        "Cannot describe files with different schemas: \
-                         '{first_file}' has columns [{}], but '{f}' has columns [{}]. \
-                         `stats --describe` combines rows across files by column \
-                         position, so every file must have the same number of \
-                         columns with matching types (nullability and field \
-                         metadata may differ).",
-                        describe_columns(first_schema),
-                        describe_columns(&schema),
-                    );
-                }
-            }
-        }
+        let (batches, _schema) = pq_core::reader::open_batches(f, &file_opts)?;
         let batch_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        file_reads.push(FileSampling {
+            path: (*f).to_string(),
+            rows_total: *rows_total,
+            rows_read: batch_rows,
+            opened: true,
+        });
         all_batches.extend(batches);
         if let Some(ref mut rem) = rows_remaining {
             *rem = rem.saturating_sub(batch_rows);
-            if *rem == 0 {
-                break;
-            }
         }
     }
 
@@ -115,6 +195,21 @@ pub fn run(
     let sampled_rows: usize = all_batches.iter().map(|b| b.num_rows()).sum();
     let total_rows = total_rows_meta as usize;
     let is_sampled = effective_limit.is_some() && sampled_rows < total_rows;
+    let files_read = file_reads.iter().filter(|fr| fr.opened).count();
+    let unread_files: Vec<String> = file_reads
+        .iter()
+        .filter(|fr| !fr.opened)
+        .map(|fr| fr.path.clone())
+        .collect();
+    let sampling = SamplingInfo {
+        sampled: is_sampled,
+        sample_size,
+        rows_read: sampled_rows,
+        rows_total: total_rows,
+        files_total: file_reads.len(),
+        files_read,
+        files: file_reads,
+    };
 
     // Concatenate all arrays per column
     let mut descriptions: Vec<ColumnDescription> = Vec::new();
@@ -154,9 +249,26 @@ pub fn run(
     let stdout = std::io::stdout();
     let mut writer = stdout.lock();
 
+    // Build this once so the "not read" note below (table/plain) and the
+    // JSON/JSONL sampling field say exactly the same thing.
+    let unread_note = if unread_files.is_empty() {
+        String::new()
+    } else {
+        format!(" ({} not read)", unread_files.join(", "))
+    };
+
     match format {
         Format::Json | Format::JsonLines => {
-            let json = serde_json::to_value(&descriptions)?;
+            // Every output format must carry the sampling fact, not just
+            // `table`/`plain`'s printed note — a machine consumer of
+            // `json`/`jsonl` used to receive a bare array with no way to
+            // tell it held a partial answer, let alone which of the named
+            // files it came from.
+            let report = DescribeReport {
+                sampling,
+                columns: descriptions,
+            };
+            let json = serde_json::to_value(&report)?;
             crate::output::render_value(&mut writer, &json, format)?;
         }
         Format::Table => {
@@ -211,7 +323,7 @@ pub fn run(
             if is_sampled {
                 writeln!(
                     writer,
-                    "Statistics computed from first {sampled_rows} of {total_rows} rows (use --sample-size 0 for all)"
+                    "Statistics computed from first {sampled_rows} of {total_rows} rows{unread_note} (use --sample-size 0 for all)"
                 )?;
             }
         }
@@ -245,7 +357,7 @@ pub fn run(
             if is_sampled {
                 writeln!(
                     writer,
-                    "# Statistics computed from first {sampled_rows} of {total_rows} rows"
+                    "# Statistics computed from first {sampled_rows} of {total_rows} rows{unread_note}"
                 )?;
             }
         }
