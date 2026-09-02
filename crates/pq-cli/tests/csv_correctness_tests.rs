@@ -385,30 +385,33 @@ fn dup_columns_survive_export_path() {
     assert_both_duplicate_columns_survive(&fs::read(&out).unwrap(), "export --output out.csv");
 }
 
-/// `sql` is deliberately NOT in the list above, and this test says why so the
-/// omission cannot be mistaken for an oversight.
+/// `sql` used to be the one path that could not carry duplicate columns, and
+/// this test used to pin that loss deliberately.
 ///
-/// `pq sql -o out.csv` now writes through the same shared batch-CSV
-/// implementation as the other paths (unit-tested directly in
-/// `commands::write_output`), but a CLI duplicate-column test cannot reach
-/// that writer: DataFusion collapses the two `id` columns during planning,
-/// before any output code runs. `SELECT * FROM dup.parquet` returns a
-/// single-column result, and `SELECT 1 AS id, 2 AS id` is rejected outright
-/// ("Projections require unique expression names"), so no query can produce
-/// a duplicate-named result set to hand the writer.
+/// It pinned it because the loss happened *upstream of every writer*:
+/// `SessionContext::register_parquet` builds a `ListingTable` whose schema
+/// comes from `ParquetFormat::infer_schema` → `Schema::try_merge`, which
+/// merges fields by name, so the `TableProvider` pq handed DataFusion already
+/// had one `id` where the file had two. No CSV test could reach the writer
+/// with a duplicate-named result set, because no query could produce one.
 ///
-/// That upstream collapse is itself silent data loss — a separate bug, in
-/// `pq-query`/DataFusion rather than in any CSV path. This test pins the
-/// diagnosis using the *table* renderer, which shares no code with CSV: if
-/// the loss ever moves (or is fixed upstream), this fails loudly and tells
-/// the next reader that the CLI-level CSV case has become reachable.
+/// `pq-query` now disambiguates those names before DataFusion sees the file
+/// (`id`, `id_1`, ...), announcing the rename on stderr — so the CLI-level
+/// `sql -o out.csv` case IS reachable and is exercised here for real. The
+/// full behavioural class lives in `sql_duplicate_columns_tests.rs`; what
+/// this keeps is the reference-instrument technique that made the original
+/// diagnosis trustworthy: `cat -f table` shares no code with the DataFusion
+/// path or the CSV writer, so if it ever stops showing two `id` columns the
+/// failure is in the fixture or the renderer, not in `sql`.
 #[test]
-fn sql_loses_duplicate_columns_upstream_of_every_output_path() {
+fn sql_preserves_duplicate_columns_through_every_output_path() {
     let dir = TempDir::new().unwrap();
     let f = dup_column_parquet(dir.path());
 
-    // How many `id` headers the table renderer prints, for a given command.
-    let header_ids = |args: &[&str]| -> usize {
+    // The header cells the table renderer prints, for a given command.
+    // Counting substring occurrences of "id" would be fooled by `id_1`, so
+    // the row is split into real cells on the renderer's column separator.
+    let header_cells = |args: &[&str]| -> Vec<String> {
         let out = pq()
             .args(args)
             .assert()
@@ -416,32 +419,69 @@ fn sql_loses_duplicate_columns_upstream_of_every_output_path() {
             .get_output()
             .stdout
             .clone();
-        String::from_utf8_lossy(&out)
+        let text = String::from_utf8_lossy(&out).to_string();
+        let row = text
             .lines()
-            .find(|line| line.contains("id"))
-            .map(|line| line.matches("id").count())
-            .unwrap_or(0)
+            .find(|line| line.starts_with('│'))
+            .unwrap_or_else(|| {
+                panic!("no table header row in output — the renderer never ran:\n{text}")
+            });
+        row.trim_matches('│')
+            .split('┆')
+            .map(|c| c.trim().to_string())
+            .collect()
     };
 
     // Reference instrument: reading the file directly keeps both columns, so
     // the fixture is not at fault and the renderer can express duplicates.
     assert_eq!(
-        header_ids(&["cat", f.to_str().unwrap(), "-f", "table"]),
-        2,
+        header_cells(&["cat", f.to_str().unwrap(), "-f", "table"]),
+        vec!["id".to_string(), "id".to_string()],
         "reference: `cat -f table` should show two `id` columns"
     );
 
+    // `sql` must now carry both columns. The names are unique because a SQL
+    // result set with two `id`s is unaddressable; the *data* is what must
+    // survive, and the first column must keep its original name.
+    let sql_header = header_cells(&[
+        "sql",
+        &format!("SELECT * FROM '{}'", f.to_str().unwrap()),
+        "-f",
+        "table",
+    ]);
     assert_eq!(
-        header_ids(&[
-            "sql",
-            &format!("SELECT * FROM '{}'", f.to_str().unwrap()),
-            "-f",
-            "table",
-        ]),
-        1,
-        "DataFusion now preserves duplicate column names — the CLI-level \
-         `sql -o out.csv` duplicate-column case is reachable again and needs \
-         a real guard here"
+        sql_header.len(),
+        2,
+        "`sql SELECT *` dropped a duplicate-named column again: {sql_header:?}"
+    );
+    assert_eq!(sql_header[0], "id");
+    assert_ne!(
+        sql_header[0], sql_header[1],
+        "a SQL result set with two identically named columns is unaddressable: {sql_header:?}"
+    );
+
+    // The CLI-level `sql -o out.csv` case the old comment called unreachable.
+    let out = dir.path().join("sql-out.csv");
+    pq().args([
+        "sql",
+        &format!("SELECT * FROM '{}'", f.to_str().unwrap()),
+        "-o",
+        out.to_str().unwrap(),
+    ])
+    .assert()
+    .success();
+    let (header, rows) = parse_strict_csv(&fs::read(&out).unwrap()).unwrap();
+    assert_eq!(
+        header, sql_header,
+        "`sql -o out.csv` and `sql -f table` disagree on the column names"
+    );
+    assert_eq!(
+        rows,
+        vec![
+            vec!["1".to_string(), "10".to_string()],
+            vec!["2".to_string(), "20".to_string()],
+        ],
+        "`sql -o out.csv` lost or shifted a duplicate-named column's data"
     );
 }
 

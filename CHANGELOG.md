@@ -2,6 +2,8 @@
 
 ## 2026-09-02
 
+- Fix `pq sql` (and `pq cat --where`) silently dropping duplicate-named columns. A file with two `id` columns now queries as `id` and `id_1`, with the rename announced on stderr; previously one column vanished and `SELECT id` returned the *other* one's data, exit 0, no warning. Duplicate-named files are read into memory rather than streamed, so they lose predicate/projection pushdown; files with unique column names are unaffected
+
 - Fail a release before it starts if the `NPM_TOKEN` secret is missing, so the irreversible half (an immutable GitHub release, a burned version number) cannot run when the npm publish is already doomed. `NPM_TOKEN` does not currently exist in the repo, so today a `v0.1.0` tag would stop here
 - Pin the floating refs the release workflow trusted: `dtolnay/rust-toolchain@stable` and `pypa/gh-action-pypi-publish@release/v1` (both branches) to exact commits, and `cargo install cross --git` to an exact `--rev` with `--locked`, in both `release.yml` and the `Makefile`
 - Ship `LICENSE` and `THIRD-PARTY-LICENSES` as release assets, so the `curl`-a-binary install gets the same attribution npm packages and wheels already carry
