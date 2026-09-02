@@ -304,10 +304,26 @@ fn parse_range(value: &str, len: usize) -> Option<(usize, usize)> {
     Some((start, end.min(len - 1)))
 }
 
-fn write_status(stream: &mut TcpStream, code: u16, reason: &str, extra: &str, body: &[u8]) {
+/// Write a full HTTP response. `content_length` is the value advertised in
+/// the `Content-Length:` header and is INDEPENDENT of `body` — a HEAD
+/// response must report the size of the resource while writing zero body
+/// bytes, so the two cannot be derived from each other. (An earlier version
+/// of this server derived Content-Length from `body.len()` here and then
+/// had HEAD pass a *second*, correct Content-Length header in `extra` on
+/// top of the first, wrong, zero-body one: the wire carried two
+/// Content-Length headers, the HTTP client believed the first — zero — and
+/// every ranged read then failed with "file size of 0 is less than
+/// footer". Do not reintroduce a second Content-Length source.)
+fn write_response(
+    stream: &mut TcpStream,
+    code: u16,
+    reason: &str,
+    content_length: usize,
+    extra: &str,
+    body: &[u8],
+) {
     let head = format!(
-        "HTTP/1.1 {code} {reason}\r\nConnection: close\r\nContent-Length: {}\r\n{extra}\r\n",
-        body.len()
+        "HTTP/1.1 {code} {reason}\r\nConnection: close\r\nContent-Length: {content_length}\r\n{extra}\r\n"
     );
     let _ = stream.write_all(head.as_bytes());
     let _ = stream.write_all(body);
@@ -358,19 +374,14 @@ fn handle_connection(stream: TcpStream, state: Arc<ServerState>) {
     }
 
     let Some(body) = state.files.get(&path) else {
-        write_status(&mut stream, 404, "Not Found", "", b"");
+        write_response(&mut stream, 404, "Not Found", 0, "", b"");
         return;
     };
 
     match method.as_str() {
         "HEAD" => {
-            write_status(
-                &mut stream,
-                200,
-                "OK",
-                &format!("Content-Length: {}\r\n", body.len()),
-                b"",
-            );
+            // Content-Length must be the size of the RESOURCE; body is empty.
+            write_response(&mut stream, 200, "OK", body.len(), "", b"");
         }
         "GET" => match range_header {
             Some(ref rv) if !state.disable_range.load(Ordering::SeqCst) => {
@@ -393,19 +404,26 @@ fn handle_connection(stream: TcpStream, state: Arc<ServerState>) {
                             // Deliberately stop here: the socket closes with
                             // fewer bytes than Content-Length promised.
                         } else {
-                            write_status(&mut stream, 206, "Partial Content", &extra, slice);
+                            write_response(
+                                &mut stream,
+                                206,
+                                "Partial Content",
+                                slice.len(),
+                                &extra,
+                                slice,
+                            );
                         }
                     }
-                    None => write_status(&mut stream, 416, "Range Not Satisfiable", "", b""),
+                    None => write_response(&mut stream, 416, "Range Not Satisfiable", 0, "", b""),
                 }
             }
             _ => {
                 // No Range header, or Range support disabled for this test:
                 // answer with the full body under a plain 200.
-                write_status(&mut stream, 200, "OK", "", body);
+                write_response(&mut stream, 200, "OK", body.len(), "", body);
             }
         },
-        _ => write_status(&mut stream, 405, "Method Not Allowed", "", b""),
+        _ => write_response(&mut stream, 405, "Method Not Allowed", 0, "", b""),
     }
 }
 
@@ -431,20 +449,21 @@ fn start_default_server() -> TestHttpServer {
 /// thing it's meant to cover in pq, entirely unexercised).
 fn assert_used_ranged_reads(server: &TestHttpServer) {
     let reqs = server.requests();
+    let range_count = server.range_request_count();
     assert!(!reqs.is_empty(), "server received no requests at all");
     assert!(
         reqs.iter().any(|r| r.method == "HEAD"),
         "expected a HEAD request for object size/metadata; got {reqs:?}"
     );
     assert!(
-        reqs.iter().any(|r| r.range.is_some()),
+        range_count >= 1,
         "expected at least one ranged GET (pq must read remote parquet via \
          HTTP Range, not a full download); got {reqs:?}"
     );
     assert!(
         !reqs.iter().any(|r| r.method == "GET" && r.range.is_none()),
         "pq issued a full, unranged GET — the range mechanism this test \
-         exists to cover was never exercised; got {reqs:?}"
+         exists to cover was never exercised; got {reqs:?} ({range_count} ranged)"
     );
 }
 
@@ -644,7 +663,7 @@ fn test_http_server_without_range_support_fails_clearly() {
     // refused to honor — otherwise this would just be proving pq fails on
     // an unrelated broken server, not on lost Range support specifically.
     assert!(
-        server.requests().iter().any(|r| r.range.is_some()),
+        server.range_request_count() >= 1,
         "pq never even attempted a ranged GET: {:?}",
         server.requests()
     );
