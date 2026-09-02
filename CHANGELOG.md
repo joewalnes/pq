@@ -2,6 +2,18 @@
 
 ## 2026-09-02
 
+- Fix errors printing the same sentence twice, e.g. `Error: Failed to read
+  parquet file 'x.parquet': EOF: file size of 0 is less than footer: EOF:
+  file size of 0 is less than footer`. `pq-core`'s error type interpolated
+  its own cause into its message *and* implemented `source()`, so `anyhow`'s
+  `{:#}` (used for every top-level error) printed the cause a second time.
+  Affects every command whose error carries a filesystem, Parquet, Arrow, or
+  JSON cause (missing/corrupt files, malformed JSON, IO failures); context
+  like the filename and the underlying cause is unchanged, just no longer
+  duplicated
+
+## 2026-09-02
+
 - Fix `pq sql` (and `pq cat --where`) silently dropping duplicate-named columns. A file with two `id` columns now queries as `id` and `id_1`, with the rename announced on stderr; previously one column vanished and `SELECT id` returned the *other* one's data, exit 0, no warning. Duplicate-named files are read into memory rather than streamed, so they lose predicate/projection pushdown; files with unique column names are unaffected
 
 - Fail a release before it starts if the `NPM_TOKEN` secret is missing, so the irreversible half (an immutable GitHub release, a burned version number) cannot run when the npm publish is already doomed. `NPM_TOKEN` does not currently exist in the repo, so today a `v0.1.0` tag would stop here
