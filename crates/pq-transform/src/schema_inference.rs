@@ -115,6 +115,25 @@ fn widen_types(a: &DataType, b: &DataType) -> DataType {
     }
 }
 
+/// Render a JSON value for a column that has been widened to `Utf8`.
+///
+/// `widen_types` sends any pair it cannot reconcile numerically to `Utf8`
+/// (`schema_inference::widen_types`'s final arm), so a Utf8 column routinely
+/// holds numbers and booleans as well as strings. Only an explicit JSON `null`
+/// may produce a NULL cell — every other value keeps its information. Objects
+/// and arrays are serialised as compact JSON rather than dropped, so the cell
+/// is still round-trippable.
+///
+/// Strings are emitted bare, not via `Value::to_string()`, which would wrap
+/// them in literal quote characters.
+fn json_to_utf8(value: &Value) -> Option<String> {
+    match value {
+        Value::Null => None,
+        Value::String(s) => Some(s.clone()),
+        other => Some(other.to_string()),
+    }
+}
+
 pub fn json_values_to_batches(values: &[Value], schema: &Schema) -> Result<Vec<RecordBatch>> {
     let batch_size = 8192;
     let mut batches = Vec::new();
@@ -163,13 +182,7 @@ fn build_array(name: &str, dt: &DataType, values: &[Value]) -> Result<Arc<dyn Ar
         DataType::Utf8 => {
             let arr: StringArray = values
                 .iter()
-                .map(|v| {
-                    v.get(name).and_then(|v| match v {
-                        Value::String(s) => Some(s.as_str()),
-                        Value::Null => None,
-                        _ => None,
-                    })
-                })
+                .map(|v| v.get(name).and_then(json_to_utf8))
                 .collect();
             Ok(Arc::new(arr))
         }
@@ -179,7 +192,7 @@ fn build_array(name: &str, dt: &DataType, values: &[Value]) -> Result<Arc<dyn Ar
             // Fallback: convert to string
             let arr: StringArray = values
                 .iter()
-                .map(|v| v.get(name).map(|v| v.to_string()))
+                .map(|v| v.get(name).and_then(json_to_utf8))
                 .collect();
             Ok(Arc::new(arr))
         }
@@ -235,7 +248,7 @@ fn build_struct_child_array(
         DataType::Utf8 => {
             let arr: StringArray = parent_values
                 .iter()
-                .map(|v| v.and_then(|obj| obj.get(name)).and_then(|v| v.as_str()))
+                .map(|v| v.and_then(|obj| obj.get(name)).and_then(json_to_utf8))
                 .collect();
             Ok(Arc::new(arr))
         }
@@ -259,12 +272,24 @@ fn build_struct_child_array(
                 StructArray::try_new(child_fields.clone(), child_arrays, Some(null_buffer.into()))?;
             Ok(Arc::new(struct_array))
         }
-        DataType::List(inner_field) => build_list_child_array(name, inner_field, parent_values),
+        DataType::List(inner_field) => {
+            // Extract this field's array out of each parent object first.
+            // Passing `parent_values` straight through left
+            // `build_list_child_array` matching on the parent *objects*
+            // instead of the arrays inside them, so it saw no arrays at all
+            // and produced an all-NULL column — every list nested inside a
+            // struct was dropped, whatever its element types.
+            let child_values: Vec<Option<&Value>> = parent_values
+                .iter()
+                .map(|v| v.and_then(|obj| obj.get(name)))
+                .collect();
+            build_list_child_array(name, inner_field, &child_values)
+        }
         _ => {
             // Fallback: convert to string
             let arr: StringArray = parent_values
                 .iter()
-                .map(|v| v.and_then(|obj| obj.get(name)).map(|v| v.to_string()))
+                .map(|v| v.and_then(|obj| obj.get(name)).and_then(json_to_utf8))
                 .collect();
             Ok(Arc::new(arr))
         }
@@ -339,7 +364,7 @@ fn build_flat_array(dt: &DataType, values: &[Value]) -> Result<Arc<dyn Array>> {
             Ok(Arc::new(arr))
         }
         DataType::Utf8 => {
-            let arr: StringArray = values.iter().map(|v| v.as_str()).collect();
+            let arr: StringArray = values.iter().map(json_to_utf8).collect();
             Ok(Arc::new(arr))
         }
         DataType::Struct(fields) => {
@@ -382,14 +407,7 @@ fn build_flat_array(dt: &DataType, values: &[Value]) -> Result<Arc<dyn Array>> {
         }
         _ => {
             // Fallback: stringify
-            let arr: StringArray = values
-                .iter()
-                .map(|v| match v {
-                    Value::String(s) => Some(s.as_str()),
-                    Value::Null => None,
-                    _ => None,
-                })
-                .collect();
+            let arr: StringArray = values.iter().map(json_to_utf8).collect();
             Ok(Arc::new(arr))
         }
     }
@@ -423,7 +441,7 @@ fn build_flat_struct_child(name: &str, dt: &DataType, values: &[Value]) -> Resul
         DataType::Utf8 => {
             let arr: StringArray = values
                 .iter()
-                .map(|v| v.get(name).and_then(|v| v.as_str()))
+                .map(|v| v.get(name).and_then(json_to_utf8))
                 .collect();
             Ok(Arc::new(arr))
         }
@@ -450,9 +468,166 @@ fn build_flat_struct_child(name: &str, dt: &DataType, values: &[Value]) -> Resul
         _ => {
             let arr: StringArray = values
                 .iter()
-                .map(|v| v.get(name).map(|v| v.to_string()))
+                .map(|v| v.get(name).and_then(json_to_utf8))
                 .collect();
             Ok(Arc::new(arr))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::util::display::{ArrayFormatter, FormatOptions};
+
+    /// Parse JSONL, infer the schema, and build the single batch.
+    fn build(lines: &[&str]) -> RecordBatch {
+        let values: Vec<Value> = lines
+            .iter()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        let schema = infer_schema_from_json(&values).unwrap();
+        let mut batches = json_values_to_batches(&values, &schema).unwrap();
+        assert_eq!(batches.len(), 1);
+        batches.remove(0)
+    }
+
+    /// Render one column as displayed text, with nulls spelled out so an
+    /// assertion cannot pass by accident on an empty string.
+    fn column(batch: &RecordBatch, name: &str) -> Vec<String> {
+        let idx = batch.schema().index_of(name).unwrap();
+        let col = batch.column(idx);
+        let opts = FormatOptions::default().with_null("NULL");
+        let fmt = ArrayFormatter::try_new(col.as_ref(), &opts).unwrap();
+        (0..col.len()).map(|i| fmt.value(i).to_string()).collect()
+    }
+
+    // -----------------------------------------------------------------
+    // Controls: the machinery that already worked must keep working.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn control_all_string_column_survives() {
+        let b = build(&[r#"{"v":"a"}"#, r#"{"v":"b"}"#]);
+        assert_eq!(column(&b, "v"), ["a", "b"]);
+    }
+
+    #[test]
+    fn control_all_int_column_survives() {
+        let b = build(&[r#"{"v":1}"#, r#"{"v":2}"#]);
+        assert_eq!(b.schema().field(0).data_type(), &DataType::Int64);
+        assert_eq!(column(&b, "v"), ["1", "2"]);
+    }
+
+    #[test]
+    fn control_int_and_float_still_widen_to_float() {
+        let b = build(&[r#"{"v":1}"#, r#"{"v":2.5}"#]);
+        assert_eq!(b.schema().field(0).data_type(), &DataType::Float64);
+        assert_eq!(column(&b, "v"), ["1.0", "2.5"]);
+    }
+
+    #[test]
+    fn control_explicit_json_null_is_still_null() {
+        let b = build(&[r#"{"v":"a"}"#, r#"{"v":null}"#]);
+        assert_eq!(column(&b, "v"), ["a", "NULL"]);
+    }
+
+    // -----------------------------------------------------------------
+    // The class: when a column is widened to Utf8, no non-null input
+    // value may become NULL. Every builder path is covered, because a
+    // fix to the top-level arm alone leaves the nested ones lossy.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn top_level_mixed_column_keeps_every_value() {
+        // build_array, DataType::Utf8
+        let b = build(&[
+            r#"{"v":"hello"}"#,
+            r#"{"v":42}"#,
+            r#"{"v":"world"}"#,
+            r#"{"v":3.5}"#,
+            r#"{"v":true}"#,
+            r#"{"v":null}"#,
+        ]);
+        assert_eq!(
+            column(&b, "v"),
+            ["hello", "42", "world", "3.5", "true", "NULL"]
+        );
+    }
+
+    #[test]
+    fn top_level_mixed_column_with_no_string_side_keeps_every_value() {
+        // Int64 + Bool has no common numeric type, so it widens to Utf8 too.
+        // Pre-fix this annihilated the entire column, not just the odd rows.
+        let b = build(&[r#"{"v":1}"#, r#"{"v":true}"#, r#"{"v":7}"#]);
+        assert_eq!(b.schema().field(0).data_type(), &DataType::Utf8);
+        assert_eq!(column(&b, "v"), ["1", "true", "7"]);
+    }
+
+    #[test]
+    fn struct_field_mixed_types_keep_every_value() {
+        // build_struct_child_array, DataType::Utf8
+        let b = build(&[r#"{"o":{"k":"str"}}"#, r#"{"o":{"k":9}}"#]);
+        assert_eq!(column(&b, "o"), ["{k: str}", "{k: 9}"]);
+    }
+
+    #[test]
+    fn list_elements_mixed_types_keep_every_value() {
+        // build_flat_array, DataType::Utf8
+        let b = build(&[r#"{"l":["a","b"]}"#, r#"{"l":[1,2]}"#]);
+        assert_eq!(column(&b, "l"), ["[a, b]", "[1, 2]"]);
+    }
+
+    #[test]
+    fn list_of_struct_field_mixed_types_keep_every_value() {
+        // build_flat_struct_child, DataType::Utf8
+        let b = build(&[r#"{"l":[{"k":"a"}]}"#, r#"{"l":[{"k":1}]}"#]);
+        assert_eq!(column(&b, "l"), ["[{k: a}]", "[{k: 1}]"]);
+    }
+
+    #[test]
+    fn objects_and_arrays_landing_in_a_utf8_column_become_compact_json() {
+        // Dropping these silently would be the same defect in a new coat;
+        // they are round-trippable as compact JSON instead.
+        let b = build(&[r#"{"v":"plain"}"#, r#"{"v":{"a":1}}"#, r#"{"v":[1,2]}"#]);
+        assert_eq!(b.schema().field(0).data_type(), &DataType::Utf8);
+        assert_eq!(column(&b, "v"), ["plain", "{\"a\":1}", "[1,2]"]);
+    }
+
+    #[test]
+    fn strings_are_not_double_quoted_when_widened() {
+        // A stringify-everything fix that used Value::to_string() would turn
+        // "hello" into "\"hello\"". This locks the un-quoted form in.
+        let b = build(&[r#"{"v":"hello"}"#, r#"{"v":1}"#]);
+        assert_eq!(column(&b, "v"), ["hello", "1"]);
+    }
+
+    // -----------------------------------------------------------------
+    // Lists nested inside structs were dropped wholesale, regardless of
+    // element type — a separate defect from the Utf8 widening above.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn list_nested_in_struct_is_not_dropped() {
+        let b = build(&[r#"{"o":{"l":["a","b"]}}"#, r#"{"o":{"l":["c"]}}"#]);
+        assert_eq!(column(&b, "o"), ["{l: [a, b]}", "{l: [c]}"]);
+    }
+
+    #[test]
+    fn list_nested_in_struct_keeps_mixed_element_values() {
+        let b = build(&[r#"{"o":{"l":["a","b"]}}"#, r#"{"o":{"l":[1,2]}}"#]);
+        assert_eq!(column(&b, "o"), ["{l: [a, b]}", "{l: [1, 2]}"]);
+    }
+
+    #[test]
+    fn list_nested_two_structs_deep_is_not_dropped() {
+        let b = build(&[r#"{"a":{"b":{"l":[1,2]}}}"#]);
+        assert_eq!(column(&b, "a"), ["{b: {l: [1, 2]}}"]);
+    }
+
+    #[test]
+    fn control_struct_holding_a_scalar_still_works() {
+        let b = build(&[r#"{"o":{"k":"a"}}"#, r#"{"o":{"k":"b"}}"#]);
+        assert_eq!(column(&b, "o"), ["{k: a}", "{k: b}"]);
     }
 }

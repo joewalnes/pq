@@ -54,19 +54,24 @@ pub fn select_columns(input: &Path, opts: &SelectOptions) -> Result<u64> {
         })?;
 
     let out_schema = reader.schema();
-    let out_file = File::create(&opts.output)?;
-    let props = WriterProperties::builder()
-        .set_compression(opts.compression)
-        .build();
-    let mut writer = ArrowWriter::try_new(out_file, out_schema, Some(props))?;
 
-    let mut total_rows = 0u64;
-    for batch_result in reader {
-        let batch = batch_result?;
-        total_rows += batch.num_rows() as u64;
-        writer.write(&batch)?;
-    }
+    // Staged write — see `output_guard`. `reader` is lazy, so creating the
+    // destination here would destroy the input when `-o` names it.
+    crate::output_guard::with_atomic_output(&opts.output, move |out_path| {
+        let out_file = File::create(out_path)?;
+        let props = WriterProperties::builder()
+            .set_compression(opts.compression)
+            .build();
+        let mut writer = ArrowWriter::try_new(out_file, out_schema, Some(props))?;
 
-    writer.close()?;
-    Ok(total_rows)
+        let mut total_rows = 0u64;
+        for batch_result in reader {
+            let batch = batch_result?;
+            total_rows += batch.num_rows() as u64;
+            writer.write(&batch)?;
+        }
+
+        writer.close()?;
+        Ok(total_rows)
+    })
 }

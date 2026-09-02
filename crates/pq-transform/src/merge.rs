@@ -134,43 +134,49 @@ pub fn merge_files(inputs: &[&Path], opts: &MergeOptions) -> Result<u64> {
 
     let output_schema = resolve_schema(&schemas, opts.schema_mode)?;
 
-    let out_file = File::create(&opts.output)?;
-    let props = WriterProperties::builder()
-        .set_compression(opts.compression)
-        .build();
-    let mut writer = ArrowWriter::try_new(out_file, output_schema.clone(), Some(props))?;
+    // Staged write: the inputs are only read *inside* this closure, so the
+    // destination is not touched until every input has been consumed. Without
+    // it, `pq merge a.parquet b.parquet -o a.parquet` truncated `a.parquet`
+    // to a 4-byte `PAR1` stub before reading a single row of it.
+    crate::output_guard::with_atomic_output(&opts.output, |out_path| {
+        let out_file = File::create(out_path)?;
+        let props = WriterProperties::builder()
+            .set_compression(opts.compression)
+            .build();
+        let mut writer = ArrowWriter::try_new(out_file, output_schema.clone(), Some(props))?;
 
-    let mut total_rows = 0u64;
-    let needs_adapt = !matches!(opts.schema_mode, SchemaMode::Strict);
+        let mut total_rows = 0u64;
+        let needs_adapt = !matches!(opts.schema_mode, SchemaMode::Strict);
 
-    for input_path in inputs {
-        let file = File::open(input_path).map_err(|e| PqError::FileOpen {
-            path: input_path.display().to_string(),
-            source: e,
-        })?;
-        let reader = ParquetRecordBatchReaderBuilder::try_new(file)
-            .map_err(|e| PqError::ParquetRead {
-                path: input_path.display().to_string(),
-                source: e,
-            })?
-            .build()
-            .map_err(|e| PqError::ParquetRead {
+        for input_path in inputs {
+            let file = File::open(input_path).map_err(|e| PqError::FileOpen {
                 path: input_path.display().to_string(),
                 source: e,
             })?;
+            let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+                .map_err(|e| PqError::ParquetRead {
+                    path: input_path.display().to_string(),
+                    source: e,
+                })?
+                .build()
+                .map_err(|e| PqError::ParquetRead {
+                    path: input_path.display().to_string(),
+                    source: e,
+                })?;
 
-        for batch_result in reader {
-            let batch = batch_result?;
-            total_rows += batch.num_rows() as u64;
-            if needs_adapt {
-                let adapted = adapt_batch(&batch, &output_schema)?;
-                writer.write(&adapted)?;
-            } else {
-                writer.write(&batch)?;
+            for batch_result in reader {
+                let batch = batch_result?;
+                total_rows += batch.num_rows() as u64;
+                if needs_adapt {
+                    let adapted = adapt_batch(&batch, &output_schema)?;
+                    writer.write(&adapted)?;
+                } else {
+                    writer.write(&batch)?;
+                }
             }
         }
-    }
 
-    writer.close()?;
-    Ok(total_rows)
+        writer.close()?;
+        Ok(total_rows)
+    })
 }

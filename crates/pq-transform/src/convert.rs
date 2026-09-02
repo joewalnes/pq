@@ -55,20 +55,27 @@ pub fn convert_json_to_parquet(input: &Path, opts: &ConvertOptions) -> Result<u6
     let schema = schema_inference::infer_schema_from_json(&values)?;
     let batches = schema_inference::json_values_to_batches(&values, &schema)?;
 
-    let out_file = File::create(&opts.output)?;
-    let props = WriterProperties::builder()
-        .set_compression(opts.compression)
-        .build();
-    let mut writer = ArrowWriter::try_new(out_file, Arc::new(schema), Some(props))?;
+    // This path already read the whole input into memory above
+    // (`read_to_string`), so `-o` naming the input was never destructive here.
+    // It is staged anyway so that every writer in the crate behaves the same
+    // way, and so a future switch to streaming JSON parsing cannot
+    // reintroduce the loss.
+    crate::output_guard::with_atomic_output(&opts.output, |out_path| {
+        let out_file = File::create(out_path)?;
+        let props = WriterProperties::builder()
+            .set_compression(opts.compression)
+            .build();
+        let mut writer = ArrowWriter::try_new(out_file, Arc::new(schema), Some(props))?;
 
-    let mut total_rows = 0u64;
-    for batch in &batches {
-        total_rows += batch.num_rows() as u64;
-        writer.write(batch)?;
-    }
+        let mut total_rows = 0u64;
+        for batch in &batches {
+            total_rows += batch.num_rows() as u64;
+            writer.write(batch)?;
+        }
 
-    writer.close()?;
-    Ok(total_rows)
+        writer.close()?;
+        Ok(total_rows)
+    })
 }
 
 fn convert_csv_to_parquet(input: &Path, opts: &ConvertOptions) -> Result<u64> {
@@ -91,19 +98,25 @@ fn convert_csv_to_parquet(input: &Path, opts: &ConvertOptions) -> Result<u64> {
         .with_batch_size(8192)
         .build(file)?;
 
-    let out_file = File::create(&opts.output)?;
-    let props = WriterProperties::builder()
-        .set_compression(opts.compression)
-        .build();
-    let mut writer = ArrowWriter::try_new(out_file, Arc::new(schema), Some(props))?;
+    // Staged write. `csv_reader` is lazy: pre-fix, `pq import data.csv -o
+    // data.csv` truncated the CSV here, then read zero rows from the now-empty
+    // file, and reported "Converted 0 rows" with exit status 0 — a silent,
+    // total, plausible-looking data loss.
+    crate::output_guard::with_atomic_output(&opts.output, move |out_path| {
+        let out_file = File::create(out_path)?;
+        let props = WriterProperties::builder()
+            .set_compression(opts.compression)
+            .build();
+        let mut writer = ArrowWriter::try_new(out_file, Arc::new(schema), Some(props))?;
 
-    let mut total_rows = 0u64;
-    for batch_result in csv_reader {
-        let batch: RecordBatch = batch_result?;
-        total_rows += batch.num_rows() as u64;
-        writer.write(&batch)?;
-    }
+        let mut total_rows = 0u64;
+        for batch_result in csv_reader {
+            let batch: RecordBatch = batch_result?;
+            total_rows += batch.num_rows() as u64;
+            writer.write(&batch)?;
+        }
 
-    writer.close()?;
-    Ok(total_rows)
+        writer.close()?;
+        Ok(total_rows)
+    })
 }

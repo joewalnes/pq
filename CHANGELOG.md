@@ -11,6 +11,10 @@
 - Gate releases and npm/PyPI publishing behind CI passing
 - Scope release workflow permissions down to read by default, write only where needed
 - Add CI workflow: fmt, clippy, cargo test, and golden tests on PRs and pushes to main
+
+- Fix data loss: lists nested inside objects (`{"o":{"l":[1,2]}}`) no longer import as NULL — they were dropped entirely, at any element type
+- Fix data loss: JSON columns holding mixed types no longer import as NULL. A column widened to string now keeps numbers and booleans as their text (`42`, `true`) and objects/arrays as compact JSON, at every nesting level — previously every non-string value in such a column was dropped, silently and with exit 0
+- Fix data loss: `-o` pointing at an input file no longer destroys it. `merge`, `select`, `slice`, `export` and CSV `import` now stage their output in a sibling temp file and rename it into place, so in-place transforms work and a failed write leaves the destination untouched
 - Add project process docs: CLAUDE.md, engineering diary, changelog
 - Ignore .wrangler/ directory
 
