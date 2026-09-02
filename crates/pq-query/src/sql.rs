@@ -58,6 +58,36 @@ pub enum SqlError {
     Other(String),
 }
 
+/// Render `e`'s own message together with its full `source()` chain into one
+/// string, e.g. `Failed to read parquet file 'x': Parquet error: Invalid
+/// Parquet file. Corrupt footer`.
+///
+/// `SqlError::Other(String)` has no `source()` of its own (a bare `String`
+/// isn't an error), so any cause information not folded into that string at
+/// construction time is gone for good — `anyhow`'s `{:#}` in `pq-cli/main.rs`
+/// has nothing left to walk. This is what `pq_core::error::PqError` needs:
+/// since the fix that stopped its `Display` from redundantly embedding its
+/// own `source()`'s text (DIARY.md, 2026-09-02), `PqError::to_string()` alone
+/// is only the top-level message — `.map_err(|e| SqlError::Other(e.to_string()))`
+/// on such an error silently dropped the cause (e.g. why the parquet read
+/// failed), making corrupt, empty, and permission-denied files
+/// indistinguishable through `sql`/`cat --where`, though `cat` itself was
+/// unaffected because it keeps the error as a real `anyhow` chain instead of
+/// flattening it to a string. Walking the chain *here*, once, before
+/// collapsing to a string, restores the cause without reintroducing that
+/// doubling: the resulting string is a leaf with no further `source()`, so
+/// nothing downstream can walk into it and repeat any part of it.
+fn describe_with_cause(e: &(dyn std::error::Error + 'static)) -> String {
+    let mut msg = e.to_string();
+    let mut cause = e.source();
+    while let Some(c) = cause {
+        msg.push_str(": ");
+        msg.push_str(&c.to_string());
+        cause = c.source();
+    }
+    msg
+}
+
 impl From<datafusion::error::DataFusionError> for SqlError {
     fn from(e: datafusion::error::DataFusionError) -> Self {
         SqlError::DataFusion(e)
@@ -192,15 +222,35 @@ async fn register_files_from_query(
 
         if source::is_url(path_str) {
             register_remote_parquet(ctx, path_str, path_str).await?;
+            continue;
+        }
+
+        // An existing literal path always wins over glob interpretation,
+        // even when it contains `*`, `?`, or `[` — checked *before*
+        // `is_glob_pattern` (not after, as this used to be ordered), because
+        // a glob-looking string is not guaranteed to never exist as a
+        // literal path: `data[1].parquet` is both a valid filename and a
+        // one-character glob class matching the literal character `1`.
+        // Globbing it unconditionally silently read a *different* file
+        // (e.g. `data1.parquet`) when both existed, at exit 0, defeating the
+        // user quoting the path specifically to avoid globbing. Same
+        // precedence as `pq_cli::files::resolve_files`; see DIARY.md for
+        // what happens when both a literal match and other glob matches
+        // exist (the literal wins outright — the other matches are never
+        // considered).
+        let path = Path::new(path_str);
+        let resolved = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        if resolved.exists() {
+            let resolved_str = resolved.to_str().unwrap_or(path_str);
+            register_parquet_source(ctx, path_str, resolved_str, path_str).await?;
         } else if is_glob_pattern(path_str) {
-            // A glob never exists as a literal path, so the canonicalize+exists
-            // guard below must not gate it. DataFusion's own `ListingTableUrl`
-            // already expands a glob embedded in the path (see datafusion-44's
-            // `register_parquet` doctest `read_with_glob_path`), including
-            // merging the matched files' schemas via `ParquetFormat::infer_schema`
-            // — so handing the pattern straight to `register_parquet_source`
-            // (which falls through to `ctx.register_parquet` for anything that
-            // isn't a real file or directory) is sufficient; no separate glob
+            // DataFusion's own `ListingTableUrl` already expands a glob
+            // embedded in the path (see datafusion-44's `register_parquet`
+            // doctest `read_with_glob_path`), including merging the matched
+            // files' schemas via `ParquetFormat::infer_schema` — so handing
+            // the pattern straight to `register_parquet_source` (which falls
+            // through to `ctx.register_parquet` for anything that isn't a
+            // real file or directory) is sufficient; no separate glob
             // expansion is needed here. This intentionally does not run the
             // duplicate-top-level-column check that single files and
             // directories get (`Target::Other` already skipped it before this
@@ -221,14 +271,6 @@ async fn register_files_from_query(
                 )));
             }
             register_parquet_source(ctx, path_str, path_str, path_str).await?;
-        } else {
-            // Canonicalize to resolve relative paths before checking existence
-            let path = Path::new(path_str);
-            let resolved = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-            if resolved.exists() {
-                let resolved_str = resolved.to_str().unwrap_or(path_str);
-                register_parquet_source(ctx, path_str, resolved_str, path_str).await?;
-            }
         }
     }
 
@@ -240,12 +282,15 @@ fn is_parquet_ref(s: &str) -> bool {
     lower.ends_with(".parquet") || lower.ends_with(".parq") || lower.ends_with(".pq")
 }
 
-/// Whether `s` should be treated as a glob pattern rather than a literal path.
+/// Whether `s` looks like a glob pattern (contains `*`, `?`, or `[`).
 ///
-/// Same heuristic as `pq_cli::files::resolve_files` (`*`, `?`, `[`): a literal
-/// filename that happens to contain one of these characters is misdetected as
-/// a glob. That is a pre-existing, accepted ambiguity shared with shell
-/// globbing itself, not new here.
+/// Same heuristic as `pq_cli::files::resolve_files`, and, like that function,
+/// only consulted by its caller *after* an existing literal path has already
+/// been ruled out — so a literal filename that happens to contain one of
+/// these characters (`data[1].parquet`) is never misglobbed as long as it
+/// exists on disk. This function alone can't make that distinction; it just
+/// answers "does this look like a pattern", which is still the right
+/// question once literal existence is settled.
 fn is_glob_pattern(s: &str) -> bool {
     s.contains('*') || s.contains('?') || s.contains('[')
 }
@@ -395,11 +440,11 @@ async fn arrow_schema_of(location: &str) -> std::result::Result<SchemaRef, SqlEr
     if source::is_url(location) {
         let schema = pq_core::async_reader::read_arrow_schema(location)
             .await
-            .map_err(|e| SqlError::Other(e.to_string()))?;
+            .map_err(|e| SqlError::Other(describe_with_cause(&e)))?;
         Ok(Arc::new(schema))
     } else {
         let (schema, _rows) = pq_core::reader::read_schema_and_row_count(Path::new(location))
-            .map_err(|e| SqlError::Other(e.to_string()))?;
+            .map_err(|e| SqlError::Other(describe_with_cause(&e)))?;
         Ok(schema)
     }
 }
@@ -422,6 +467,49 @@ enum Target {
     /// Anything else, including a path that does not exist: left entirely to
     /// DataFusion, exactly as before this module grew a duplicate check.
     Other,
+}
+
+/// Rewrite a path already confirmed to name an existing local file or
+/// directory (`classify` returned `Target::File`/`Target::Directory`) into a
+/// form `ctx.register_parquet` cannot mistake for a glob pattern.
+///
+/// This module's own `is_glob_pattern` check (in `register_files_from_query`)
+/// is not the last word: `ctx.register_parquet` hands the path straight to
+/// DataFusion's `ListingTableUrl::parse`, which does its *own*, unconditional
+/// scan for `*`, `?`, `[` in any scheme-less or absolute filesystem path
+/// string and treats a match as a glob expression — with no check for
+/// whether that exact string is also a literal existing path (datafusion-44
+/// `datasource/listing/url.rs`, `parse`/`parse_path`/`split_glob_expression`).
+/// So even after this module correctly decides `data[1].parquet` is a
+/// literal file (because it exists) and not a pattern, handing that string
+/// to `ctx.register_parquet` unchanged let DataFusion re-glob it anyway and
+/// silently register `data1.parquet` instead — the same wrong-file bug one
+/// layer down, reached only via `sql`/`cat --where`, not `cat`/`count`
+/// (which never go through `ListingTableUrl` at all).
+///
+/// The fix is not another string heuristic but a format DataFusion's
+/// raw-path glob scan cannot reach in the first place: `ListingTableUrl::parse`
+/// only takes that scanning branch for a string that looks like a bare
+/// filesystem path (no scheme, or `Path::is_absolute()`); a proper `file://`
+/// URL parses successfully as a URL first and skips it entirely. So a path
+/// containing a glob metacharacter is canonicalized and turned into a
+/// `file://` URL (percent-encoding `[`, `]`, etc.), which still names the
+/// exact same file but is no longer a string DataFusion's parser will
+/// second-guess. A path with no metacharacters is returned unchanged.
+fn listing_safe_path(read_from: &str) -> std::result::Result<String, SqlError> {
+    if !is_glob_pattern(read_from) {
+        return Ok(read_from.to_string());
+    }
+    let abs = Path::new(read_from)
+        .canonicalize()
+        .map_err(|e| SqlError::Other(describe_with_cause(&e)))?;
+    Url::from_file_path(&abs)
+        .map(|u| u.to_string())
+        .map_err(|()| {
+            SqlError::Other(format!(
+                "internal error: could not build a file URL for '{read_from}'"
+            ))
+        })
 }
 
 fn classify(location: &str) -> Target {
@@ -599,7 +687,7 @@ impl RenamedDuplicatesTable {
         announce_renames(&self.display, &self.original, &self.renamed);
 
         let (batches, _) = pq_core::reader::open_batches(&self.read_from, &ReadOptions::default())
-            .map_err(|e| SqlError::Other(e.to_string()))?;
+            .map_err(|e| SqlError::Other(describe_with_cause(&e)))?;
         let relabelled = batches
             .into_iter()
             .map(|b| RecordBatch::try_new(self.renamed.clone(), b.columns().to_vec()))
@@ -664,7 +752,8 @@ async fn register_parquet_source(
         // which; it never falls back to registering anyway.
         Target::Directory => {
             reject_directory_with_duplicate_columns(ctx, read_from, display).await?;
-            ctx.register_parquet(table_ref, read_from, ParquetReadOptions::default())
+            let safe = listing_safe_path(read_from)?;
+            ctx.register_parquet(table_ref, &safe, ParquetReadOptions::default())
                 .await?;
             return Ok(());
         }
@@ -678,7 +767,17 @@ async fn register_parquet_source(
 
     let schema = arrow_schema_of(read_from).await?;
     let Some(names) = disambiguated_names(&schema) else {
-        ctx.register_parquet(table_ref, read_from, ParquetReadOptions::default())
+        // `classify` already confirmed `read_from` is either a real local
+        // file (`Target::File`) or a remote URL (`Target::Remote`) at the
+        // top of this function; only the local-file case needs sanitizing —
+        // a remote URL is never re-globbed by `ListingTableUrl::parse`
+        // (its glob-detecting branch only fires for scheme-less/absolute
+        // filesystem path strings, see `listing_safe_path`).
+        let register_at = match classify(read_from) {
+            Target::File => listing_safe_path(read_from)?,
+            _ => read_from.to_string(),
+        };
+        ctx.register_parquet(table_ref, &register_at, ParquetReadOptions::default())
             .await?;
         return Ok(());
     };
@@ -836,6 +935,76 @@ mod tests {
         assert!(is_glob_pattern("logs/[ab].parquet"));
         assert!(!is_glob_pattern("logs/data.parquet"));
         assert!(!is_glob_pattern("./data.parquet"));
+    }
+
+    /// A literal filename containing a glob metacharacter must be read as
+    /// itself, not reinterpreted as a pattern that happens to match a
+    /// *different* file.
+    ///
+    /// Two bugs stacked here, both now fixed: (1) this module's own
+    /// `is_glob_pattern` check in `register_files_from_query` ran before
+    /// checking whether the literal path existed, so `data[1].parquet` was
+    /// treated as the one-character glob class `[1]` and matched
+    /// `data1.parquet` instead; (2) even after reordering that check, the
+    /// path was still handed to `ctx.register_parquet` unchanged, and
+    /// DataFusion's own `ListingTableUrl::parse` does an unconditional,
+    /// independent scan for `*`/`?`/`[` in any bare filesystem path string —
+    /// so it re-globbed the already-resolved literal path and read the wrong
+    /// file anyway. Reproduced on the release binary before either fix:
+    /// `pq sql "SELECT * FROM './data[1].parquet'"` returned `data1.parquet`'s
+    /// single row instead of `data[1].parquet`'s seven.
+    #[test]
+    fn bracket_filename_reads_itself_not_a_glob_match() {
+        let dir = TempDir::new().expect("tempdir");
+        write_int_fixture(&dir.path().join("data[1].parquet"), "v", &[1; 7]);
+        write_int_fixture(&dir.path().join("data1.parquet"), "v", &[9, 9]);
+
+        let literal = dir.path().join("data[1].parquet");
+        let query = format!(
+            "SELECT v FROM '{}'",
+            literal.to_str().expect("utf8 tempdir path")
+        );
+        let batches = run_sql(&query)
+            .unwrap_or_else(|e| panic!("expected the literal path to register, got: {e}"));
+        let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(
+            total_rows, 7,
+            "expected all 7 rows of the literal 'data[1].parquet', not 'data1.parquet'"
+        );
+        for batch in &batches {
+            let col = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .expect("v is Int64");
+            for i in 0..col.len() {
+                assert_eq!(
+                    col.value(i),
+                    1,
+                    "expected only 'data[1].parquet's values (all 1), got a 'data1.parquet' value"
+                );
+            }
+        }
+
+        // A pattern that genuinely has no literal match must still glob as
+        // before — this fix must not turn every glob into a literal lookup.
+        let real_glob = dir.path().join("data?.parquet");
+        let query = format!(
+            "SELECT count(*) c FROM '{}'",
+            real_glob.to_str().expect("utf8 tempdir path")
+        );
+        let batches =
+            run_sql(&query).unwrap_or_else(|e| panic!("expected the glob to still work, got: {e}"));
+        let col = batches[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .expect("count(*) is Int64");
+        assert_eq!(
+            col.value(0),
+            2,
+            "'data?.parquet' should still glob-match 'data1.parquet'"
+        );
     }
 
     #[test]

@@ -57,6 +57,52 @@
   the full reasoning, including why no case of "duplicate name, reordered"
   needs to be refused as ambiguous once (name, occurrence) is the identity.
 
+- Fix `pq sql`/`pq cat --where` silently dropping the *cause* of every file
+  read failure. Earlier today's fix that stopped `pq-core` doubling error
+  causes moved a `PqError`'s cause out of `Display` and into `source()` only
+  — but `crates/pq-query/src/sql.rs` was converting those errors with a bare
+  `e.to_string()` (`SqlError::Other`), which reads `Display` and never walks
+  `source()`, so the cause was silently lost, not merely doubled: a corrupt
+  footer, an empty file, and (elsewhere) permission-denied all reduced to
+  the identical, useless `Failed to read parquet file '...'`. `pq cat`
+  itself was unaffected — it keeps the error as a real `anyhow` chain
+  instead of stringifying it. Fixed with a small chain-walking formatter
+  (`describe_with_cause`) used at the three `arrow_schema_of`/`materialize`
+  conversion sites, so the resulting string already contains the full cause
+  and nothing is left for a chain-walking printer to double. Guard:
+  `crates/pq-cli/tests/error_display_tests.rs::sql_and_cat_where_preserve_the_read_failure_cause`,
+  confirmed to fail against the pre-fix code; `sql_error_chains_are_not_doubled_or_tripled`
+  still passes unchanged.
+
+- Fix README's front-page `pq sql` example: `FROM 'events.parquet'` (no
+  `/`) is parsed by DataFusion as `schema.table` and fails to resolve — the
+  exact bug a same-day fix already corrected in `cli.rs`, the CLI
+  reference, and `docs/src/index.md`, but that fix's own guard
+  (`help_examples_tests.rs`) only runs examples extracted from `--help`
+  text and cannot see a markdown file, so `README.md:29` kept the broken
+  form. Changed to `'./events.parquet'`. Considered extending the guard to
+  execute README code blocks too; logged instead of half-building it — see
+  TODO.md.
+
+- Fix `pq count`/`pq cat`/`pq sql` silently reading the *wrong* file when a
+  literal filename contains a glob metacharacter (`data[1].parquet`) and a
+  different file also happens to match the resulting glob pattern
+  (`data1.parquet`): `crates/pq-cli/src/files.rs` and
+  `crates/pq-query/src/sql.rs` both treated any `*`/`?`/`[` in a path as a
+  glob without first checking whether the literal path existed, and even
+  after fixing that ordering, `sql`'s registration path handed the resolved
+  literal string straight to DataFusion's own `ListingTableUrl`, which
+  re-globs any bare filesystem path string on the same unconditional scan.
+  A literal path that exists on disk now always wins — `files.rs` checks
+  existence before treating a name as a pattern, and `sql.rs` additionally
+  rewrites a literal path containing glob characters into a `file://` URL
+  before registration, which DataFusion's glob scan never reaches. See
+  DIARY.md for the precedence rule when both a literal match and other
+  glob matches exist. Guard:
+  `crates/pq-query/src/sql.rs::tests::bracket_filename_reads_itself_not_a_glob_match`,
+  confirmed to fail against the pre-fix code; genuine globs (`data*.parquet`)
+  still match every file as before.
+
 - Release workflow: close the partial-publish hazard. `publish-npm` and
   `publish-pypi` ran in parallel, so a failure in either left the version
   live on one registry, absent from the other, and reusable on neither.

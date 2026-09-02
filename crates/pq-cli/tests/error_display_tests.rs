@@ -294,6 +294,44 @@ fn sql_error_chains_are_not_doubled_or_tripled() {
     assert_error_shape_ok(&stderr, &["nonexistent_func_xyz"]);
 }
 
+/// Regression guard: `arrow_schema_of` and `RenamedDuplicatesTable::materialize`
+/// (`crates/pq-query/src/sql.rs`) converted `pq_core::error::PqError` into
+/// `SqlError::Other` via a bare `e.to_string()`, which reads only `Display`
+/// and never walks `source()`. Once the `pq-core` doubling fix (DIARY.md,
+/// 2026-09-02) moved a `PqError` variant's cause out of `Display` and into
+/// `source()` only, that flattening lost the cause entirely: `pq sql` and
+/// `pq cat --where` reported "Failed to read parquet file 'x'" with no
+/// indication of *why*, so a corrupt file, an empty file, and (elsewhere) a
+/// permission-denied file all produced the identical, useless message.
+/// `pq cat` itself was unaffected because it keeps the error as a real
+/// `anyhow` chain instead of stringifying it early. Confirmed on the
+/// pre-fix binary: both cases below printed only
+/// `Failed to read parquet file '...'` with nothing after it.
+#[test]
+fn sql_and_cat_where_preserve_the_read_failure_cause() {
+    let dir = tmp();
+    let corrupt = dir.path().join("corrupt.parquet");
+    fs::write(&corrupt, vec![0u8; 64]).unwrap();
+    let empty = dir.path().join("empty.parquet");
+    fs::write(&empty, b"").unwrap();
+
+    // `sql`, corrupt footer (ParquetError, no further source()).
+    let query = format!("SELECT * FROM '{}'", corrupt.to_str().unwrap());
+    let stderr = stderr_of(pq().arg("sql").arg(&query));
+    assert_error_shape_ok(&stderr, &["Corrupt footer"]);
+
+    // `sql`, zero-byte file (a distinct PqError/ParquetError shape: too
+    // small to even hold a footer).
+    let query = format!("SELECT * FROM '{}'", empty.to_str().unwrap());
+    let stderr = stderr_of(pq().arg("sql").arg(&query));
+    assert_error_shape_ok(&stderr, &["too small"]);
+
+    // `cat --where` reaches the same `arrow_schema_of` call as `sql` before
+    // it ever reads a row, so the same flattening bug applied there too.
+    let stderr = stderr_of(pq().arg("cat").arg(&corrupt).arg("--where").arg("1=1"));
+    assert_error_shape_ok(&stderr, &["Corrupt footer"]);
+}
+
 #[test]
 fn detector_catches_a_known_doubled_string() {
     // Guards the guard: if `find_doubled_sentence` regresses (e.g. someone

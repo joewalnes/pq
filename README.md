@@ -25,7 +25,7 @@ $ pq head events.parquet
 ╰────┴───────┴─────────┴─────────────────────┴──────────┴──────────┴────────┴──────────╯
 
 # SQL queries - reference files directly in FROM
-$ pq sql "SELECT city, count(*) n FROM 'events.parquet' WHERE active GROUP BY city ORDER BY n DESC LIMIT 3"
+$ pq sql "SELECT city, count(*) n FROM './events.parquet' WHERE active GROUP BY city ORDER BY n DESC LIMIT 3"
 ╭──────────┬───────╮
 │ city     ┆ n     │
 ╞══════════╪═══════╡
