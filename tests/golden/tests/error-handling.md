@@ -44,7 +44,7 @@ Options:
 
 ```console
 $ pq sql "SELECT * FROM"  # [exit: 1]
-Error: DataFusion error: SQL error: ParserError("Expected: identifier, found: EOF"): SQL error: ParserError("Expected: identifier, found: EOF"): sql parser error: Expected: identifier, found: EOF
+Error: DataFusion error: SQL error: ParserError("Expected: identifier, found: EOF")
 ```
 
 ## Schema on missing file
