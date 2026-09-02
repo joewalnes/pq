@@ -4,6 +4,27 @@ Latest entries first. Record significant decisions, architecture changes, and no
 
 ---
 
+## 2026-09-02 — Multi-file semantics for `tail`/`sample`: concatenation, not per-file
+
+`tail`, `sample`, `count`, `merge` all silently mishandled >1 file (`tail`
+used only the last, `sample` only the first, `count`/`merge` never expanded
+globs). For `count`/`merge` the fix is mechanical: route through
+`files::resolve_files` like every other multi-file command already does.
+`tail`/`sample` needed a semantics decision since there's no existing
+per-command precedent, only `cat`/`head`'s: treat multiple files as one
+logical concatenation, in argument order. Chose to extend that same rule
+rather than invent "last/random N of each file", because `-n` is worded as
+a total row budget ("show N rows"), and a per-file rule would silently
+multiply the output size by the file count for an unchanged flag. Proved
+the choice matters, not just asserted it: with a=5, b=10, c=20 rows,
+`tail -n 25` must return b's *last* 5 rows (ids 5-9) plus all of c, not all
+of b — a naive "walk files backward, take whole files until N is met"
+implementation would get b wrong at the boundary. `sample` mirrors this:
+uniform draw across the virtual concatenation, mapping each global index
+back to (file, local offset) and grouping consecutive same-file indices
+into ranges to avoid full scans, same trick the single-file code already
+used for one file.
+
 ## 2026-09-02 — Published tutorials left un-migrated; README claim narrowed instead
 
 `docs/src/tutorials/*.md` (rendered onto the docs site by `docs/build.py`,
