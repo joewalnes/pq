@@ -54,7 +54,7 @@ Examples:
   pq data.parquet                              # open in TUI viewer
   pq info data.parquet
   pq cat data.parquet --limit 100
-  pq sql "SELECT count(*) FROM 'data.parquet'"
+  pq sql "SELECT count(*) FROM './data.parquet'"
   pq jq data.parquet '.name'
 ```
 
@@ -115,14 +115,16 @@ Running `pq sql` with no query shows the long help:
 $ pq sql
 Execute SQL queries on Parquet files using Apache DataFusion.
 
-Files are referenced directly in the FROM clause using single-quoted paths.
-Glob patterns (e.g., 'logs/*.parquet') are supported.
+Files are referenced directly in the FROM clause using single-quoted paths;
+prefix local files with './' (a bare 'name.parquet' is parsed as a
+schema-qualified SQL identifier, not a path, and fails to resolve).
+Glob patterns (e.g., './logs/*.parquet') are supported.
 
 Examples:
-  pq sql "SELECT * FROM 'data.parquet' LIMIT 10"
-  pq sql "SELECT city, count(*) FROM 'data.parquet' GROUP BY city"
-  pq sql "SELECT a.id, b.name FROM 'a.parquet' a JOIN 'b.parquet' b ON a.id = b.id"
-  pq sql "SELECT * FROM 'logs/*.parquet' WHERE level = 'ERROR'"
+  pq sql "SELECT * FROM './data.parquet' LIMIT 10"
+  pq sql "SELECT city, count(*) FROM './data.parquet' GROUP BY city"
+  pq sql "SELECT a.id, b.name FROM './a.parquet' a JOIN './b.parquet' b ON a.id = b.id"
+  pq sql "SELECT * FROM './logs/*.parquet' WHERE level = 'ERROR'"
 
 SQL reference: https://datafusion.apache.org/user-guide/sql/index.html
 
