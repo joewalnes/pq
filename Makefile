@@ -23,6 +23,80 @@ install: build
 	mkdir -p ~/.local/bin
 	cp target/release/pq ~/.local/bin/pq
 
+# -- Third-party license bundling --------------------------------------------
+# Regenerates THIRD-PARTY-LICENSES at the repo root from the workspace's
+# dependency graph via cargo-about (https://github.com/EmbarkStudios/cargo-about),
+# using about.toml/about.hbs for config/formatting. The file is NOT committed:
+# it is ~500KB and tracks Cargo.lock exactly, so it would go stale the moment
+# a dependency version bumps without anyone noticing. Regenerate it with
+# `make licenses` before packaging a release.
+#
+# Also appends verbatim any dependency NOTICE files (Apache-2.0 section 4(d)
+# requires preserving these; cargo-about only handles LICENSE text, not NOTICE
+# files, so that part is done by hand below).
+#
+# NOTE: wiring `make licenses` into .github/workflows/release.yml so it runs
+# automatically before packaging is deliberately NOT done here - that file is
+# owned by another in-flight change to the release workflow. Until that
+# lands, a human must run `make licenses` before cutting a release.
+
+.PHONY: licenses
+
+define NOTICE_APPENDIX_PY
+import json, os, sys
+
+about_json_path, out_path = sys.argv[1], sys.argv[2]
+data = json.load(open(about_json_path))
+
+notices = {}  # NOTICE content -> set of "name version" crate ids that ship it
+for c in data["crates"]:
+    manifest = c["package"].get("manifest_path")
+    if not manifest:
+        continue
+    crate_dir = os.path.dirname(manifest)
+    for fname in ("NOTICE", "NOTICE.txt", "NOTICE.md"):
+        p = os.path.join(crate_dir, fname)
+        if os.path.isfile(p):
+            content = open(p, errors="replace").read().strip()
+            notices.setdefault(content, set()).add(
+                f"{c['package']['name']} {c['package']['version']}"
+            )
+            break
+
+if not notices:
+    sys.exit(0)
+
+with open(out_path, "a") as out:
+    out.write("\n" + "=" * 80 + "\n\n")
+    out.write("Notices (Apache License 2.0 section 4(d))\n")
+    out.write("-------------------------------------------\n\n")
+    out.write(
+        "The following crates ship a NOTICE file which Apache-2.0 section 4(d)\n"
+        "requires be preserved in derivative works. Reproduced verbatim below.\n\n"
+    )
+    for content, crates in sorted(notices.items(), key=lambda kv: sorted(kv[1])):
+        out.write("-" * 80 + "\nUsed by:\n")
+        for name in sorted(crates):
+            out.write(f"  - {name}\n")
+        out.write("\n" + content + "\n\n")
+
+print(f"licenses: appended {len(notices)} unique NOTICE text(s) covering "
+      f"{sum(len(v) for v in notices.values())} crate(s)", file=sys.stderr)
+endef
+export NOTICE_APPENDIX_PY
+
+licenses:
+	@command -v cargo-about >/dev/null 2>&1 || { \
+		echo "error: cargo-about is not installed."; \
+		echo "  install with: cargo install cargo-about --locked --features cli"; \
+		exit 1; \
+	}
+	cargo about generate --workspace -o THIRD-PARTY-LICENSES about.hbs
+	cargo about generate --workspace --format json -o /tmp/pq-about.json
+	python3 -c "$$NOTICE_APPENDIX_PY" /tmp/pq-about.json THIRD-PARTY-LICENSES
+	@rm -f /tmp/pq-about.json
+	@echo "licenses: wrote THIRD-PARTY-LICENSES ($$(wc -l < THIRD-PARTY-LICENSES) lines)"
+
 # -- Documentation ------------------------------------------------------------
 
 docs: build demos

@@ -1,0 +1,31 @@
+Third-Party Licenses
+====================
+
+pq statically links the crates listed below. Each crate is distributed under
+the license(s) shown; the full license text for each family follows.
+
+Where a crate offers a choice of licenses (e.g. "MIT OR Apache-2.0"), every
+license it offers is listed here rather than a single one being picked -
+this file makes no legal judgement about which option a downstream user
+should rely on.
+
+Summary
+-------
+{{#each overview}}
+- {{{name}}}: {{count}} crate(s)
+{{/each}}
+
+================================================================================
+
+{{#each licenses}}
+--------------------------------------------------------------------------------
+{{{name}}} ({{id}})
+
+Used by:
+{{#each used_by}}
+  - {{crate.name}} {{crate.version}}
+{{/each}}
+
+{{{text}}}
+
+{{/each}}
