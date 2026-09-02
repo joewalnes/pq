@@ -3,6 +3,19 @@
 ## 2026-09-02
 
 - Close a hole in the release `preflight` version check: `grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'` accepted `v01.2.3` (npm and PyPI both silently rewrite the leading zero, splitting one release across differing version strings) and `v999999999999999999999.0.0` (accepted here, then rejected by npm's own "Invalid version" *after* `release` had already cut an immutable GitHub release — the exact burned-version scenario preflight exists to prevent). Also replaced grep's per-line `^...$` anchoring, which a multi-line input could satisfy one line at a time, with bash `[[ =~ ]]` matched against the whole string. New check: no leading zeros, 9 digits max per component; rejection message explains why and how to retag
+
+- Fix errors printing the same sentence twice, e.g. `Error: Failed to read
+  parquet file 'x.parquet': EOF: file size of 0 is less than footer: EOF:
+  file size of 0 is less than footer`. `pq-core`'s error type interpolated
+  its own cause into its message *and* implemented `source()`, so `anyhow`'s
+  `{:#}` (used for every top-level error) printed the cause a second time.
+  Affects every command whose error carries a filesystem, Parquet, Arrow, or
+  JSON cause (missing/corrupt files, malformed JSON, IO failures); context
+  like the filename and the underlying cause is unchanged, just no longer
+  duplicated
+
+## 2026-09-02
+
 - Fix `pq sql` (and `pq cat --where`) silently dropping duplicate-named columns. A file with two `id` columns now queries as `id` and `id_1`, with the rename announced on stderr; previously one column vanished and `SELECT id` returned the *other* one's data, exit 0, no warning. Duplicate-named files are read into memory rather than streamed, so they lose predicate/projection pushdown; files with unique column names are unaffected
 
 - **Breaking:** removed `-q`/`--quiet` and `-v`/`--verbose` — both were parsed and stored but never read by any command; behaviorally confirmed identical output with and without them. Inventing real quiet/verbose semantics is a product decision that wasn't made, so this deletes rather than fakes it. A script passing either flag now gets `error: unexpected argument ... found` and exit code 2 instead of the flag being silently ignored

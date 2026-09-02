@@ -2740,6 +2740,7 @@ dependencies = [
 name = "pq-core"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "arrow",
  "async-trait",
  "bytesize",

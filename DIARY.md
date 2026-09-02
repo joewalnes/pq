@@ -39,6 +39,37 @@ git's ref-name rules to keep a `$GITHUB_OUTPUT` injection closed. Bash's
 literal `$'v1.2.3\nversion=9.9.9'` REF is now rejected outright rather than
 partially matched.
 
+## 2026-09-02 — Display shouldn't repeat what source() already says
+
+`PqError`'s variants did both things `thiserror` lets you do with a cause:
+interpolate it into the `Display` message (`"Failed to open file '{path}':
+{source}"`) *and* implement `source()` (implied by the field named `source`,
+or by `#[from]`). Each is fine alone. Together, any printer that walks the
+chain — `anyhow`'s `{:#}`, which `pq-cli/src/main.rs` uses for every
+top-level error — prints the cause once from the variant's own `Display` and
+again from the chain walk: `Error: Failed to read parquet file 'x.parquet':
+EOF: file size of 0 is less than footer: EOF: file size of 0 is less than
+footer`. Confirmed by reading `anyhow`'s `fmt.rs`: the alternate `Display`
+writes the top error, then `write!(f, ": {}", cause)` for every entry in
+`chain().skip(1)`, i.e. every level `source()` reaches.
+
+The fix is the convention `thiserror`'s own docs assume you're following:
+`Display` renders only the variant's own words, `source()` carries the rest,
+and whoever prints the top-level error is responsible for deciding how much
+of the chain to show. Six variants had this shape (two with an explicit
+`source` field, four via `#[from]`); all six lost only the redundant text —
+the filename, the OS error, the parquet detail all still reach the user,
+now once. Guarded two ways: `pq-core/src/error.rs` unit-tests each variant's
+`Display` against its own `source()` text one hop at a time, and
+`pq-cli/tests/error_display_tests.rs` runs real failing commands and checks
+the end-to-end shape (no sentence immediately repeated after `": "`) —
+wording-agnostic, so it also catches a future variant built the same broken
+way. One planned repro (`import -o /dev/stdout`) turned out to depend on an
+unrelated race in `output_guard.rs`'s handling of `/dev/fd/*` under
+concurrent load, so it's kept `#[ignore]`d for manual reproduction rather
+than shipped as a gate that reports the state of the dice; a same-bug,
+deterministic repro (`-o` naming an existing directory) carries the guard.
+
 ## 2026-09-02 — A rename you can see beats a column you can't reach
 
 Parquet lets two top-level columns share a name. `pq cat` and `pq export` carried

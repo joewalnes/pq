@@ -6,7 +6,7 @@ Tests that error messages are clear and exit codes are correct.
 
 ```console
 $ pq info nonexistent.parquet  # [exit: 1]
-Error: Failed to open file 'nonexistent.parquet': No such file or directory (os error 2): No such file or directory (os error 2)
+Error: Failed to open file 'nonexistent.parquet': No such file or directory (os error 2)
 ```
 
 ## Invalid format flag
@@ -51,19 +51,19 @@ Error: DataFusion error: SQL error: ParserError("Expected: identifier, found: EO
 
 ```console
 $ pq schema missing.parquet  # [exit: 1]
-Error: Failed to open file 'missing.parquet': No such file or directory (os error 2): No such file or directory (os error 2)
+Error: Failed to open file 'missing.parquet': No such file or directory (os error 2)
 ```
 
 ## Head on missing file
 
 ```console
 $ pq head missing.parquet  # [exit: 1]
-Error: Failed to open file 'missing.parquet': No such file or directory (os error 2): No such file or directory (os error 2)
+Error: Failed to open file 'missing.parquet': No such file or directory (os error 2)
 ```
 
 ## Count on missing file
 
 ```console
 $ pq count missing.parquet  # [exit: 1]
-Error: Failed to open file 'missing.parquet': No such file or directory (os error 2): No such file or directory (os error 2)
+Error: Failed to open file 'missing.parquet': No such file or directory (os error 2)
 ```
