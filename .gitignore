@@ -5,3 +5,4 @@
 /docs/build
 __pycache__/
 /dist
+.wrangler/
