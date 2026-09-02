@@ -16,3 +16,6 @@ thiserror.workspace = true
 bytesize.workspace = true
 chrono.workspace = true
 async-trait.workspace = true
+
+[dev-dependencies]
+anyhow.workspace = true
