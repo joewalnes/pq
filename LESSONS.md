@@ -32,3 +32,67 @@ the failure.
 green result must be named and forbidden in the project's agent config, not merely left
 undocumented. Assume every documented affordance adjacent to a red gate will be discovered.
 **Scope:** general
+
+## A harness must assert the identity of its subject, not merely its availability
+**What happened:** Twice in one session, a check reported numbers while never reaching the
+code under test. (1) `tests/golden/run.py` resolved the binary by putting its *directory* on
+`PATH` and invoking bare `pq`. With a missing or typo'd `PQ`, `pq` fell through to a stale
+`brew`-installed build: `PQ=/nonexistent/pq ... run.py help-output.md` printed **"4 passed,
+1 failed"** — four blocks passing against a binary never compiled from this tree. It exited 1
+only incidentally, because one block happened to differ; had the stale binary matched, the
+suite would have reported fully green. (2) The foreman's own CLI drive of a data-loss fix
+reported four clean "INPUT INTACT" results. The shell is zsh, which does not word-split
+unquoted variables, so `$PQ $cmd` passed the whole command string as a single filename and
+every invocation died in argument parsing. Both looked exactly like passes.
+**What it cost:** Nearly ratified a fix on evidence that touched none of the changed code.
+Caught only because the two results disagreed with a third measurement.
+**The rule that would have prevented it:** A test that cannot reach its subject must fail
+loudly, not pass. Resolving a subject by *name* through an ambient search path is the failure
+mode — it silently substitutes a different instrument and still produces a number. Assert the
+identity of what you are testing (absolute path, and check it is the artefact you just built),
+and check stderr, not just exit codes. When a measurement looks clean, ask what it would have
+printed had the subject never been invoked at all.
+**Scope:** general
+
+## An intermittent gate reports the state of the dice, not the state of the code
+**What happened:** The merge gate passed on one merge, then failed on the next — a merge that
+changed only YAML and prose and could not possibly have broken a Rust test. Because that
+failure was *impossible*, it got investigated instead of retried, and the investigation found
+the gate had been non-deterministic all along: the `nested_jq` tests failed ~40% of runs
+(measured 4/10 at the exact commit the gate had just declared green). `cli_tests` regenerates
+an untracked fixture via `pq import`, and the truncate-before-write bug left a window where
+the output file existed but was empty, which the `if parquet.exists()` guard then accepted.
+**What it cost:** One merge was gated and declared green on a coin flip. Had the next merge's
+failure been plausible rather than impossible, the standard response — rerun the flake — would
+have buried it, and the crew would have spent the session unable to distinguish real breakage
+from noise.
+**The rule that would have prevented it:** A gate is a measurement, and a measurement taken
+once has no error bar. When a gate fails on a change that cannot have caused it, that is
+evidence about the gate, never about the change — never retry it, always explain it. Establish
+a flake rate by repetition before trusting a green, and treat "passed once" as unverified.
+**Scope:** general
+
+## Verifying a fix on the cases it was designed to fix proves only that it was written
+**What happened:** A fix replaced "truncate the destination, then write" with "stage to a
+sibling, then rename over the destination", to stop `pq merge a.parquet b.parquet -o a.parquet`
+destroying its own input. The foreman verified it by driving exactly that: every in-place
+command, correct row counts, no litter. It passed, and was merged and pushed. An adversarial
+round then broke it in minutes by attacking what the *new mechanism* needs rather than what the
+old bug did. `rename()` requires write permission on the **directory**; `File::create()`
+required it on the **file** — so the fix walked straight through a `chmod 444` that the old
+code had refused, silently, exit 0, and then copied mode 0444 onto the replacement so `ls -l`
+still showed the file as protected. Separately, the guard's `Err(_) => return write(dest_path)`
+fallback meant any failure to create the staging file silently reverted to the original
+destructive path, leaving the worst bug of the round — a silent, exit-0, emptied CSV — fully
+reachable via a read-only parent directory, a 254-character filename, or stale staging litter
+plus pid reuse.
+**What it cost:** A silent, irreversible data-loss regression reached `origin/main`. The
+happy-path verification was real and correct; it was simply blind by construction.
+**The rule that would have prevented it:** When a fix changes the *mechanism*, the old bug's
+test cases no longer bound the risk. Ask what the new mechanism requires that the old one did
+not — different syscall, different permission, different resource, a new failure branch — and
+attack those. Give particular weight to any fallback path: a `catch`/`Err(_)` that quietly
+resumes the behaviour the fix existed to remove converts a fix into a narrowing, and narrowing
+is not fixing. Schedule the adversarial pass against the *previous* round's fixes as
+standing work, not as a treat for spare capacity.
+**Scope:** general
