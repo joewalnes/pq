@@ -32,6 +32,31 @@
   `-o /dev/...` path sits on that difference; the test prints the observed
   bytes when it disagrees.
 
+- Fix `stats --describe` silently combining the wrong physical columns
+  when two files hold a duplicate column name in different physical
+  orders. Order-independent schema comparison (landed earlier today) paired
+  duplicate-name columns via `Schema::index_of`, which always returns the
+  *first* field of a given name — so with `d1 = a,a,x` and
+  `d2 = x,a,a` (same multiset of columns, different order), every "a" in
+  `d2` resolved to the same physical column: the second `a` row reported
+  `min=100 max=1300 mean=700.0`, drawing `[1100,1200,1300]` into both `a`
+  rows while `[70,80,90]` never appeared in the output at all. Exit 0, no
+  warning. pyarrow ground truth for that second `a` is `min=70 max=300
+  mean=140.0`. Fixed by resolving duplicate-named columns by (name,
+  occurrence) — the same identity `write_output::union_columns`/
+  `column_indices` already use for CSV/table output — instead of
+  reinventing a second answer to the same question. Also closes a gap this
+  fix's own first draft introduced: the "already in order" fast path
+  compared column names only, so a duplicate name whose type was permuted
+  across files (file A `a:Int64,a:Utf8`; file B `a:Utf8,a:Int64` — same
+  sorted multiset, so the pre-existing schema guard doesn't catch it)
+  skipped the reorder path's new type check and surfaced as a raw
+  `arrow::compute::concat` error instead of naming the actual duplicate
+  column and occurrence; the fast path now checks type too. See
+  `crates/pq-cli/src/commands/describe.rs`'s `reorder_batch_to_schema` for
+  the full reasoning, including why no case of "duplicate name, reordered"
+  needs to be refused as ambiguous once (name, occurrence) is the identity.
+
 - Release workflow: close the partial-publish hazard. `publish-npm` and
   `publish-pypi` ran in parallel, so a failure in either left the version
   live on one registry, absent from the other, and reusable on neither.

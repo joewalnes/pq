@@ -99,6 +99,63 @@ failure — a 31-byte status line over a 25-byte first row predicts exactly the
 observed "`id`:0 missing, `id`:2 present" — but this machine has no Linux, and
 CI is the only instrument that can confirm it.
 
+## 2026-09-02 — What "duplicate column, reordered" means, and why nothing needs refusing
+
+`stats --describe`'s order-independent schema comparison (landed earlier the
+same day) paired duplicate-named columns across files via `Schema::index_of`,
+which always resolves to the *first* field of a given name. Every occurrence
+of a repeated name beyond the first silently collapsed onto that one physical
+column: `d1 = a,a,x` combined with `d2 = x,a,a` reported the second `a` as
+`min=100 max=1300 mean=700.0` — pyarrow's ground truth is `min=70 max=300
+mean=140.0`. One physical column got double-counted, another vanished, exit 0.
+
+**The identity decision.** The fix resolves duplicate names by (name,
+occurrence), reusing `write_output::union_columns`/`column_indices` — the
+same unit CSV/table output already use for exactly this question — rather
+than inventing a second answer. The brief asked whether some duplicate-name
+reorderings are "genuinely ambiguous" and should be refused rather than
+guessed (e.g. `[a,a,x]` vs `[a,x,a]`, where a unique column sits *between*
+two occurrences of a repeated name, contrasted with `[a,a,x]` vs `[x,a,a]`,
+where it doesn't). Worked through both: "occurrence" is each file's own
+encounter order among same-named fields, and encounter order is a property
+of a single file's own column list — unaffected by which other columns are
+interposed, in either file, between two occurrences of a repeated name. So
+`[a,a,x]` vs `[a,x,a]` resolves through the identical (name, occurrence)
+rule with the identical confidence as `[a,a,x]` vs `[x,a,a]`: first `a`
+pairs with first `a`, second with second, full stop. There is no case in
+this family that is *more* ambiguous than another — only cases where a
+convention has to be picked instead of verified (Parquet carries no
+information distinguishing two same-named, same-typed columns from each
+other), and this project already picked that convention for CSV/table.
+Refusing here while answering there for the same question would be exactly
+the "two answers" failure mode this fix was told to avoid.
+
+**What is refused instead.** The schema pre-check compares *sorted*
+(name, `DataType`) pairs, so it cannot tell that a repeated name's own types
+are merely permuted across files — file A `a:Int64,a:Utf8`, file B
+`a:Utf8,a:Int64` sort to the same multiset. Matching by occurrence would then
+pair `Int64` with `Utf8`, which is genuinely a mismatch, not a convention
+choice — reused occurrence order doesn't determine *how the pairing should
+turn out*, it just decides which two columns are being compared, and the
+comparison itself either agrees or doesn't. Added an explicit per-occurrence
+type check inside `reorder_batch_to_schema` for this.
+
+**Caught by manual repro, not by the guard suite:** my first version of that
+type check had a hole. The "already realigned, no-op" fast path compared
+column *names* only across positions; for the type-permuted case above every
+position already matched by name, so the fast path returned early and never
+reached the new type check at all. The failure still happened — `concat`
+refuses to concatenate different-`DataType` arrays — but as a raw Arrow
+message instead of one naming the actual duplicate column and occurrence.
+Found by hand-running the CLI against the type-permuted fixture before
+writing the corresponding test, not by the test itself; the fast path now
+checks type as well as name. Recorded here because it is the kind of gap
+`LESSONS.md`'s "verifying a fix on the cases it was designed to fix" entry
+describes: the type check was correct in isolation and untested against the
+one new branch (the fast path) the surrounding rewrite also touched.
+
+---
+
 ## 2026-09-02 — Two registries, no transaction: what the release workflow can and cannot promise
 
 `publish-npm` and `publish-pypi` were parallel siblings. Either could fail

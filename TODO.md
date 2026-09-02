@@ -24,6 +24,26 @@
 
 - [ ] P2: `-o /dev/stdout` (or `/dev/stderr`) **appended** to a file destroys the file's prior content on Linux — Found 2026-09-02 while fixing the status-line bug above; deliberately not fixed there. `pq export f -o /dev/stdout -f jsonl >> out.jsonl` is correct on macOS (measured: a 12-byte `PRE-EXISTING` line survived and the rows were appended, 88 bytes total) because opening `/dev/fd/1` on devfs is a `dup` that inherits the append-mode description. On Linux `/dev/stdout` is `/proc/self/fd/1`, and pq reaches it via `std::fs::File::create` — `O_WRONLY|O_CREAT|O_TRUNC` — which re-opens the backing file and truncates it, so the user's prior content is gone and the shell's `>>` is silently defeated. **Not measured on Linux** (no Linux machine on this run); predicted from `/proc/self/fd` semantics, and the platform half of the prediction is now asserted by `output_devfd_tests::dev_fd_alias_open_semantics`, so CI states it. The proper fix is for a destination that names a descriptor the process already holds to be *written through that descriptor* rather than re-opened by name — which would also make the two platforms agree — but that means changing `File::create(path)` in `export.rs::write_rows`, `write_output.rs`'s two text branches, and `pq_core::writer::write_batches`, i.e. a different mechanism in a different crate from the status-line fix. Wants its own change and its own guard.
 
+- [x] P1: `stats --describe` silently combined the wrong physical columns
+  when two files hold a duplicate column name in different physical
+  orders — Fixed. See CHANGELOG.md 2026-09-02. The order-independent
+  schema comparison landed earlier the same day paired duplicate-named
+  columns via `Schema::index_of`, which always resolves to the *first*
+  field of a given name; `d1 = a,a,x` combined with `d2 = x,a,a` reported
+  the second `a` as `min=100 max=1300 mean=700.0` (pyarrow ground truth:
+  `min=70 max=300 mean=140.0`) — one physical column double-counted,
+  another dropped entirely, exit 0. Fixed by matching duplicate names by
+  (name, occurrence), the same identity `write_output::union_columns`/
+  `column_indices` already use for CSV/table output, plus an explicit
+  per-occurrence type check (a duplicate name's types can be permuted
+  across files in a way the schema multiset guard alone cannot see).
+  Guards: `crates/pq-cli/tests/describe_tests.rs` (8 new tests — reordered
+  duplicates matching pyarrow, same-order control, 3+ occurrences,
+  duplicates plus multiple unique columns, differing duplicate counts
+  refused, `--sample-size` interaction, type-permuted duplicates refused,
+  single-file control); the 5 tests that exercise the reorder path
+  independently confirmed to fail against the pre-fix binary.
+
 - [x] P1: `pq sql --help`'s advertised examples all failed, and its glob-support claim was false — Fixed. See CHANGELOG.md/DIARY.md 2026-09-02. Two follow-on gaps deliberately left open:
   - [ ] P3: duplicate-top-level-column-name protection (`RenamedDuplicatesTable`) is not extended to glob-matched multi-file tables — a glob whose matched files individually have duplicate column names still silently collapses them the way plain `Target::Other` locations always have (this is not a regression from the glob fix; every previously-unclassified location had this same gap already). Would need a per-matched-file schema read analogous to `reject_directory_with_duplicate_columns`, adapted from an object-store listing to a plain `Vec<PathBuf>`.
   - [ ] P3: the new `crates/pq-cli/tests/help_examples_tests.rs` guard only extracts and runs `pq sql "..."` examples. Every other subcommand's `long_about`/`after_help` (`jq`, `grep`, `select`, ...) can drift the same way `sql`'s did and nothing would catch it — extending the guard needs a fixture matching each subcommand's own example columns (nested structs/arrays for `jq`, specific column names for `grep`/`select`), which is why it wasn't done here as a drive-by.

@@ -1,9 +1,19 @@
+use std::collections::HashMap;
 use std::io::Write;
 
 use arrow::array::*;
 use arrow::datatypes::*;
 
 use crate::output::Format;
+
+// `reorder_batch_to_schema` below resolves duplicate-named columns by
+// (name, occurrence) rather than by name alone. This is the same identity
+// unit `write_output::union_columns`/`column_indices` already use to align
+// CSV/table output across files with duplicate column names — reused here
+// rather than reinvented, per the project's own lesson that two answers to
+// one question ("what does column identity mean when a name repeats?") is
+// how bugs get born.
+use super::write_output::{column_indices, union_columns};
 
 #[derive(Debug, serde::Serialize)]
 pub struct ColumnDescription {
@@ -437,33 +447,130 @@ fn field_multiset(schema: &Schema) -> Vec<(&str, &DataType)> {
     pairs
 }
 
-/// Permute `batch`'s columns into `canonical`'s field order by name. A
-/// no-op (returns `batch` unchanged) when the batch's fields are already in
-/// that order, which covers the overwhelmingly common case (every file
-/// agrees on order) without paying for a projection.
+/// Permute `batch`'s columns into `canonical`'s field order by (name,
+/// occurrence). A no-op (returns `batch` unchanged) when the batch's fields
+/// are already in that order, which covers the overwhelmingly common case
+/// (every file agrees on order) without paying for a projection.
+///
+/// **Why (name, occurrence) and not name alone.** The previous
+/// implementation resolved each canonical field with `Schema::index_of`,
+/// which returns the *first* field of a given name. Parquet legally permits
+/// duplicate column names, so with a repeated name every occurrence beyond
+/// the first resolved to that same first index: the projection then
+/// selected one physical column multiple times and never selected at least
+/// one other, which `concat` cannot detect (it received a same-shaped,
+/// same-typed input) and silently produced a wrong count/min/max/mean built
+/// from the wrong data — not a refusal, not an error, just a wrong number.
+/// Reproduction: `d1` = `a,a,x` = `[1,2,3],[100,200,300],[7,8,9]`, `d2` =
+/// `x,a,a` = `[11,12,13],[1100,1200,1300],[70,80,90]` (same multiset,
+/// different physical order). `index_of("a")` on `d2` always returns the
+/// position of `d2`'s *first* `a` (`[1100,1200,1300]`), so the second `a`
+/// column's own stats were computed from `[100,200,300]` doubled up with
+/// `[1100,1200,1300]` while `[70,80,90]` never appeared anywhere in the
+/// output. pyarrow ground truth for that second `a` is min 70 / max 300 /
+/// mean 140.0.
+///
+/// Keying on (name, occurrence) — the same identity unit
+/// `write_output::union_columns`/`column_indices` already use for CSV/table
+/// output — restores positional identity: the *k*-th field named `a` in
+/// `canonical` is matched to the *k*-th field named `a` in `batch`,
+/// regardless of what other columns sit between occurrences in either
+/// file's own layout. This is a deliberate, documented convention, not a
+/// verified fact: Parquet carries no information that distinguishes same-
+/// named, same-typed columns from each other, so "first `a` corresponds to
+/// first `a`" is a choice, not a certainty. It is the same choice CSV/table
+/// output already makes for the identical question, and refusing here while
+/// answering it there would be a second, disagreeing answer to one
+/// question. `[a,a,x]` vs `[x,a,a]` and `[a,a,x]` vs `[a,x,a]` are both
+/// resolved by this rule with equal confidence: "occurrence" is each file's
+/// own encounter order among same-named fields, which is unaffected by
+/// which other columns are interposed, so there is no meaningfully
+/// "more ambiguous" case among same-multiset permutations for this
+/// function to refuse.
+///
+/// What this function *does* refuse: a (name, occurrence) pairing that
+/// disagrees on `DataType`. `schemas_concat_compatible`'s multiset check
+/// compares *sorted* (name, `DataType`) pairs, so it cannot catch a file
+/// where a repeated name's own types are merely permuted among its
+/// occurrences (e.g. file A has `a:Int64` then `a:Utf8`; file B has
+/// `a:Utf8` then `a:Int64` — both sort to the same multiset). Matching by
+/// occurrence order would then pair `Int64` with `Utf8`. `concat` would
+/// eventually catch that (it refuses to concatenate arrays of different
+/// `DataType`s) but with a raw Arrow error, once record-batch-internal
+/// positions have already been shuffled — checked explicitly and up front
+/// here instead, so the failure names the actual duplicate column and
+/// occurrence rather than surfacing however far downstream `concat` happens
+/// to notice.
 ///
 /// Only ever called after `schemas_concat_compatible` has confirmed the
-/// batch's schema has exactly the same (name, `DataType`) pairs as
-/// `canonical`, so `Schema::index_of` below is expected to succeed for
-/// every field; a failure here indicates that invariant was violated by the
-/// caller, not a normal data condition, so it is propagated as an error
-/// rather than panicking.
-fn reorder_batch_to_schema(batch: RecordBatch, canonical: &Schema) -> anyhow::Result<RecordBatch> {
+/// batch's schema has exactly the same (name, `DataType`) *multiset* as
+/// `canonical`, so every canonical (name, occurrence) pair is expected to
+/// have a same-named match in `batch`; a missing match here indicates that
+/// invariant was violated by the caller, not a normal data condition, so it
+/// is propagated as an error rather than panicking.
+fn reorder_batch_to_schema(
+    batch: RecordBatch,
+    canonical: &SchemaRef,
+) -> anyhow::Result<RecordBatch> {
     let batch_schema = batch.schema();
+    // Names AND types must line up position-by-position for this to be a
+    // true no-op. Name alone is not enough: a duplicate name's own
+    // occurrences can have their types permuted across files in a way that
+    // still lines up name-for-name by position (see the type-mismatch
+    // paragraph above) while disagreeing on type — checking name only here
+    // would wave that batch through unprojected and let the type mismatch
+    // surface later as a raw `concat` error instead of the clear one below.
     let already_in_order = batch_schema
         .fields()
         .iter()
         .zip(canonical.fields())
-        .all(|(a, b)| a.name() == b.name());
+        .all(|(a, b)| a.name() == b.name() && a.data_type() == b.data_type());
     if already_in_order {
         return Ok(batch);
     }
-    let indices: Vec<usize> = canonical
-        .fields()
-        .iter()
-        .map(|f| batch_schema.index_of(f.name()))
-        .collect::<Result<_, _>>()?;
-    Ok(batch.project(&indices)?)
+
+    let columns = union_columns(std::iter::once(canonical.clone()));
+    let batch_indices = column_indices(&columns, &batch_schema);
+
+    let mut occurrence_of: HashMap<&str, usize> = HashMap::new();
+    let mut projection = Vec::with_capacity(columns.len());
+    for (canonical_idx, (column, batch_idx)) in columns.iter().zip(&batch_indices).enumerate() {
+        let occurrence = occurrence_of.entry(column.name()).or_insert(0);
+        let this_occurrence = *occurrence;
+        *occurrence += 1;
+
+        let batch_idx = batch_idx.ok_or_else(|| {
+            anyhow::anyhow!(
+                "internal error: column '{}' (occurrence {this_occurrence}) not \
+                 found while realigning a batch already confirmed schema-compatible",
+                column.name(),
+            )
+        })?;
+
+        let canonical_field = canonical.field(canonical_idx);
+        let batch_field = batch_schema.field(batch_idx);
+        if batch_field.data_type() != canonical_field.data_type() {
+            let name = column.name();
+            let canonical_type = canonical_field.data_type();
+            let batch_type = batch_field.data_type();
+            anyhow::bail!(
+                "Cannot describe files with different schemas: column \
+                 '{name}' (occurrence {this_occurrence} of that name) has \
+                 type {canonical_type:?} in one file's column order and \
+                 {batch_type:?} in another's. `stats --describe` matches \
+                 duplicate-named columns across files by order of \
+                 occurrence (1st '{name}' matches 1st '{name}', 2nd matches \
+                 2nd, ...) once every other check has passed; this pairing \
+                 disagrees on type, so combining it would require guessing \
+                 which physical column is 'the same' — refusing instead of \
+                 producing a number built from mismatched data.",
+            );
+        }
+
+        projection.push(batch_idx);
+    }
+
+    Ok(batch.project(&projection)?)
 }
 
 /// Render a schema's fields as "name:type, name:type, ..." for the
