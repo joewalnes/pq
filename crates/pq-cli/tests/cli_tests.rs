@@ -437,7 +437,7 @@ fn test_merge_union() {
         .output()
         .unwrap();
     let row: serde_json::Value =
-        serde_json::from_str(&String::from_utf8(cat_output.stdout).unwrap().trim()).unwrap();
+        serde_json::from_str(String::from_utf8(cat_output.stdout).unwrap().trim()).unwrap();
     assert!(row["age"].is_null(), "subset row should have null age");
     assert!(row["score"].is_null(), "subset row should have null score");
 }

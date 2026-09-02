@@ -20,7 +20,7 @@ fn main() {
             // required arg) would be rewritten to `pq view sql` and silently
             // try to open a file called "sql".
             let first_positional = args[1..].iter().find(|a| !a.starts_with('-'));
-            let is_subcommand = first_positional.map_or(false, |a| is_known_subcommand(a));
+            let is_subcommand = first_positional.is_some_and(|a| is_known_subcommand(a));
 
             if args.len() > 1 && !is_subcommand {
                 let mut new_args = vec![args[0].clone(), "view".to_string()];

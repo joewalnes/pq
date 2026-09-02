@@ -107,7 +107,7 @@ fn write_batches_text(
                 }
                 for row in &rows {
                     if let Some(obj) = row.as_object() {
-                        let vals: Vec<String> = obj.values().map(|v| csv_escape(v)).collect();
+                        let vals: Vec<String> = obj.values().map(csv_escape).collect();
                         writeln!(writer, "{}", vals.join(","))?;
                     }
                 }
@@ -144,7 +144,7 @@ fn write_values_text(
                         writeln!(writer, "{}", keys.join(","))?;
                         wrote_header = true;
                     }
-                    let vals: Vec<String> = obj.values().map(|v| csv_escape(v)).collect();
+                    let vals: Vec<String> = obj.values().map(csv_escape).collect();
                     writeln!(writer, "{}", vals.join(","))?;
                 } else {
                     // Non-object values: write as single column
