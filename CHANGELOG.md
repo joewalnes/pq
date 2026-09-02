@@ -2,6 +2,23 @@
 
 ## 2026-09-02
 
+- Fix `pq sql`/`pq cat --where` silently dropping the *cause* of every file
+  read failure. Earlier today's fix that stopped `pq-core` doubling error
+  causes moved a `PqError`'s cause out of `Display` and into `source()` only
+  — but `crates/pq-query/src/sql.rs` was converting those errors with a bare
+  `e.to_string()` (`SqlError::Other`), which reads `Display` and never walks
+  `source()`, so the cause was silently lost, not merely doubled: a corrupt
+  footer, an empty file, and (elsewhere) permission-denied all reduced to
+  the identical, useless `Failed to read parquet file '...'`. `pq cat`
+  itself was unaffected — it keeps the error as a real `anyhow` chain
+  instead of stringifying it. Fixed with a small chain-walking formatter
+  (`describe_with_cause`) used at the three `arrow_schema_of`/`materialize`
+  conversion sites, so the resulting string already contains the full cause
+  and nothing is left for a chain-walking printer to double. Guard:
+  `crates/pq-cli/tests/error_display_tests.rs::sql_and_cat_where_preserve_the_read_failure_cause`,
+  confirmed to fail against the pre-fix code; `sql_error_chains_are_not_doubled_or_tripled`
+  still passes unchanged.
+
 - Release workflow: close the partial-publish hazard. `publish-npm` and
   `publish-pypi` ran in parallel, so a failure in either left the version
   live on one registry, absent from the other, and reusable on neither.

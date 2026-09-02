@@ -58,6 +58,36 @@ pub enum SqlError {
     Other(String),
 }
 
+/// Render `e`'s own message together with its full `source()` chain into one
+/// string, e.g. `Failed to read parquet file 'x': Parquet error: Invalid
+/// Parquet file. Corrupt footer`.
+///
+/// `SqlError::Other(String)` has no `source()` of its own (a bare `String`
+/// isn't an error), so any cause information not folded into that string at
+/// construction time is gone for good — `anyhow`'s `{:#}` in `pq-cli/main.rs`
+/// has nothing left to walk. This is what `pq_core::error::PqError` needs:
+/// since the fix that stopped its `Display` from redundantly embedding its
+/// own `source()`'s text (DIARY.md, 2026-09-02), `PqError::to_string()` alone
+/// is only the top-level message — `.map_err(|e| SqlError::Other(e.to_string()))`
+/// on such an error silently dropped the cause (e.g. why the parquet read
+/// failed), making corrupt, empty, and permission-denied files
+/// indistinguishable through `sql`/`cat --where`, though `cat` itself was
+/// unaffected because it keeps the error as a real `anyhow` chain instead of
+/// flattening it to a string. Walking the chain *here*, once, before
+/// collapsing to a string, restores the cause without reintroducing that
+/// doubling: the resulting string is a leaf with no further `source()`, so
+/// nothing downstream can walk into it and repeat any part of it.
+fn describe_with_cause(e: &(dyn std::error::Error + 'static)) -> String {
+    let mut msg = e.to_string();
+    let mut cause = e.source();
+    while let Some(c) = cause {
+        msg.push_str(": ");
+        msg.push_str(&c.to_string());
+        cause = c.source();
+    }
+    msg
+}
+
 impl From<datafusion::error::DataFusionError> for SqlError {
     fn from(e: datafusion::error::DataFusionError) -> Self {
         SqlError::DataFusion(e)
@@ -395,11 +425,11 @@ async fn arrow_schema_of(location: &str) -> std::result::Result<SchemaRef, SqlEr
     if source::is_url(location) {
         let schema = pq_core::async_reader::read_arrow_schema(location)
             .await
-            .map_err(|e| SqlError::Other(e.to_string()))?;
+            .map_err(|e| SqlError::Other(describe_with_cause(&e)))?;
         Ok(Arc::new(schema))
     } else {
         let (schema, _rows) = pq_core::reader::read_schema_and_row_count(Path::new(location))
-            .map_err(|e| SqlError::Other(e.to_string()))?;
+            .map_err(|e| SqlError::Other(describe_with_cause(&e)))?;
         Ok(schema)
     }
 }
@@ -599,7 +629,7 @@ impl RenamedDuplicatesTable {
         announce_renames(&self.display, &self.original, &self.renamed);
 
         let (batches, _) = pq_core::reader::open_batches(&self.read_from, &ReadOptions::default())
-            .map_err(|e| SqlError::Other(e.to_string()))?;
+            .map_err(|e| SqlError::Other(describe_with_cause(&e)))?;
         let relabelled = batches
             .into_iter()
             .map(|b| RecordBatch::try_new(self.renamed.clone(), b.columns().to_vec()))

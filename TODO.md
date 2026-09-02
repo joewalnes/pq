@@ -20,6 +20,8 @@
 
 ## Bugs
 
+- [x] P2: `pq sql`/`pq cat --where` silently dropped the *cause* of every file
+  read failure (regression) — Fixed. See CHANGELOG.md 2026-09-02.
 - [x] P1: `pq sql --help`'s advertised examples all failed, and its glob-support claim was false — Fixed. See CHANGELOG.md/DIARY.md 2026-09-02. Two follow-on gaps deliberately left open:
   - [ ] P3: duplicate-top-level-column-name protection (`RenamedDuplicatesTable`) is not extended to glob-matched multi-file tables — a glob whose matched files individually have duplicate column names still silently collapses them the way plain `Target::Other` locations always have (this is not a regression from the glob fix; every previously-unclassified location had this same gap already). Would need a per-matched-file schema read analogous to `reject_directory_with_duplicate_columns`, adapted from an object-store listing to a plain `Vec<PathBuf>`.
   - [ ] P3: the new `crates/pq-cli/tests/help_examples_tests.rs` guard only extracts and runs `pq sql "..."` examples. Every other subcommand's `long_about`/`after_help` (`jq`, `grep`, `select`, ...) can drift the same way `sql`'s did and nothing would catch it — extending the guard needs a fixture matching each subcommand's own example columns (nested structs/arrays for `jq`, specific column names for `grep`/`select`), which is why it wasn't done here as a drive-by.
