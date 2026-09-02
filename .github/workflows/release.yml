@@ -7,6 +7,24 @@ name: Release
 # `workflow_dispatch` is a re-run mechanism for an existing tag (pick the tag
 # in the ref selector); dispatched from a branch it fails in `preflight`
 # before any job can create or publish anything. See the `preflight` job.
+#
+# There is no atomic release across npm and PyPI, and this workflow does not
+# pretend otherwise. Two registries, no transaction between them, and neither
+# lets a version be withdrawn cleanly (npm `unpublish` is restricted to 72
+# hours; PyPI never). So the design goal is not atomicity, it is: (a) commit
+# nothing irreversible until everything that *can* be checked in advance has
+# been, (b) commit the irreversible things strictly one at a time in a fixed
+# order, so the set of reachable partial states is small and known, and (c)
+# leave the run's job summary holding an exact ledger of which registries got
+# the version, written as each publish succeeds rather than reconstructed
+# afterwards. The order of the irreversible half is:
+#
+#   package-check  ->  release  ->  publish-npm  ->  publish-pypi
+#   (nothing        (GitHub      (4 packages,      (3 wheels,
+#    committed)      release)     platform first)   verified after)
+#
+# See DIARY.md 2026-09-02 for the reasoning behind the order, and for what
+# each failure leaves behind.
 on:
   push:
     tags: ['v*']
@@ -236,12 +254,260 @@ jobs:
           name: ${{ matrix.asset }}
           path: ${{ matrix.asset }}
 
+  # Everything about this release that can be proven wrong *before* anything
+  # irreversible exists. Nothing here publishes; nothing here has a token.
+  #
+  # Why it exists: `publish-npm` and `publish-pypi` used to be parallel
+  # siblings of each other, both starting after `release` had already cut an
+  # immutable GitHub release. A failure inside either one — a packaging
+  # mistake, a missing build artifact, a version the registry rejects — landed
+  # the run in a state where the version was live on one registry, absent from
+  # the other, and reusable on neither. Every failure this job can detect is
+  # one that used to be detected halfway through the irreversible half.
+  #
+  # It is not a substitute for publishing: it cannot prove a credential works,
+  # cannot prove the registry is up in five minutes' time, and cannot make the
+  # two publishes atomic. It only shrinks the window.
+  package-check:
+    needs: [preflight, build, ci, licenses]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.preflight.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          # Deliberately no `registry-url:`. That input writes an .npmrc with
+          # an auth token placeholder; this job must never hold a credential,
+          # and `npm publish --dry-run` / `npm pack` do not need one.
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Download third-party licenses
+        uses: actions/download-artifact@v4
+        with:
+          name: third-party-licenses
+          path: .
+
+      # `build` succeeding is not the same as `build` having produced three
+      # binaries: a matrix leg that uploaded nothing still leaves this job's
+      # download step happy. Named explicitly, checked for non-emptiness.
+      - name: Assert every platform binary arrived
+        run: |
+          set -euo pipefail
+          missing=0
+          for b in pq-darwin-arm64 pq-linux-amd64 pq-linux-arm64; do
+            if [ ! -s "dist/$b" ]; then
+              echo "::error::Build artifact dist/$b is missing or empty."
+              missing=1
+            fi
+          done
+          if [ ! -s THIRD-PARTY-LICENSES ]; then
+            echo "::error::THIRD-PARTY-LICENSES is missing or empty; the licenses job's artifact did not arrive."
+            missing=1
+          fi
+          if [ "$missing" -ne 0 ]; then
+            echo "::error::Refusing to continue: a release built from an incomplete artifact set"
+            echo "::error::would publish some platforms and silently omit others."
+            exit 1
+          fi
+          echo "All three platform binaries and THIRD-PARTY-LICENSES are present."
+
+      # The reconciliation surface. Written to the job summary *before* any
+      # publish happens, so the run always carries a record of what the
+      # registries held at the moment the decision to publish was taken.
+      #
+      # This is also what makes a re-run after a partial publish safe and
+      # legible: it stops here, names the registry that already has the
+      # version, and creates nothing.
+      - name: Refuse to publish a version a registry already holds
+        run: |
+          set -euo pipefail
+          {
+            echo "## Registry state for \`${VERSION}\`, before publishing"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          bad=0
+
+          check_npm() {
+            pkg="$1"
+            # `npm view` exits non-zero for BOTH "no such version" and "could
+            # not reach the registry", so the two are told apart by the error
+            # code in its output. Anything that is neither a clean hit nor an
+            # explicit E404 counts as UNKNOWN and fails the run: publishing on
+            # an unverified registry state is precisely how a version ends up
+            # live on one registry and absent from the other.
+            if out=$(npm view "${pkg}@${VERSION}" version 2>&1); then
+              echo "::error::npm already holds ${pkg}@${VERSION} (registry reports '${out}')."
+              echo "- npm \`${pkg}@${VERSION}\` — **ALREADY PUBLISHED**" >> "$GITHUB_STEP_SUMMARY"
+              bad=1
+            elif printf '%s' "$out" | grep -q 'code E404'; then
+              echo "npm: ${pkg}@${VERSION} is not published."
+              echo "- npm \`${pkg}@${VERSION}\` — absent" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "::error::Could not determine whether npm holds ${pkg}@${VERSION}. Output was:"
+              printf '%s\n' "$out"
+              echo "- npm \`${pkg}@${VERSION}\` — **UNKNOWN** (registry query failed)" >> "$GITHUB_STEP_SUMMARY"
+              bad=1
+            fi
+          }
+
+          check_npm "@pqtool/darwin-arm64"
+          check_npm "@pqtool/linux-x64"
+          check_npm "@pqtool/linux-arm64"
+          check_npm "pqtool"
+
+          # PyPI's JSON API: 404 for an absent version (project or release),
+          # 200 for one that exists. curl exits non-zero only on a transport
+          # failure, in which case the assignment is overwritten with 000 and
+          # falls into the UNKNOWN branch below.
+          py_url="https://pypi.org/pypi/pqtool/${VERSION}/json"
+          code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 "$py_url") || code=000
+          case "$code" in
+            404)
+              echo "PyPI: pqtool ${VERSION} is not published."
+              echo "- PyPI \`pqtool ${VERSION}\` — absent" >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            200)
+              echo "::error::PyPI already holds pqtool ${VERSION} (${py_url} returned 200)."
+              echo "- PyPI \`pqtool ${VERSION}\` — **ALREADY PUBLISHED**" >> "$GITHUB_STEP_SUMMARY"
+              bad=1
+              ;;
+            *)
+              echo "::error::Could not determine whether PyPI holds pqtool ${VERSION}: ${py_url} returned HTTP ${code}."
+              echo "- PyPI \`pqtool ${VERSION}\` — **UNKNOWN** (HTTP ${code})" >> "$GITHUB_STEP_SUMMARY"
+              bad=1
+              ;;
+          esac
+
+          if [ "$bad" -ne 0 ]; then
+            {
+              echo
+              echo "**This run stopped here and published nothing.**"
+              echo
+              echo "A version that is already live on a registry can never be replaced:"
+              echo "npm \`unpublish\` is restricted to 72 hours, PyPI does not allow it at"
+              echo "all. If the list above shows the version live on one registry and"
+              echo "absent from the other, an earlier run published partially — that is the"
+              echo "state to recover from, and re-running this workflow cannot do it. Bump"
+              echo "the patch version, retag, and release again."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::Refusing to publish ${VERSION}; see the job summary for the per-registry state."
+            exit 1
+          fi
+
+          {
+            echo
+            echo "Neither registry holds \`${VERSION}\`. Safe to publish."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Byte-for-byte the same preparation publish-npm does, then `npm publish
+      # --dry-run`, which packs the tarball and validates the manifest without
+      # contacting the registry at all (verified locally: it succeeds against
+      # an unreachable registry). It catches a malformed manifest, a version
+      # npm would rewrite or reject, and — via the `npm pack` assertion below
+      # — a package that does not actually contain the binary.
+      - name: Dry-run the npm publishes
+        run: |
+          set -euo pipefail
+          chmod +x dist/*
+          for d in npm/darwin-arm64 npm/linux-arm64 npm/linux-x64 npm/pqtool; do
+            cp THIRD-PARTY-LICENSES "$d/"
+          done
+          # The three platform packages have no bin/ directory in git (git
+          # does not track empty directories), so it has to be created before
+          # the binary is copied in. Without this, the first `cp` in
+          # publish-npm fails — after the GitHub release already exists.
+          mkdir -p npm/darwin-arm64/bin npm/linux-x64/bin npm/linux-arm64/bin
+          cp dist/pq-darwin-arm64 npm/darwin-arm64/bin/pq
+          cp dist/pq-linux-amd64  npm/linux-x64/bin/pq
+          cp dist/pq-linux-arm64  npm/linux-arm64/bin/pq
+
+          for d in npm/darwin-arm64 npm/linux-x64 npm/linux-arm64; do
+            jq --arg v "$VERSION" '.version = $v' "$d/package.json" > "$d/tmp.json"
+            mv "$d/tmp.json" "$d/package.json"
+          done
+          jq --arg v "$VERSION" \
+            '.version = $v | .optionalDependencies["@pqtool/darwin-arm64"] = $v | .optionalDependencies["@pqtool/linux-x64"] = $v | .optionalDependencies["@pqtool/linux-arm64"] = $v' \
+            npm/pqtool/package.json > npm/pqtool/tmp.json
+          mv npm/pqtool/tmp.json npm/pqtool/package.json
+
+          for d in npm/darwin-arm64 npm/linux-x64 npm/linux-arm64 npm/pqtool; do
+            echo "--- $d"
+            ( cd "$d" && npm publish --dry-run --access public )
+            # npm normalises some versions silently (preflight rejects the
+            # ones it knows about); assert the manifest still says exactly
+            # what the tag said.
+            got=$(jq -r '.version' "$d/package.json")
+            if [ "$got" != "$VERSION" ]; then
+              echo "::error::$d/package.json says version '$got', expected '$VERSION'."
+              exit 1
+            fi
+            # An empty package publishes just as irreversibly as a good one.
+            # Assert the tarball really carries an executable.
+            ( cd "$d" && npm pack --dry-run --json > /tmp/pack.json )
+            if ! jq -e '.[0].files[] | select(.path == "bin/pq")' /tmp/pack.json > /dev/null; then
+              echo "::error::The $d tarball does not contain bin/pq."
+              jq -r '.[0].files[].path' /tmp/pack.json
+              exit 1
+            fi
+          done
+          echo "All four npm packages pack cleanly at ${VERSION}."
+
+      # Same for the wheels: build them exactly as publish-pypi will, then let
+      # twine's own metadata checker look at them.
+      - name: Dry-run the wheel build
+        run: |
+          set -euo pipefail
+          # Pinned so a twine release cannot change what this gate accepts.
+          # This job holds no credentials and never uploads; twine is used
+          # only for `check`.
+          python3 -m pip install --quiet 'twine==6.1.0'
+          chmod +x dist/*
+          python3 pypi/build_wheels.py --version "$VERSION" --binaries-dir dist/
+
+          # build_wheels.py *skips* a binary it cannot find, printing a note
+          # and exiting 0 — so an incomplete artifact set yields fewer wheels
+          # rather than an error. Count them.
+          shopt -s nullglob
+          wheels=(pypi/dist/*.whl)
+          if [ "${#wheels[@]}" -ne 3 ]; then
+            echo "::error::Expected 3 wheels, built ${#wheels[@]}: ${wheels[*]:-none}"
+            exit 1
+          fi
+          for tag in macosx_11_0_arm64 manylinux_2_17_x86_64 manylinux_2_17_aarch64; do
+            matches=(pypi/dist/pqtool-"$VERSION"-py3-none-*"$tag"*.whl)
+            if [ "${#matches[@]}" -ne 1 ]; then
+              echo "::error::Expected exactly one wheel for $tag at version $VERSION, found ${#matches[@]}."
+              exit 1
+            fi
+          done
+
+          # `twine check`, not `twine check --strict`: --strict promotes
+          # warnings to errors, and these wheels carry no long_description
+          # (they ship a binary, not a library), which is a warning. Plain
+          # `check` still fails on metadata twine considers invalid.
+          twine check pypi/dist/*.whl
+          echo "3 wheels built and accepted by twine check."
+
   release:
     # `licenses` because the release assets now carry LICENSE and
     # THIRD-PARTY-LICENSES: the curl-a-binary user is otherwise the one
     # channel that receives a statically-linked binary with no attribution
     # at all (npm packages and wheels already embed both).
-    needs: [preflight, build, ci, licenses]
+    #
+    # `package-check` because this job creates the first thing in the run that
+    # cannot be taken back. Everything checkable is checked before it.
+    needs: [preflight, build, ci, licenses, package-check]
     runs-on: ubuntu-latest
     # `gh release create` writes to the repo, so this job — and only this
     # job — needs contents: write. It creates one release for the tag that
@@ -315,8 +581,20 @@ jobs:
             --verify-tag \
             --latest
 
+  # First of the two registry publishes, and deliberately first rather than
+  # concurrent with PyPI: npm is the only one of the two with any escape
+  # hatch at all (`npm unpublish` works for 72 hours on a package nothing
+  # depends on; PyPI has no equivalent). If the second publish fails, the
+  # registry left holding the version alone should be the one that can, at a
+  # push, be cleaned up.
+  #
+  # Within the job, the three platform packages publish before `pqtool`. That
+  # order matters too: `pqtool` is the package users install, and it is the
+  # last thing to go live, so a failure part-way through leaves platform
+  # packages nobody resolves rather than a `pqtool` whose optionalDependencies
+  # do not exist.
   publish-npm:
-    needs: [preflight, build, release, ci, licenses]
+    needs: [preflight, build, release, ci, licenses, package-check]
     runs-on: ubuntu-latest
     # id-token for `npm publish --provenance`; contents: read for checkout.
     # No write scope: this job only reads the repo and pushes to npm.
@@ -363,20 +641,44 @@ jobs:
           set -euo pipefail
           chmod +x dist/*
 
+          # Each `npm publish` that succeeds appends its own line to the run's
+          # job summary, immediately. The summary is therefore an exact ledger
+          # of what is live: if a publish fails, the script stops here under
+          # `set -e` and the lines already written are precisely the packages
+          # that made it. Nothing has to reconstruct that afterwards, and no
+          # `if:` condition is needed to produce it.
+          {
+            echo "## npm"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          publish_one() {
+            dir="$1"; name="$2"
+            ( cd "$dir" && npm publish --provenance --access public )
+            echo "- \`${name}@${VERSION}\` — **PUBLISHED**" >> "$GITHUB_STEP_SUMMARY"
+          }
+
+          # git does not track empty directories, so npm/<platform>/bin/ does
+          # not exist in a fresh checkout — only npm/pqtool/bin/pq is
+          # committed. `mkdir -p` before the copy; without it the first `cp`
+          # below fails, and it fails *after* `release` has cut an immutable
+          # GitHub release for a version npm will then never receive.
+          mkdir -p npm/darwin-arm64/bin npm/linux-x64/bin npm/linux-arm64/bin
+
           # darwin-arm64
           cp dist/pq-darwin-arm64 npm/darwin-arm64/bin/pq
           jq --arg v "$VERSION" '.version = $v' npm/darwin-arm64/package.json > tmp.json && mv tmp.json npm/darwin-arm64/package.json
-          cd npm/darwin-arm64 && npm publish --provenance --access public && cd ../..
+          publish_one npm/darwin-arm64 "@pqtool/darwin-arm64"
 
           # linux-x64
           cp dist/pq-linux-amd64 npm/linux-x64/bin/pq
           jq --arg v "$VERSION" '.version = $v' npm/linux-x64/package.json > tmp.json && mv tmp.json npm/linux-x64/package.json
-          cd npm/linux-x64 && npm publish --provenance --access public && cd ../..
+          publish_one npm/linux-x64 "@pqtool/linux-x64"
 
           # linux-arm64
           cp dist/pq-linux-arm64 npm/linux-arm64/bin/pq
           jq --arg v "$VERSION" '.version = $v' npm/linux-arm64/package.json > tmp.json && mv tmp.json npm/linux-arm64/package.json
-          cd npm/linux-arm64 && npm publish --provenance --access public && cd ../..
+          publish_one npm/linux-arm64 "@pqtool/linux-arm64"
 
       - name: Publish main package
         env:
@@ -388,9 +690,25 @@ jobs:
             '.version = $v | .optionalDependencies["@pqtool/darwin-arm64"] = $v | .optionalDependencies["@pqtool/linux-x64"] = $v | .optionalDependencies["@pqtool/linux-arm64"] = $v' \
             package.json > tmp.json && mv tmp.json package.json
           npm publish --provenance --access public
+          echo "- \`pqtool@${VERSION}\` — **PUBLISHED** (this is the package \`npm install -g pqtool\` resolves)" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo
+            echo "All 4 npm packages are live at \`${VERSION}\`. npm \`unpublish\` is"
+            echo "possible for 72 hours from now and not afterwards."
+          } >> "$GITHUB_STEP_SUMMARY"
 
+  # Second and last of the registry publishes. `publish-npm` is in `needs:`
+  # on purpose: these two used to run in parallel, so npm-succeeds/PyPI-fails
+  # and PyPI-succeeds/npm-fails were both reachable, and neither the job graph
+  # nor anything else recorded which had happened. Sequencing removes one of
+  # those two states outright — PyPI can no longer be the lone holder of a
+  # version — and makes the remaining one legible from the job graph alone: if
+  # this job is red and `publish-npm` is green, npm has the version and this
+  # is where it stopped.
+  #
+  # It does not make the pair atomic. Nothing available here can.
   publish-pypi:
-    needs: [preflight, build, release, ci, licenses]
+    needs: [preflight, build, release, ci, licenses, package-check, publish-npm]
     runs-on: ubuntu-latest
     # id-token for PyPI trusted publishing (OIDC); contents: read for checkout.
     permissions:
@@ -423,6 +741,47 @@ jobs:
           set -euo pipefail
           chmod +x dist/*
           python3 pypi/build_wheels.py --version "$VERSION" --binaries-dir dist/
+          # build_wheels.py skips a binary it cannot find and still exits 0,
+          # so count what it produced rather than trusting its exit code. A
+          # short wheel set must not reach PyPI: the missing platform could
+          # never be added to this version afterwards.
+          shopt -s nullglob
+          wheels=(pypi/dist/*.whl)
+          if [ "${#wheels[@]}" -ne 3 ]; then
+            echo "::error::Expected 3 wheels, built ${#wheels[@]}: ${wheels[*]:-none}"
+            exit 1
+          fi
+          printf '%s\n' "${wheels[@]}"
+
+      # Written before the upload, not after, so that it is in the run summary
+      # whatever the upload does. If the step below dies, this is the note the
+      # human finds: it names what is already live, what is now unknown, and
+      # the one command that settles it. No `if:` and no post-hoc job is
+      # needed to produce it.
+      - name: Record the state this job is about to put at risk
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          wheels=(pypi/dist/*.whl)
+          {
+            echo "## PyPI"
+            echo
+            echo "About to upload ${#wheels[@]} wheels for \`pqtool ${VERSION}\`:"
+            echo
+            for w in "${wheels[@]}"; do echo "- \`$(basename "$w")\`"; done
+            echo
+            echo "**If the \`Publish to PyPI\` step below is red, this release is partial.**"
+            echo "npm already holds \`${VERSION}\` (see the npm section above); PyPI's state"
+            echo "is then whatever twine managed before it stopped. Settle it with:"
+            echo
+            echo '```'
+            echo "curl -s https://pypi.org/pypi/pqtool/${VERSION}/json | jq -r '.urls[].filename'"
+            echo '```'
+            echo
+            echo "Neither registry will accept \`${VERSION}\` a second time, so the recovery"
+            echo "is to bump the patch version, retag, and release again — not to re-run"
+            echo "this workflow, which will stop in \`package-check\` for exactly that reason."
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish to PyPI
         # Pinned to a commit: `release/v1` is a *branch*, and this step is
@@ -432,3 +791,64 @@ jobs:
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           packages-dir: pypi/dist/
+
+      # The upload step exiting 0 is a report about twine, not about PyPI.
+      # Ask PyPI. A green release should mean "verified present on both
+      # registries", not "both publish commands returned zero".
+      #
+      # If this step fails, the upload may still have succeeded — the message
+      # says so, because claiming otherwise would be its own false report.
+      - name: Verify PyPI serves every wheel
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          wheels=(pypi/dist/*.whl)
+          url="https://pypi.org/pypi/pqtool/${VERSION}/json"
+
+          served=""
+          for attempt in 1 2 3 4 5 6; do
+            body=$(curl -sS --max-time 30 "$url") || body=""
+            if [ -n "$body" ]; then
+              if served=$(printf '%s' "$body" | jq -r '.urls[].filename' 2>/dev/null) && [ -n "$served" ]; then
+                break
+              fi
+            fi
+            served=""
+            echo "PyPI has not served ${VERSION} yet (attempt ${attempt}/6); waiting."
+            sleep 10
+          done
+
+          missing=0
+          for w in "${wheels[@]}"; do
+            b=$(basename "$w")
+            if printf '%s\n' "$served" | grep -Fxq "$b"; then
+              echo "- \`${b}\` — **PUBLISHED**" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "::error::PyPI is not serving ${b} for pqtool ${VERSION}."
+              echo "- \`${b}\` — **NOT CONFIRMED**" >> "$GITHUB_STEP_SUMMARY"
+              missing=1
+            fi
+          done
+
+          if [ "$missing" -ne 0 ]; then
+            {
+              echo
+              echo "**The upload step reported success but PyPI is not serving every wheel.**"
+              echo "That means one of: the upload was partial, PyPI has not finished"
+              echo "propagating, or PyPI could not be reached from this runner at all."
+              echo "This step failing does **not** mean nothing was published —"
+              echo "check \`${url}\` by hand before doing anything else. What PyPI has"
+              echo "accepted cannot be withdrawn."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::Served by PyPI: ${served:-<nothing>}"
+            exit 1
+          fi
+
+          {
+            echo
+            echo "All ${#wheels[@]} wheels confirmed live on PyPI."
+            echo
+            echo "## Release complete"
+            echo
+            echo "\`${VERSION}\` is live on the GitHub release, npm, and PyPI."
+          } >> "$GITHUB_STEP_SUMMARY"
