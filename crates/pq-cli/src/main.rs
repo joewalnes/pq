@@ -39,6 +39,8 @@ fn main() {
         pq_core::source::set_debug(true);
     }
 
+    output::configure_color(&cli.color);
+
     let mode = OutputMode::detect(cli.output_format.as_ref());
     let format = Format::from_cli(cli.output_format.as_ref(), mode);
 

@@ -2,6 +2,8 @@
 
 ## 2026-09-02
 
+- **Breaking:** removed `-q`/`--quiet` and `-v`/`--verbose` — both were parsed and stored but never read by any command; behaviorally confirmed identical output with and without them. Inventing real quiet/verbose semantics is a product decision that wasn't made, so this deletes rather than fakes it. A script passing either flag now gets `error: unexpected argument ... found` and exit code 2 instead of the flag being silently ignored
+- `--color auto|always|never` is now real: table headers render bold+cyan when color is on. `auto` (the default) follows the no-color.org convention — any non-empty `NO_COLOR` disables color, otherwise it follows whether stdout is a real terminal — and `always`/`never` are explicit overrides that win regardless. Previously accepted and silently ignored, while `pq capabilities` claimed `"respects_no_color": true` with zero color output anywhere to respect
 - Fail a release before it starts if the `NPM_TOKEN` secret is missing, so the irreversible half (an immutable GitHub release, a burned version number) cannot run when the npm publish is already doomed. `NPM_TOKEN` does not currently exist in the repo, so today a `v0.1.0` tag would stop here
 - Pin the floating refs the release workflow trusted: `dtolnay/rust-toolchain@stable` and `pypa/gh-action-pypi-publish@release/v1` (both branches) to exact commits, and `cargo install cross --git` to an exact `--rev` with `--locked`, in both `release.yml` and the `Makefile`
 - Ship `LICENSE` and `THIRD-PARTY-LICENSES` as release assets, so the `curl`-a-binary install gets the same attribution npm packages and wheels already carry

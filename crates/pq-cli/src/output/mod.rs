@@ -4,6 +4,47 @@ pub mod table;
 
 use arrow::array::RecordBatch;
 use std::io::Write;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Whether renderers (currently just the table renderer) should emit ANSI
+/// color codes. Set once, early in `main()`, by `configure_color`, and read
+/// by `table::render_table` -- a process-global rather than a threaded
+/// parameter because `render_batches`/`render_table` are called from many
+/// command modules and a signature change would ripple across files outside
+/// this flag's scope.
+static COLOR_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Pure decision function, kept separate from env/TTY lookups so it can be
+/// unit-tested without mutating process-global state (env vars and the
+/// `COLOR_ENABLED` flag are both process-wide, so tests that poke them
+/// directly are order-dependent when run in parallel).
+///
+/// `--color=always`/`--color=never` are explicit user overrides and take
+/// priority even over `NO_COLOR`. `--color=auto` (the default) honors the
+/// no-color.org convention: a `NO_COLOR` environment variable with any
+/// non-empty value disables color, and otherwise color follows whether
+/// stdout is a terminal.
+pub fn resolve_color(mode: &crate::cli::ColorMode, no_color_set: bool, is_tty: bool) -> bool {
+    use crate::cli::ColorMode;
+    match mode {
+        ColorMode::Always => true,
+        ColorMode::Never => false,
+        ColorMode::Auto => !no_color_set && is_tty,
+    }
+}
+
+/// Resolve `--color` against the real environment and store the result for
+/// renderers to consult via `color_enabled()`. Must be called once, early
+/// in `main()`, before any output is produced.
+pub fn configure_color(mode: &crate::cli::ColorMode) {
+    let no_color_set = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
+    let is_tty = console::Term::stdout().is_term();
+    COLOR_ENABLED.store(resolve_color(mode, no_color_set, is_tty), Ordering::Relaxed);
+}
+
+pub fn color_enabled() -> bool {
+    COLOR_ENABLED.load(Ordering::Relaxed)
+}
 
 /// Detected output mode based on terminal/pipe and user flags
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -95,5 +136,36 @@ pub fn render_value(
             writeln!(writer)?;
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod color_tests {
+    use super::resolve_color;
+    use crate::cli::ColorMode;
+
+    #[test]
+    fn always_wins_over_no_color_and_non_tty() {
+        assert!(resolve_color(&ColorMode::Always, true, false));
+    }
+
+    #[test]
+    fn never_wins_over_tty_and_no_no_color() {
+        assert!(!resolve_color(&ColorMode::Never, false, true));
+    }
+
+    #[test]
+    fn auto_is_off_when_no_color_set_even_on_a_tty() {
+        assert!(!resolve_color(&ColorMode::Auto, true, true));
+    }
+
+    #[test]
+    fn auto_is_off_when_not_a_tty() {
+        assert!(!resolve_color(&ColorMode::Auto, false, false));
+    }
+
+    #[test]
+    fn auto_is_on_for_a_tty_with_no_color_unset() {
+        assert!(resolve_color(&ColorMode::Auto, false, true));
     }
 }

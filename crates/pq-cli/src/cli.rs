@@ -68,14 +68,6 @@ pub struct Cli {
     #[arg(long, global = true, default_value = "auto")]
     pub color: ColorMode,
 
-    /// Suppress non-essential output
-    #[arg(short, long, global = true)]
-    pub quiet: bool,
-
-    /// Increase verbosity
-    #[arg(short, long, global = true)]
-    pub verbose: bool,
-
     /// Log HTTP requests to stderr (ranges, sizes, timings)
     #[arg(long, global = true, hide = true)]
     pub debug: bool,

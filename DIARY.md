@@ -4,6 +4,23 @@ Latest entries first. Record significant decisions, architecture changes, and no
 
 ---
 
+## 2026-09-02 — Three flags nobody read
+
+`--color`, `-q`/`--quiet`, `-v`/`--verbose` were all declared, parsed, stored on
+`Cli`, and never read again — confirmed by grep across every crate and, more
+importantly, by diffing real output with and without each flag (identical
+bytes in every case). Two different responses seemed right depending on the
+flag. `--color` had a specific claim riding on it: `pq capabilities` already
+asserted `"respects_no_color": true`, which was flatly false — there was no
+color output anywhere in the renderer to respect or not. So `--color` got
+wired for real (bold+cyan table headers, gated on `auto`/`always`/`never`
+resolved against `NO_COLOR` and a real TTY check), making that claim true
+for the first time. `-q`/`-v` had no such anchor — nothing in this codebase
+ever promised a quiet or verbose mode, and inventing what they should do is a
+product decision, not a cleanup. Deleted instead of implemented. That's a
+real behavior change (clap now rejects them with exit 2) and is called out
+in the changelog rather than absorbed silently.
+
 ## 2026-09-02 — One version, derived once, and a release that refuses to start half-doomed
 
 Two jobs each running `date +%Y%m%d%H%M` looked like duplication. It was worse
