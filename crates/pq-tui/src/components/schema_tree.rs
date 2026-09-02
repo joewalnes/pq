@@ -52,6 +52,13 @@ impl SchemaTreeState {
         } else {
             0
         };
+        // `start` is derived from `selected`, which tracks the item count at
+        // the time it was last moved. If the schema is empty (a valid, if
+        // unusual, Parquet file can have zero columns) `items` is empty too,
+        // but `visible_height` can still be 0 (a collapsed/bordered pane),
+        // making `start` come out to 1 — one past an empty slice. Clamp
+        // rather than let `items[start..]` panic on an out-of-bounds start.
+        let start = start.min(self.items.len());
 
         let items: Vec<ListItem> = self.items[start..]
             .iter()
@@ -197,5 +204,76 @@ fn format_short_type(dt: &DataType) -> String {
         DataType::Struct(_) => "struct".to_string(),
         DataType::Map(_, _) => "map".to_string(),
         other => format!("{other:?}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::widgets::{Block, Borders};
+    use ratatui::Terminal;
+
+    /// A schema with zero columns is a valid Parquet file (pyarrow will
+    /// happily write `pa.schema([])`), so `SchemaTreeState::new` can
+    /// legitimately produce an empty `items` list. Pair that with a pane
+    /// squeezed down to zero inner rows (a bordered block whose outer area
+    /// is 0 or 1 tall — easy to hit by resizing a terminal) and `start`
+    /// computes to 1 while `items.len()` is 0: `items[1..]` on an empty
+    /// slice. This must not panic.
+    #[test]
+    fn render_empty_schema_in_zero_height_pane_does_not_panic() {
+        let state = SchemaTreeState {
+            items: Vec::new(),
+            selected: 0,
+        };
+        let backend = TestBackend::new(20, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let area = Rect::new(0, 0, 20, 1);
+        let block = Block::default().borders(Borders::ALL);
+        // Sanity check: a 1-row area with borders on all sides has 0 inner
+        // rows, which is the condition that makes `start` overshoot.
+        assert_eq!(block.inner(area).height, 0);
+
+        terminal
+            .draw(|frame| {
+                state.render(frame, area, block);
+            })
+            .unwrap();
+    }
+
+    /// Same shape of bug: `selected` inconsistent with `items` (`scroll_down`
+    /// never lets this happen today, but the render function shouldn't rely
+    /// on that as its only defense — a future reload-on-file-switch feature
+    /// could easily reintroduce it). `start` should clamp to the end of
+    /// `items`, not walk past it.
+    #[test]
+    fn render_selected_out_of_range_does_not_panic() {
+        let state = SchemaTreeState {
+            items: vec![
+                SchemaTreeItem {
+                    name: "a".to_string(),
+                    type_name: "int64".to_string(),
+                    nullable: false,
+                    depth: 0,
+                },
+                SchemaTreeItem {
+                    name: "b".to_string(),
+                    type_name: "int64".to_string(),
+                    nullable: false,
+                    depth: 0,
+                },
+            ],
+            selected: 2, // one past the last valid index (0..=1)
+        };
+        let backend = TestBackend::new(20, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let area = Rect::new(0, 0, 20, 1);
+
+        terminal
+            .draw(|frame| {
+                state.render(frame, area, Block::default().borders(Borders::ALL));
+            })
+            .unwrap();
     }
 }
