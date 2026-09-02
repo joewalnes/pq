@@ -12,7 +12,7 @@
 
 ## Tier 2 — Differentiation
 
-- [x] `describe <file>` — Statistical summary per column: count, nulls, null%, min, max, mean, stddev, distinct, top-K frequent values
+- [x] `stats --describe <file>` — Statistical summary per column: count, nulls, null%, min, max, mean, stddev, distinct, top-K frequent values (shipped as a flag on `stats`, not a standalone `describe` command)
 - [x] `grep <file> <pattern>` — Search across all columns for a regex match; supports `-i` case-insensitive, `--limit`, `-c` column filter
 - [x] `split <file>` — Split by row count (`--rows`) or partition key (`--partition-by col`); Hive-style partitioned output
 - [ ] `schema evolve <file>` — Add columns (`--add name:type`), drop (`--drop col`), rename (`--rename old:new`), cast types (`--cast col:type`)
@@ -26,6 +26,6 @@
 ## Infrastructure
 
 - [x] Streaming TUI — Lazy PageCache with background fetch thread; no row limit
-- [ ] `union <files...>` — Like merge but actually implements union-by-name (fill missing columns with nulls)
-- [ ] Progress bars on all transform commands (repack, sort, merge, convert, export, split)
+- [x] `union <files...>` — Already satisfied by `merge --schema-mode union` below: fills missing columns with nulls instead of adding a separate command (verified in `crates/pq-transform/src/merge.rs`'s `SchemaMode::Union` branch)
+- [ ] Progress bars on all transform commands (repack, sort, merge, import, export, split)
 - [x] Fix `merge --schema-mode union|intersect` — implemented: union adds null columns for missing fields, intersect keeps only common columns, strict rejects mismatches

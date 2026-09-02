@@ -10,6 +10,10 @@
   it with a stderr note, and an undetermined format is a hard error
   instead of a silent guess. Also fixed `export -f csv` to stdout, which
   had no CSV branch at all and silently emitted JSONL.
+- Fix `TODO.md`: `describe` doesn't exist as a standalone command (it's
+  `stats --describe`); the `union` command item was already satisfied by
+  `merge --schema-mode union`, not a separate TODO; one stale `convert`
+  reference updated to `import`
 
 ## 2026-09-02 (3)
 
