@@ -1,7 +1,8 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use tempfile::TempDir;
 
 fn pq() -> Command {
@@ -17,45 +18,43 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
+/// Directory for fixtures generated at test time. A real `TempDir`, held in
+/// a process-wide `OnceLock` so it is created at most once per test binary
+/// and cleaned up automatically on process exit — never written into the
+/// shared source tree, so parallel `cargo test` runs (and other worktrees
+/// checked out from the same repo) can't race on it or leave it dirty.
+fn generated_fixture_dir() -> &'static Path {
+    static DIR: OnceLock<TempDir> = OnceLock::new();
+    DIR.get_or_init(|| TempDir::new().expect("failed to create temp fixture dir"))
+        .path()
+}
+
+/// `test_data.parquet` is committed to git (`tests/fixtures/test_data.parquet`)
+/// specifically so the ~40 tests that use it don't each pay for a `pq import`
+/// subprocess: it's a fixed, deterministic 100-row file that never needs to
+/// change alongside test code. Tests only ever *read* it — nothing regenerates
+/// it into the source tree. If it's missing (e.g. a corrupted checkout), fail
+/// loudly with the exact command to restore it, instead of silently writing a
+/// fresh copy back into `tests/fixtures/`.
 fn fixture_path() -> String {
-    workspace_root()
-        .join("tests/fixtures/test_data.parquet")
-        .to_str()
-        .unwrap()
-        .to_string()
+    let parquet = workspace_root().join("tests/fixtures/test_data.parquet");
+    assert!(
+        parquet.exists(),
+        "tracked fixture missing: {}\n\
+         Regenerate it with:\n\
+         \x20 python3 tests/fixtures/gen_test_data.py\n\
+         \x20 cargo run -- import tests/fixtures/test_data.jsonl -o tests/fixtures/test_data.parquet\n\
+         then `git add` the result — it is meant to be committed, not generated per test run.",
+        parquet.display()
+    );
+    parquet.to_str().unwrap().to_string()
 }
 
 fn ensure_fixture() {
-    let parquet = workspace_root().join("tests/fixtures/test_data.parquet");
-    if parquet.exists() {
-        return;
-    }
-    let jsonl_path = workspace_root().join("tests/fixtures/test_data.jsonl");
-    if !jsonl_path.exists() {
-        let mut data = String::new();
-        for i in 0..100 {
-            let city = ["New York", "London", "Tokyo", "Paris", "Berlin"][i % 5];
-            data.push_str(&format!(
-                r#"{{"id":{},"name":"user_{}","age":{},"score":{},"active":{},"city":"{}"}}"#,
-                i,
-                i,
-                20 + (i % 50),
-                i as f64 * 1.5,
-                i % 3 != 0,
-                city
-            ));
-            data.push('\n');
-        }
-        fs::write(&jsonl_path, data).unwrap();
-    }
-    pq().args([
-        "import",
-        jsonl_path.to_str().unwrap(),
-        "-o",
-        parquet.to_str().unwrap(),
-    ])
-    .assert()
-    .success();
+    // test_data.parquet is tracked (see `fixture_path` above); this just
+    // turns "missing" into a clear panic instead of an obscure downstream
+    // failure in whichever test happened to run first.
+    fixture_path();
 }
 
 #[test]
@@ -556,28 +555,38 @@ fn test_tagline_matches_between_help_and_capabilities() {
 
 // ── Complex / nested type tests ─────────────────────────────────────────
 
+/// Unlike `test_data.parquet`, `nested_data.parquet` is NOT tracked in git —
+/// only its `nested_data.jsonl` source is. It's generated once per test
+/// binary process into `generated_fixture_dir()` (a real `TempDir`, torn
+/// down automatically on exit) rather than into `tests/fixtures/` in the
+/// source tree, so it can never show up as an untracked file in `git
+/// status` and parallel test runs across worktrees can't collide on it.
 fn nested_fixture_path() -> String {
-    workspace_root()
-        .join("tests/fixtures/nested_data.parquet")
+    static PARQUET: OnceLock<PathBuf> = OnceLock::new();
+    PARQUET
+        .get_or_init(|| {
+            let jsonl_path = workspace_root().join("tests/fixtures/nested_data.jsonl");
+            let parquet = generated_fixture_dir().join("nested_data.parquet");
+            pq().args([
+                "import",
+                jsonl_path.to_str().unwrap(),
+                "-o",
+                parquet.to_str().unwrap(),
+            ])
+            .assert()
+            .success();
+            parquet
+        })
         .to_str()
         .unwrap()
         .to_string()
 }
 
 fn ensure_nested_fixture() {
-    let parquet = workspace_root().join("tests/fixtures/nested_data.parquet");
-    if parquet.exists() {
-        return;
-    }
-    let jsonl_path = workspace_root().join("tests/fixtures/nested_data.jsonl");
-    pq().args([
-        "import",
-        jsonl_path.to_str().unwrap(),
-        "-o",
-        parquet.to_str().unwrap(),
-    ])
-    .assert()
-    .success();
+    // Generation now happens lazily inside `nested_fixture_path` itself;
+    // this is kept only so existing call sites (`ensure_nested_fixture();
+    // ... &nested_fixture_path()`) don't all need editing.
+    nested_fixture_path();
 }
 
 #[test]

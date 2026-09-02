@@ -15,9 +15,10 @@
 
 use assert_cmd::Command;
 use predicates::prelude::*;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process;
-use std::sync::Once;
+use std::sync::{Once, OnceLock};
+use tempfile::TempDir;
 
 fn pq() -> Command {
     assert_cmd::cargo_bin_cmd!("pq")
@@ -32,13 +33,52 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
+/// `test_data.parquet` is committed to git — see the matching comment in
+/// `cli_tests.rs::fixture_path`. It never needs generating here.
 fn fixture_path(name: &str) -> String {
-    workspace_root()
-        .join("tests/fixtures")
-        .join(name)
-        .to_str()
-        .unwrap()
-        .to_string()
+    let path = workspace_root().join("tests/fixtures").join(name);
+    assert!(
+        path.exists(),
+        "tracked fixture missing: {} (it should be committed to git)",
+        path.display()
+    );
+    path.to_str().unwrap().to_string()
+}
+
+/// Directory for fixtures generated at test time, never written into the
+/// shared source tree. Same rationale and pattern as
+/// `cli_tests.rs::generated_fixture_dir` — this is a *separate* test
+/// binary/process, so it gets its own `TempDir` rather than sharing one.
+fn generated_fixture_dir() -> &'static Path {
+    static DIR: OnceLock<TempDir> = OnceLock::new();
+    DIR.get_or_init(|| TempDir::new().expect("failed to create temp fixture dir"))
+        .path()
+}
+
+/// `nested_data.parquet` is NOT tracked in git — only `nested_data.jsonl`
+/// is. Previously this file relied on `cli_tests.rs` having already
+/// generated `tests/fixtures/nested_data.parquet` as a side effect of an
+/// unrelated test binary running first (`make test-integration` runs only
+/// `cargo test --test remote_tests`, so that side effect never actually
+/// happened — this was a latent bug: uploading a file that doesn't exist).
+/// Generate it here instead, once per process, into a private temp dir.
+fn nested_local_fixture_path() -> PathBuf {
+    static PARQUET: OnceLock<PathBuf> = OnceLock::new();
+    PARQUET
+        .get_or_init(|| {
+            let jsonl = workspace_root().join("tests/fixtures/nested_data.jsonl");
+            let parquet = generated_fixture_dir().join("nested_data.parquet");
+            pq().args([
+                "import",
+                jsonl.to_str().unwrap(),
+                "-o",
+                parquet.to_str().unwrap(),
+            ])
+            .assert()
+            .success();
+            parquet
+        })
+        .clone()
 }
 
 /// SeaweedFS filer HTTP endpoint for range-request reads.
@@ -109,7 +149,10 @@ fn ensure_remote_fixtures() {
             .status();
 
         s3_upload(&fixture_path("test_data.parquet"), "test_data.parquet");
-        s3_upload(&fixture_path("nested_data.parquet"), "nested_data.parquet");
+        s3_upload(
+            nested_local_fixture_path().to_str().unwrap(),
+            "nested_data.parquet",
+        );
     });
 }
 
@@ -121,7 +164,7 @@ fn ensure_remote_fixtures() {
 #[ignore]
 fn test_http_info() {
     ensure_remote_fixtures();
-    pq().args(["info", &http_url("test_data.parquet"), "-O", "json"])
+    pq().args(["info", &http_url("test_data.parquet"), "-f", "json"])
         .assert()
         .success()
         .stdout(predicate::str::contains("\"num_rows\": 100"));
@@ -131,7 +174,7 @@ fn test_http_info() {
 #[ignore]
 fn test_http_schema() {
     ensure_remote_fixtures();
-    pq().args(["schema", &http_url("test_data.parquet"), "-O", "table"])
+    pq().args(["schema", &http_url("test_data.parquet"), "-f", "table"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Schema (6 columns)"));
@@ -146,7 +189,7 @@ fn test_http_head() {
         &http_url("test_data.parquet"),
         "-n",
         "3",
-        "-O",
+        "-f",
         "jsonl",
     ])
     .assert()
@@ -165,7 +208,7 @@ fn test_http_tail() {
         &http_url("test_data.parquet"),
         "-n",
         "2",
-        "-O",
+        "-f",
         "jsonl",
     ])
     .assert()
@@ -178,7 +221,7 @@ fn test_http_tail() {
 #[ignore]
 fn test_http_count() {
     ensure_remote_fixtures();
-    pq().args(["count", &http_url("test_data.parquet"), "-O", "json"])
+    pq().args(["count", &http_url("test_data.parquet"), "-f", "json"])
         .assert()
         .success()
         .stdout(predicate::str::contains("\"count\": 100"));
@@ -195,7 +238,7 @@ fn test_http_cat_with_columns() {
         "id,city",
         "-l",
         "2",
-        "-O",
+        "-f",
         "jsonl",
     ])
     .assert()
@@ -210,7 +253,7 @@ fn test_http_cat_with_columns() {
 #[ignore]
 fn test_http_stats() {
     ensure_remote_fixtures();
-    pq().args(["stats", &http_url("test_data.parquet"), "-O", "json"])
+    pq().args(["stats", &http_url("test_data.parquet"), "-f", "json"])
         .assert()
         .success()
         .stdout(predicate::str::contains("\"column_name\": \"id\""));
@@ -220,7 +263,7 @@ fn test_http_stats() {
 #[ignore]
 fn test_http_layout() {
     ensure_remote_fixtures();
-    pq().args(["layout", &http_url("test_data.parquet"), "-O", "json"])
+    pq().args(["layout", &http_url("test_data.parquet"), "-f", "json"])
         .assert()
         .success()
         .stdout(predicate::str::contains("\"num_row_groups\": 1"));
@@ -234,7 +277,7 @@ fn test_http_jq() {
         "jq",
         &http_url("test_data.parquet"),
         "{id, city}",
-        "-O",
+        "-f",
         "jsonl",
     ])
     .assert()
@@ -246,17 +289,26 @@ fn test_http_jq() {
 #[ignore]
 fn test_http_nested() {
     ensure_remote_fixtures();
+    // Checking only for the top-level "address" key would pass even if a
+    // struct-nested-in-struct or list-nested-in-struct got flattened or
+    // silently dropped while decoding the remote-fetched Arrow schema —
+    // exactly the failure class covered locally by
+    // pq-transform::schema_inference::tests::list_nested_in_struct_is_not_dropped.
+    // Assert on the doubly-nested `address.geo.lat` value instead, so a
+    // regression in remote nested-type handling actually fails this test.
     pq().args([
         "head",
         &http_url("nested_data.parquet"),
         "-n",
         "1",
-        "-O",
+        "-f",
         "jsonl",
     ])
     .assert()
     .success()
-    .stdout(predicate::str::contains("\"address\""));
+    .stdout(predicate::str::contains("\"address\""))
+    .stdout(predicate::str::contains("\"geo\":{\"lat\":47.6"))
+    .stdout(predicate::str::contains("\"tags\":[\"admin\",\"user\"]"));
 }
 
 // -------------------------------------------------------------------------
@@ -268,7 +320,7 @@ fn test_http_nested() {
 fn test_s3_info() {
     ensure_remote_fixtures();
     pq_s3()
-        .args(["info", &s3_url("test_data.parquet"), "-O", "json"])
+        .args(["info", &s3_url("test_data.parquet"), "-f", "json"])
         .assert()
         .success()
         .stdout(predicate::str::contains("\"num_rows\": 100"));
@@ -284,7 +336,7 @@ fn test_s3_head() {
             &s3_url("test_data.parquet"),
             "-n",
             "3",
-            "-O",
+            "-f",
             "jsonl",
         ])
         .assert()
@@ -299,7 +351,7 @@ fn test_s3_head() {
 fn test_s3_count() {
     ensure_remote_fixtures();
     pq_s3()
-        .args(["count", &s3_url("test_data.parquet"), "-O", "json"])
+        .args(["count", &s3_url("test_data.parquet"), "-f", "json"])
         .assert()
         .success()
         .stdout(predicate::str::contains("\"count\": 100"));
@@ -310,7 +362,7 @@ fn test_s3_count() {
 fn test_s3_schema() {
     ensure_remote_fixtures();
     pq_s3()
-        .args(["schema", &s3_url("test_data.parquet"), "-O", "table"])
+        .args(["schema", &s3_url("test_data.parquet"), "-f", "table"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Schema (6 columns)"));
@@ -326,11 +378,12 @@ fn test_s3_tail() {
             &s3_url("test_data.parquet"),
             "-n",
             "2",
-            "-O",
+            "-f",
             "jsonl",
         ])
         .assert()
         .success()
+        .stdout(predicate::str::contains("\"id\":98"))
         .stdout(predicate::str::contains("\"id\":99"));
 }
 
@@ -344,7 +397,7 @@ fn test_s3_jq() {
             &s3_url("test_data.parquet"),
             ".city",
             "-r",
-            "-O",
+            "-f",
             "jsonl",
         ])
         .assert()
@@ -359,7 +412,7 @@ fn test_s3_sql() {
     let url = s3_url("test_data.parquet");
     let query = format!("SELECT count(*) as n FROM '{url}'");
     pq_s3()
-        .args(["sql", &query, "-O", "jsonl"])
+        .args(["sql", &query, "-f", "jsonl"])
         .assert()
         .success()
         .stdout(predicate::str::contains("\"n\":100"));
@@ -377,7 +430,7 @@ fn test_s3_cat_with_where() {
             "city = 'Tokyo'",
             "-l",
             "3",
-            "-O",
+            "-f",
             "jsonl",
         ])
         .assert()
@@ -389,9 +442,25 @@ fn test_s3_cat_with_where() {
 #[ignore]
 fn test_s3_nested() {
     ensure_remote_fixtures();
+    // `info` only reports metadata (row/column counts), which a nested-type
+    // decode bug wouldn't necessarily touch — `info` on a file with silently
+    // dropped nested fields would still report the same num_rows/num_columns
+    // and this test would pass regardless of whether nested types actually
+    // decoded correctly. Read a row's actual nested content instead, the
+    // same way test_http_nested does for the filer path, so a struct- or
+    // list-nested-in-struct regression over the S3 gateway fails here.
     pq_s3()
-        .args(["info", &s3_url("nested_data.parquet"), "-O", "json"])
+        .args([
+            "head",
+            &s3_url("nested_data.parquet"),
+            "-n",
+            "1",
+            "-f",
+            "jsonl",
+        ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("\"num_rows\""));
+        .stdout(predicate::str::contains("\"address\""))
+        .stdout(predicate::str::contains("\"geo\":{\"lat\":47.6"))
+        .stdout(predicate::str::contains("\"tags\":[\"admin\",\"user\"]"));
 }
