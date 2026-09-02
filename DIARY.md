@@ -66,6 +66,29 @@ two orders of magnitude.
 
 ---
 
+## 2026-09-02 — Decimal JSON output: exact string for both widths, not "number where it fits"
+
+`Decimal256`'s JSON arm was flatly wrong (appended `scale` as text, after trimming
+the mantissa's trailing zeros — `123.45` and `123.00` both rendered as `"123.2"`).
+Fixing the arithmetic surfaced a real choice: what JSON type should a decimal be?
+`Decimal128` already emitted a JSON *number* via `v as f64`, exact up to `2^53`
+and silently wrong past it (`12345678901234567.89` → `1.2345678901234568e+16`;
+`-f csv` prints it correctly via arrow's own `ArrayFormatter`, so the bug was
+JSON-only).
+
+Considered: (a) string for both widths — lossless, but changes `Decimal128`'s
+existing JSON type, breaking for any consumer expecting a number; (b) number for
+both — keeps the shape, stays lossy past `2^53`, and `Decimal256`'s 76-digit
+precision hits that ceiling far more easily; (c) number when exact, string past
+`2^53` — correct, but the same field's JSON *type* would then depend on the row's
+value, which is worse for a machine consumer than either fixed choice.
+
+Chose (a). A decimal type's entire purpose is exact arithmetic, so correctness
+outranks shape-compatibility, and "silently loses the cents" is a worse
+breaking change to ship than "now a string." Implementation formats the
+unscaled integer's digit string directly — no float anywhere — so it is exact
+at any precision and identical in shape across both widths.
+
 ## 2026-09-02 — The preflight version check guarded the credential, not the version
 
 `preflight`'s job comment says "one source, one value," but its actual check —
