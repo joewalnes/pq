@@ -4,6 +4,59 @@ Latest entries first. Record significant decisions, architecture changes, and no
 
 ---
 
+## 2026-09-02 — A rename you can see beats a column you can't reach
+
+Parquet lets two top-level columns share a name. `pq cat` and `pq export` carried
+both through; `pq sql` returned one, exit 0, no warning — and the one it returned
+was the *second* column's data under the first column's name, so `SELECT id` on a
+two-`id` file quietly answered with the wrong column.
+
+I did not want to guess where that happened, so I instrumented it: a probe that
+printed the schema at each hop between the file and the result. The file has
+`["id", "id"]` (arrow-rs, no DataFusion). The `TableProvider` that
+`register_parquet` builds already has `["id"]`. That is the whole answer — the
+column is gone at *registration*, before any logical plan, projection or writer
+exists, which is why no output-side fix could ever have worked.
+`DFSchema::try_from` on the file's own schema returns `["id", "id"]` happily, so
+`DFSchema` — the suspect I had expected, since it documents a unique-name
+requirement — is innocent. The culprit is `ParquetFormat::infer_schema` ending in
+`Schema::try_merge`, whose `SchemaBuilder::try_merge` matches fields *by name*
+and merges the second into the first. pyarrow refuses the same file with
+"Can't unify schema with duplicate field names", which is the same operation
+being honest about it.
+
+The obvious repair is to hand `register_parquet` a pre-disambiguated schema via
+`ParquetReadOptions::schema`. I tried it and threw it away on the evidence. The
+provider then reports `["id", "id:1"]`, but the file reader still matches columns
+by name, finds no `id:1` in the file, and fills the column with nulls. It only
+errored in my probe because the fixture's fields are non-nullable; on a nullable
+column it would have produced a full column of NULLs — a fix that looks like it
+preserves data while destroying it. That is precisely the failure mode worth
+being paranoid about, and it was one probe away from being shipped.
+
+So: when a file's top-level names are not unique, and only then, pq reads it and
+registers it under unique names. The rename is deliberately visible, with a note
+on stderr, and it is *not* reversed on the way out. Reversing it would hand back
+a result set whose column names cannot be typed back into a query — the exact
+trap that made the second `id` unreachable — and it isn't reversible anyway, since
+a file may legitimately contain both `id` and `id_1`. The generator skips names
+already present in the file for that reason. The cost is real and worth stating:
+such a file goes through `MemTable`, so it is materialized and loses pushdown.
+Every file with unique names takes the old path untouched.
+
+Writing the fix was the easy half. The mechanism it introduced needed a
+metadata read the old path never did, and that broke something: a *directory*
+named `foo.parquet` is a valid DataFusion table (`ListingTable` reads every file
+under it), and reading it as a single parquet file fails with "Is a directory".
+`SELECT * FROM 'somedir.parquet'` went from working to exit 1. I found it by
+driving the fixed binary against a directory and comparing against a pre-fix
+build, which is the only way I would have found it — no test I wrote for the
+original bug goes anywhere near a directory. The check is now keyed on "is a
+regular file", never on the check having failed, so an unreadable *file* still
+errors out instead of quietly falling back to the behaviour this change exists
+to remove. Directories of duplicate-named files remain collapsed; that is logged
+rather than papered over.
+
 ## 2026-09-02 — One version, derived once, and a release that refuses to start half-doomed
 
 Two jobs each running `date +%Y%m%d%H%M` looked like duplication. It was worse
