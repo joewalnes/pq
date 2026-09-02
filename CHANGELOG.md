@@ -2,6 +2,9 @@
 
 ## 2026-09-02
 
+- Log two confirmed-but-unassigned findings surfaced by adversarial review: `stats --describe --sample-size` silently reports on the first file only, and the atomic output guard breaks hardlinks and drops xattrs/ACLs
+## 2026-09-02
+
 - Close a hole in the release `preflight` version check: `grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'` accepted `v01.2.3` (npm and PyPI both silently rewrite the leading zero, splitting one release across differing version strings) and `v999999999999999999999.0.0` (accepted here, then rejected by npm's own "Invalid version" *after* `release` had already cut an immutable GitHub release — the exact burned-version scenario preflight exists to prevent). Also replaced grep's per-line `^...$` anchoring, which a multi-line input could satisfy one line at a time, with bash `[[ =~ ]]` matched against the whole string. New check: no leading zeros, 9 digits max per component; rejection message explains why and how to retag
 
 - Fix errors printing the same sentence twice, e.g. `Error: Failed to read
