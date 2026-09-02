@@ -4,6 +4,45 @@ Latest entries first. Record significant decisions, architecture changes, and no
 
 ---
 
+## 2026-09-02 — Why a project with 14 successful releases has zero releases
+
+Recording this as evidence rather than preference, because it is the concrete
+argument for the release design the human chose.
+
+`release.yml` maintained a single mutable release tagged `latest`, and every run
+recreated it: `gh release delete latest --yes || true`, then
+`git push origin :refs/tags/latest || true`, then `gh release create latest`. That
+worked 14 times on 2026-04-11/12. On 2026-09-02, run `33579005702`, the delete
+succeeded and the recreate then failed:
+
+    HTTP 422: Validation Failed
+    pre_receive Repository rule violations found
+    Cannot create ref due to creations being restricted.
+    tag_name was used by an immutable release
+
+So a project with fourteen successful release runs now has **zero releases**, and
+the README's documented `curl` install URL returns 404. The workflow did not fail
+to create something new; it destroyed the only release it had and could not put it
+back. Both surrounding commands are `|| true`, so the destructive half could not
+fail loudly even in principle.
+
+The general shape is worth naming: a delete-then-recreate against a shared mutable
+name has a window where the artefact does not exist, and any failure in the second
+half is unrecoverable rather than merely unsuccessful. Idempotence was assumed
+because it had held fourteen times.
+
+Hence the chosen design: no mutable `latest` tag at all. Releases are immutable
+`v<semver>` tags pushed by hand, and the "newest release" pointer is GitHub's own
+`/releases/latest/download/<asset>` redirect, which needs no tag of that name and
+nothing to delete. `README.md` already used that pointer form, so it needs no
+change; the Homebrew formula in the separate `joewalnes/homebrew-tap` repo uses the
+`/releases/download/latest/` *tag* form and does.
+
+One correction to my own earlier record: I described the tag name `latest` as
+"permanently burned". The 422 above is real, but it was observed once and never
+retested, and observing a refusal once establishes only that it refused once. It is
+moot under this design, which never creates that tag again.
+
 ## 2026-09-02 — README's `-o`/`-O` format claim narrowed, not extended, to stay true
 
 The "make the docs true" pass a few entries below fixed `-f` handling for
