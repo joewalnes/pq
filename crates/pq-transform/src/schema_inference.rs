@@ -272,7 +272,19 @@ fn build_struct_child_array(
                 StructArray::try_new(child_fields.clone(), child_arrays, Some(null_buffer.into()))?;
             Ok(Arc::new(struct_array))
         }
-        DataType::List(inner_field) => build_list_child_array(name, inner_field, parent_values),
+        DataType::List(inner_field) => {
+            // Extract this field's array out of each parent object first.
+            // Passing `parent_values` straight through left
+            // `build_list_child_array` matching on the parent *objects*
+            // instead of the arrays inside them, so it saw no arrays at all
+            // and produced an all-NULL column — every list nested inside a
+            // struct was dropped, whatever its element types.
+            let child_values: Vec<Option<&Value>> = parent_values
+                .iter()
+                .map(|v| v.and_then(|obj| obj.get(name)))
+                .collect();
+            build_list_child_array(name, inner_field, &child_values)
+        }
         _ => {
             // Fallback: convert to string
             let arr: StringArray = parent_values
@@ -588,5 +600,34 @@ mod tests {
         // "hello" into "\"hello\"". This locks the un-quoted form in.
         let b = build(&[r#"{"v":"hello"}"#, r#"{"v":1}"#]);
         assert_eq!(column(&b, "v"), ["hello", "1"]);
+    }
+
+    // -----------------------------------------------------------------
+    // Lists nested inside structs were dropped wholesale, regardless of
+    // element type — a separate defect from the Utf8 widening above.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn list_nested_in_struct_is_not_dropped() {
+        let b = build(&[r#"{"o":{"l":["a","b"]}}"#, r#"{"o":{"l":["c"]}}"#]);
+        assert_eq!(column(&b, "o"), ["{l: [a, b]}", "{l: [c]}"]);
+    }
+
+    #[test]
+    fn list_nested_in_struct_keeps_mixed_element_values() {
+        let b = build(&[r#"{"o":{"l":["a","b"]}}"#, r#"{"o":{"l":[1,2]}}"#]);
+        assert_eq!(column(&b, "o"), ["{l: [a, b]}", "{l: [1, 2]}"]);
+    }
+
+    #[test]
+    fn list_nested_two_structs_deep_is_not_dropped() {
+        let b = build(&[r#"{"a":{"b":{"l":[1,2]}}}"#]);
+        assert_eq!(column(&b, "a"), ["{b: {l: [1, 2]}}"]);
+    }
+
+    #[test]
+    fn control_struct_holding_a_scalar_still_works() {
+        let b = build(&[r#"{"o":{"k":"a"}}"#, r#"{"o":{"k":"b"}}"#]);
+        assert_eq!(column(&b, "o"), ["{k: a}", "{k: b}"]);
     }
 }
