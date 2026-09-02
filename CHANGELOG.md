@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-09-02
+
+- Fix PyPI wheel: removed a `[console_scripts]` entry point that made pip
+  clobber the real `pq` binary with a broken Python shim, and fixed the
+  binary's zip permission bits so pip actually marks it executable
+- Add `pypi/build_wheels.py --self-test` regression guard for both of the above
+- Add `about.toml`/`about.hbs` (cargo-about config) and `make licenses` to
+  generate `THIRD-PARTY-LICENSES` for the workspace's dependencies
+- Ship `LICENSE` and `THIRD-PARTY-LICENSES` in the npm packages and PyPI wheel
+
 ## 2026-09-01
 
 - Add project process docs: CLAUDE.md, engineering diary, changelog
