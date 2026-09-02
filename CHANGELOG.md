@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-09-02 (3)
+
+- Give HTTP remote-file access real, running test coverage: 10 `test_http_*`
+  cases in `remote_tests.rs` now run against an in-process Range-supporting
+  HTTP server (no Docker needed) and are un-`#[ignore]`d, plus 3 new tests
+  for 404 / Range-disabled / truncated-response error paths. S3 tests are
+  untouched and remain `#[ignore]`d pending SeaweedFS/Docker.
+
 ## 2026-09-02 (2)
 
 - Fix `make licenses` leaving generated `THIRD-PARTY-LICENSES` files

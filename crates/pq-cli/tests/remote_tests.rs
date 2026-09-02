@@ -339,7 +339,7 @@ fn handle_connection(stream: TcpStream, state: Arc<ServerState>) {
     if reader.read_line(&mut request_line).unwrap_or(0) == 0 {
         return; // dummy shutdown-unblock connection, or client hung up
     }
-    let mut parts = request_line.trim().split_whitespace();
+    let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or("").to_string();
     let path = parts.next().unwrap_or("").to_string();
 
@@ -388,10 +388,8 @@ fn handle_connection(stream: TcpStream, state: Arc<ServerState>) {
                 match parse_range(rv, body.len()) {
                     Some((start, end)) => {
                         let slice = &body[start..=end];
-                        let extra = format!(
-                            "Content-Range: bytes {start}-{end}/{}\r\n",
-                            body.len()
-                        );
+                        let extra =
+                            format!("Content-Range: bytes {start}-{end}/{}\r\n", body.len());
                         if state.truncate_body.load(Ordering::SeqCst) {
                             let head = format!(
                                 "HTTP/1.1 206 Partial Content\r\nConnection: close\r\nContent-Length: {}\r\n{extra}\r\n",
@@ -484,10 +482,15 @@ fn test_http_info() {
 #[test]
 fn test_http_schema() {
     let server = start_default_server();
-    pq().args(["schema", &server.url_for("test_data.parquet"), "-f", "table"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Schema (6 columns)"));
+    pq().args([
+        "schema",
+        &server.url_for("test_data.parquet"),
+        "-f",
+        "table",
+    ])
+    .assert()
+    .success()
+    .stdout(predicate::str::contains("Schema (6 columns)"));
     assert_used_ranged_reads(&server);
 }
 
@@ -640,7 +643,10 @@ fn test_http_404_produces_clear_error() {
     .stderr(predicate::str::contains("panicked").not());
     // The 404 must actually have been served by our handler, not skipped.
     assert!(
-        server.requests().iter().any(|r| r.path == "/does-not-exist.parquet"),
+        server
+            .requests()
+            .iter()
+            .any(|r| r.path == "/does-not-exist.parquet"),
         "server never saw the request for the missing file: {:?}",
         server.requests()
     );

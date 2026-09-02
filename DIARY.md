@@ -4,6 +4,38 @@ Latest entries first. Record significant decisions, architecture changes, and no
 
 ---
 
+## 2026-09-02 — HTTP remote tests run for real, no Docker
+
+The previous entry accepted "remote regressions won't be caught by CI"
+because the only harness available was SeaweedFS via Docker. For the HTTP
+half that trade-off wasn't actually necessary: pq talks to HTTP via plain
+range requests, so a hand-rolled `std`-only HTTP/1.1 server (`TcpListener`
+on `127.0.0.1:0`, GET+HEAD, single-range `Range:`/`206`) is enough to
+exercise it, with no new dependency. Ported all 10 `test_http_*` cases
+onto it and un-`#[ignore]`d them — they now run in `cargo test --workspace`
+with nothing but the test binary. `test_s3_*` still needs SeaweedFS and
+stays `#[ignore]`d.
+
+The one bug this caught in itself, not in pq: the server's HEAD response
+carried Content-Length *twice* (once derived from the empty HEAD body,
+once from an `extra` header meant to hold the real size) — the HTTP
+client believed the first, saw a 0-byte object, and every ranged read
+failed before it started. Content-Length must be decoupled from the
+bytes actually written on the wire; a HEAD response describes a resource
+it isn't sending.
+
+Verified non-vacuousness by fault injection, reverted after each: serving
+`test_data.parquet` disabled-Range makes `test_http_info` fail (`object_store`
+treats a 200 reply to a Range request as an error, never a silent whole-file
+read); swapping in the wrong fixture makes `test_http_count` fail on the row
+count; pointing at an unreachable port fails loudly after retries rather than
+hanging or passing. Per-request logging on the server also shows pq's actual
+request shape: 1 HEAD + 2 ranged GETs (an 8-byte footer-length probe, then
+the footer) for metadata-only commands, +1 more ranged GET for row data on
+commands that read rows — never a full unranged download, and `cat -c` reads
+a visibly narrower byte range than a full-row read, so column projection is
+happening before the bytes leave the wire.
+
 ## 2026-09-01 — Remote-file tests stay `#[ignore]`d, not moved into the default suite
 
 `crates/pq-cli/tests/remote_tests.rs` (19 tests covering HTTP-range and S3
