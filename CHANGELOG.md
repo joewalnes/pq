@@ -2,6 +2,17 @@
 
 ## 2026-09-02
 
+- Fix `-o /dev/stdout` (and `/dev/stderr`, bare `/dev/fd/N`) failing 100% of
+  the time when redirected to a regular file, for `export`, `select`, `sql`,
+  `import`, `slice` and `merge` — "cannot create a temporary file next to
+  /dev/stdout". `output_guard::can_stage` resolved `/dev/stdout` to
+  `/dev/fd/1` and, seeing `fs::metadata` report a regular file (because the
+  shell had redirected fd 1 to one), tried to stage a sibling temp file
+  inside the synthetic `/dev/fd` directory, which devfs refuses.
+  `can_stage` now recognises descriptor aliases (`/dev/stdout`,
+  `/dev/stderr`, `/dev/fd/N`, and on Linux `/proc/self/fd/N`) up front and
+  writes directly to them instead of staging.
+
 - Fix `pq sql` error messages tripling for parser/type/schema errors (e.g.
   `DataFusion error: SQL error: ParserError("..."): SQL error:
   ParserError("..."): sql parser error: ...`). `SqlError::DataFusion`
