@@ -16,7 +16,7 @@
 //! identical-looking column lists.
 
 use arrow::array::{
-    Float64Array, Int64Array, RecordBatch, StringArray, TimestampMicrosecondArray,
+    Array, Float64Array, Int64Array, RecordBatch, StringArray, TimestampMicrosecondArray,
     TimestampMillisecondArray,
 };
 use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
@@ -40,6 +40,25 @@ fn write_batch(dir: &Path, name: &str, batch: RecordBatch) -> PathBuf {
     )
     .unwrap();
     out
+}
+
+/// Writes a file whose schema is exactly `columns.len()` nullable `Int64`
+/// fields, in the given physical order, letting a test spell out a
+/// duplicate-name schema (`("a", ..), ("a", ..), ("x", ..)`) explicitly
+/// without hand-writing `Field`/`RecordBatch` boilerplate at every call
+/// site.
+fn write_int_columns(dir: &Path, name: &str, columns: &[(&str, &[i64])]) -> PathBuf {
+    let fields: Vec<Field> = columns
+        .iter()
+        .map(|(n, _)| Field::new(*n, DataType::Int64, true))
+        .collect();
+    let arrays: Vec<Arc<dyn Array>> = columns
+        .iter()
+        .map(|(_, v)| Arc::new(Int64Array::from(v.to_vec())) as Arc<dyn Array>)
+        .collect();
+    let schema = Arc::new(Schema::new(fields));
+    let batch = RecordBatch::try_new(schema, arrays).unwrap();
+    write_batch(dir, name, batch)
 }
 
 fn pq() -> Command {
@@ -549,6 +568,439 @@ fn describe_duplicate_column_names_within_one_file_yields_one_row_per_column() {
     assert_eq!(cols[0]["max"], 3, "first x column's own data: {json}");
     assert_eq!(cols[1]["min"], 100, "second x column's own data: {json}");
     assert_eq!(cols[1]["max"], 300, "second x column's own data: {json}");
+}
+
+// ---------------------------------------------------------------------------
+// Duplicate column names, reordered ACROSS files.
+//
+// `describe_reordered_columns_same_names_are_unioned_correctly` above proves
+// reordering works when every name is unique, and
+// `describe_duplicate_column_names_within_one_file_yields_one_row_per_column`
+// proves duplicate names work within a single file (which never exercises
+// `reorder_batch_to_schema` at all: with one file there is nothing to
+// realign against). Neither combines "duplicate name" with "a later file's
+// physical column order differs from the first file's" — the exact
+// combination `reorder_batch_to_schema` exists to handle, and the one its
+// `Schema::index_of`-based implementation got wrong: `index_of` returns the
+// *first* field of a given name, so every occurrence of a repeated name
+// resolved to the same index, silently duplicating one physical column into
+// the projection while dropping another.
+//
+// Ground truth for every assertion below is computed by hand from the
+// literal input arrays (mirroring what `pyarrow.concat_tables` reports),
+// independently confirmed against pyarrow 21.0.0 for the exact `d1`/`d2`
+// fixture in `describe_duplicate_names_reordered_across_files_matches_pyarrow`
+// via `pyarrow.compute.min/max/mean` over the hand-built concatenation —
+// never by comparing pq's output against another pq invocation.
+// ---------------------------------------------------------------------------
+
+/// The reported bug, verbatim. `d1` = `a,a,x` = `[1,2,3],[100,200,300],[7,8,9]`.
+/// `d2` = `x,a,a` = `[11,12,13],[1100,1200,1300],[70,80,90]` — same multiset
+/// of columns as `d1`, different physical order. Confirmed against the
+/// pre-fix binary: it reported the second `a` as `min=100 max=1300
+/// mean=700.0`, drawing `[1100,1200,1300]` into both `a` rows and never
+/// reporting `[70,80,90]` anywhere, exit 0. pyarrow's ground truth for that
+/// second `a` (`[100,200,300]` concatenated with `[70,80,90]`) is `min=70
+/// max=300 mean=140.0`.
+#[test]
+fn describe_duplicate_names_reordered_across_files_matches_pyarrow() {
+    let dir = TempDir::new().unwrap();
+    let d1 = write_int_columns(
+        dir.path(),
+        "d1",
+        &[
+            ("a", &[1, 2, 3]),
+            ("a", &[100, 200, 300]),
+            ("x", &[7, 8, 9]),
+        ],
+    );
+    let d2 = write_int_columns(
+        dir.path(),
+        "d2",
+        &[
+            ("x", &[11, 12, 13]),
+            ("a", &[1100, 1200, 1300]),
+            ("a", &[70, 80, 90]),
+        ],
+    );
+
+    let json = describe_json(&[&d1, &d2], None);
+    let cols = json["columns"].as_array().unwrap();
+    assert_eq!(cols.len(), 3, "one row per physical column: {json}");
+    assert_eq!(cols[0]["column"], "a");
+    assert_eq!(cols[1]["column"], "a");
+    assert_eq!(cols[2]["column"], "x");
+
+    // 1st "a" across files: [1,2,3] + [1100,1200,1300].
+    assert_eq!(cols[0]["min"], 1, "1st 'a': {json}");
+    assert_eq!(cols[0]["max"], 1300, "1st 'a': {json}");
+    assert_eq!(cols[0]["mean"], 601.0, "1st 'a': {json}");
+
+    // 2nd "a" across files: [100,200,300] + [70,80,90] — the one the bug
+    // dropped entirely, replacing it with a second copy of the 1st "a"'s
+    // partner file. pyarrow ground truth: min=70, max=300, mean=140.0.
+    assert_eq!(
+        cols[1]["min"], 70,
+        "2nd 'a' must not be the bug's 100: {json}"
+    );
+    assert_eq!(
+        cols[1]["max"], 300,
+        "2nd 'a' must not be the bug's 1300: {json}"
+    );
+    assert_eq!(
+        cols[1]["mean"], 140.0,
+        "2nd 'a' must not be the bug's 700.0: {json}"
+    );
+
+    assert_eq!(cols[2]["min"], 7, "x: {json}");
+    assert_eq!(cols[2]["max"], 13, "x: {json}");
+    assert_eq!(cols[2]["mean"], 10.0, "x: {json}");
+}
+
+/// Control, matching the foreman's own verification: `d2` written in `d1`'s
+/// column order must produce byte-identical statistics to the reordered
+/// case above. If it doesn't, the reorder logic (not just this test) is
+/// wrong, since both files hold the same logical data.
+#[test]
+fn describe_duplicate_names_same_order_across_files_control() {
+    let dir = TempDir::new().unwrap();
+    let d1 = write_int_columns(
+        dir.path(),
+        "d1",
+        &[
+            ("a", &[1, 2, 3]),
+            ("a", &[100, 200, 300]),
+            ("x", &[7, 8, 9]),
+        ],
+    );
+    // Same data as `d2` above, but already in d1's (a, a, x) order.
+    let d2_in_order = write_int_columns(
+        dir.path(),
+        "d2",
+        &[
+            ("a", &[1100, 1200, 1300]),
+            ("a", &[70, 80, 90]),
+            ("x", &[11, 12, 13]),
+        ],
+    );
+
+    let json = describe_json(&[&d1, &d2_in_order], None);
+    let cols = json["columns"].as_array().unwrap();
+    assert_eq!(cols[0]["min"], 1, "{json}");
+    assert_eq!(cols[0]["max"], 1300, "{json}");
+    assert_eq!(cols[0]["mean"], 601.0, "{json}");
+    assert_eq!(cols[1]["min"], 70, "{json}");
+    assert_eq!(cols[1]["max"], 300, "{json}");
+    assert_eq!(cols[1]["mean"], 140.0, "{json}");
+    assert_eq!(cols[2]["min"], 7, "{json}");
+    assert_eq!(cols[2]["max"], 13, "{json}");
+    assert_eq!(cols[2]["mean"], 10.0, "{json}");
+}
+
+/// Three occurrences of the same name, reordered. `index_of`-based
+/// resolution collapses to the *first* occurrence for all three, so this
+/// pins the general (name, occurrence) counter rather than a rule that
+/// happens to work only for exactly two duplicates.
+#[test]
+fn describe_three_occurrences_of_one_name_reordered_across_files() {
+    let dir = TempDir::new().unwrap();
+    let d1 = write_int_columns(
+        dir.path(),
+        "d1",
+        &[
+            ("a", &[1, 2]),
+            ("a", &[10, 20]),
+            ("a", &[100, 200]),
+            ("x", &[1000, 1001]),
+        ],
+    );
+    let d2 = write_int_columns(
+        dir.path(),
+        "d2",
+        &[
+            ("x", &[1002, 1003]),
+            ("a", &[3, 4]),
+            ("a", &[30, 40]),
+            ("a", &[300, 400]),
+        ],
+    );
+
+    let json = describe_json(&[&d1, &d2], None);
+    let cols = json["columns"].as_array().unwrap();
+    assert_eq!(cols.len(), 4, "{json}");
+
+    // 1st "a": [1,2,3,4].
+    assert_eq!(cols[0]["min"], 1, "1st 'a': {json}");
+    assert_eq!(cols[0]["max"], 4, "1st 'a': {json}");
+    assert_eq!(cols[0]["mean"], 2.5, "1st 'a': {json}");
+    // 2nd "a": [10,20,30,40].
+    assert_eq!(cols[1]["min"], 10, "2nd 'a': {json}");
+    assert_eq!(cols[1]["max"], 40, "2nd 'a': {json}");
+    assert_eq!(cols[1]["mean"], 25.0, "2nd 'a': {json}");
+    // 3rd "a": [100,200,300,400].
+    assert_eq!(cols[2]["min"], 100, "3rd 'a': {json}");
+    assert_eq!(cols[2]["max"], 400, "3rd 'a': {json}");
+    assert_eq!(cols[2]["mean"], 250.0, "3rd 'a': {json}");
+    // x: [1000,1001,1002,1003].
+    assert_eq!(cols[3]["min"], 1000, "x: {json}");
+    assert_eq!(cols[3]["max"], 1003, "x: {json}");
+    assert_eq!(cols[3]["mean"], 1001.5, "x: {json}");
+}
+
+/// Duplicates plus more than one unique column, each moved to a different
+/// position and interleaved with the duplicate's own occurrences
+/// differently in each file — `[a,y,a,x]` vs `[x,a,y,a]`. Exercises that the
+/// (name, occurrence) identity is unaffected by what non-matching columns
+/// sit between a repeated name's own occurrences, or where the unique
+/// columns end up.
+#[test]
+fn describe_duplicate_names_with_multiple_unique_columns_reordered() {
+    let dir = TempDir::new().unwrap();
+    let d1 = write_int_columns(
+        dir.path(),
+        "d1",
+        &[
+            ("a", &[1, 2]),
+            ("y", &[50, 60]),
+            ("a", &[10, 20]),
+            ("x", &[900, 901]),
+        ],
+    );
+    let d2 = write_int_columns(
+        dir.path(),
+        "d2",
+        &[
+            ("x", &[902, 903]),
+            ("a", &[3, 4]),
+            ("y", &[70, 80]),
+            ("a", &[30, 40]),
+        ],
+    );
+
+    let json = describe_json(&[&d1, &d2], None);
+    let cols = json["columns"].as_array().unwrap();
+    assert_eq!(cols.len(), 4, "{json}");
+    assert_eq!(cols[0]["column"], "a");
+    assert_eq!(cols[1]["column"], "y");
+    assert_eq!(cols[2]["column"], "a");
+    assert_eq!(cols[3]["column"], "x");
+
+    assert_eq!(cols[0]["min"], 1, "1st 'a': {json}");
+    assert_eq!(cols[0]["max"], 4, "1st 'a': {json}");
+    assert_eq!(cols[0]["mean"], 2.5, "1st 'a': {json}");
+    assert_eq!(cols[1]["min"], 50, "y: {json}");
+    assert_eq!(cols[1]["max"], 80, "y: {json}");
+    assert_eq!(cols[1]["mean"], 65.0, "y: {json}");
+    assert_eq!(cols[2]["min"], 10, "2nd 'a': {json}");
+    assert_eq!(cols[2]["max"], 40, "2nd 'a': {json}");
+    assert_eq!(cols[2]["mean"], 25.0, "2nd 'a': {json}");
+    assert_eq!(cols[3]["min"], 900, "x: {json}");
+    assert_eq!(cols[3]["max"], 903, "x: {json}");
+    assert_eq!(cols[3]["mean"], 901.5, "x: {json}");
+}
+
+/// Two files whose duplicate COUNTS differ (`d1` has two `a` columns, `d2`
+/// has three) must still be refused, exactly like any other schema
+/// mismatch. This is unchanged, pre-existing behaviour (`field_multiset`'s
+/// sorted-pairs comparison already rejects an unequal count of a name), but
+/// pinned explicitly here because it is the control that separates "same
+/// multiset, different order" (must be combined) from "different multiset"
+/// (must be refused) for the specific case of a repeated name.
+#[test]
+fn describe_different_duplicate_counts_across_files_is_refused() {
+    let dir = TempDir::new().unwrap();
+    let two_as = write_int_columns(
+        dir.path(),
+        "two_as",
+        &[("a", &[1, 2]), ("a", &[10, 20]), ("x", &[100, 200])],
+    );
+    let three_as = write_int_columns(
+        dir.path(),
+        "three_as",
+        &[
+            ("a", &[3, 4]),
+            ("a", &[30, 40]),
+            ("a", &[300, 400]),
+            ("x", &[500, 600]),
+        ],
+    );
+
+    let assert = pq()
+        .args([
+            "stats",
+            "--describe",
+            two_as.to_str().unwrap(),
+            three_as.to_str().unwrap(),
+        ])
+        .assert()
+        .failure();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    assert!(
+        !stderr.to_lowercase().contains("panic"),
+        "must fail cleanly, not panic: {stderr}"
+    );
+    assert!(
+        stderr.contains("different schemas"),
+        "must name the reason, not just fail: {stderr}"
+    );
+}
+
+/// `--sample-size` cutting into the SECOND file, which also needs
+/// reordering: the row budget truncates rows before the reorder ever runs,
+/// so this proves the two mechanisms compose (truncation is uniform across
+/// columns, applied before the permutation, so it cannot itself desync
+/// which physical column ends up under which canonical name).
+///
+/// `d1` (3 rows) + `d2` (3 rows), `--sample-size 4`: all of `d1` plus the
+/// first physical row of `d2` (`x=11, a(2nd physical col)=1100,
+/// a(3rd physical col)=70`), which reorders to canonical (a,a,x) as
+/// `a_occ0=1100, a_occ1=70, x=11`.
+#[test]
+fn describe_duplicate_names_reordered_with_sample_size() {
+    let dir = TempDir::new().unwrap();
+    let d1 = write_int_columns(
+        dir.path(),
+        "d1",
+        &[
+            ("a", &[1, 2, 3]),
+            ("a", &[100, 200, 300]),
+            ("x", &[7, 8, 9]),
+        ],
+    );
+    let d2 = write_int_columns(
+        dir.path(),
+        "d2",
+        &[
+            ("x", &[11, 12, 13]),
+            ("a", &[1100, 1200, 1300]),
+            ("a", &[70, 80, 90]),
+        ],
+    );
+
+    let json = describe_json(&[&d1, &d2], Some(4));
+    let cols = json["columns"].as_array().unwrap();
+
+    // 1st "a": [1,2,3] + [1100] = [1,2,3,1100].
+    assert_eq!(cols[0]["min"], 1, "1st 'a': {json}");
+    assert_eq!(cols[0]["max"], 1100, "1st 'a': {json}");
+    assert_eq!(cols[0]["mean"], 276.5, "1st 'a': {json}");
+    // 2nd "a": [100,200,300] + [70] = [100,200,300,70].
+    assert_eq!(cols[1]["min"], 70, "2nd 'a': {json}");
+    assert_eq!(cols[1]["max"], 300, "2nd 'a': {json}");
+    assert_eq!(cols[1]["mean"], 167.5, "2nd 'a': {json}");
+    // x: [7,8,9] + [11] = [7,8,9,11].
+    assert_eq!(cols[2]["min"], 7, "x: {json}");
+    assert_eq!(cols[2]["max"], 11, "x: {json}");
+    assert_eq!(cols[2]["mean"], 8.75, "x: {json}");
+
+    let sampling = &json["sampling"];
+    assert_eq!(sampling["sampled"], true, "{json}");
+    assert_eq!(sampling["rows_read"], 4, "{json}");
+    assert_eq!(sampling["rows_total"], 6, "{json}");
+    let d2_entry = file_entry(sampling, &d2);
+    assert_eq!(
+        d2_entry["opened"], true,
+        "d2 contributed 1 row, it must be marked opened: {json}"
+    );
+    assert_eq!(d2_entry["rows_read"], 1, "{json}");
+}
+
+/// A repeated name whose own occurrences have their TYPES permuted across
+/// files: file A is `a:Int64, a:Utf8`; file B is `a:Utf8, a:Int64`. The
+/// sorted (name, `DataType`) multiset `schemas_concat_compatible` checks is
+/// the same for both (it does not care which occurrence carries which
+/// type), so this pairing survives that guard; only an explicit
+/// per-occurrence type check inside the reorder path can catch it. Without
+/// that check this either mislabels an `Int64` column as `Utf8` (if types
+/// coincidentally matched, silently) or hits a raw, less legible
+/// `arrow::compute::concat` error (as it did here: an earlier version of
+/// this fix's "already in order" fast path compared names only, so a batch
+/// whose fields happened to sit at name-matching positions skipped the
+/// reorder path — and its type check — entirely).
+#[test]
+fn describe_duplicate_name_type_permuted_across_files_is_refused() {
+    let dir = TempDir::new().unwrap();
+
+    let schema_a = Arc::new(Schema::new(vec![
+        Field::new("a", DataType::Int64, true),
+        Field::new("a", DataType::Utf8, true),
+    ]));
+    let batch_a = RecordBatch::try_new(
+        schema_a,
+        vec![
+            Arc::new(Int64Array::from(vec![1, 2, 3])),
+            Arc::new(StringArray::from(vec!["x", "y", "z"])),
+        ],
+    )
+    .unwrap();
+    let a = write_batch(dir.path(), "a", batch_a);
+
+    let schema_b = Arc::new(Schema::new(vec![
+        Field::new("a", DataType::Utf8, true),
+        Field::new("a", DataType::Int64, true),
+    ]));
+    let batch_b = RecordBatch::try_new(
+        schema_b,
+        vec![
+            Arc::new(StringArray::from(vec!["p", "q", "r"])),
+            Arc::new(Int64Array::from(vec![10, 20, 30])),
+        ],
+    )
+    .unwrap();
+    let b = write_batch(dir.path(), "b", batch_b);
+
+    let assert = pq()
+        .args([
+            "stats",
+            "--describe",
+            a.to_str().unwrap(),
+            b.to_str().unwrap(),
+        ])
+        .assert()
+        .failure();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    assert!(
+        !stderr.to_lowercase().contains("panic"),
+        "must fail cleanly, not panic: {stderr}"
+    );
+    assert!(
+        stderr.contains("occurrence"),
+        "must be describe's own explicit occurrence/type check, not a raw \
+         arrow error surfacing however far downstream concat happens to \
+         notice: {stderr}"
+    );
+}
+
+/// Control: a single file with a duplicate name AND a unique column.
+/// `reorder_batch_to_schema` is only ever asked to realign a LATER file
+/// against the first; with one file there is nothing to realign, so this
+/// pins that the (name, occurrence) rewrite didn't change single-file
+/// behaviour for the 3-column duplicate-plus-unique shape used above.
+#[test]
+fn describe_single_file_duplicate_names_with_unique_column_control() {
+    let dir = TempDir::new().unwrap();
+    let f = write_int_columns(
+        dir.path(),
+        "solo",
+        &[
+            ("a", &[1, 2, 3]),
+            ("a", &[100, 200, 300]),
+            ("x", &[7, 8, 9]),
+        ],
+    );
+
+    let json = describe_json(&[&f], None);
+    let cols = json["columns"].as_array().unwrap();
+    assert_eq!(cols.len(), 3, "{json}");
+    assert_eq!(cols[0]["min"], 1, "{json}");
+    assert_eq!(cols[0]["max"], 3, "{json}");
+    assert_eq!(cols[0]["mean"], 2.0, "{json}");
+    assert_eq!(cols[1]["min"], 100, "{json}");
+    assert_eq!(cols[1]["max"], 300, "{json}");
+    assert_eq!(cols[1]["mean"], 200.0, "{json}");
+    assert_eq!(cols[2]["min"], 7, "{json}");
+    assert_eq!(cols[2]["max"], 9, "{json}");
+    assert_eq!(cols[2]["mean"], 8.0, "{json}");
 }
 
 // ---------------------------------------------------------------------------

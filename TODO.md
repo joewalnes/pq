@@ -20,6 +20,26 @@
 
 ## Bugs
 
+- [x] P1: `stats --describe` silently combined the wrong physical columns
+  when two files hold a duplicate column name in different physical
+  orders — Fixed. See CHANGELOG.md 2026-09-02. The order-independent
+  schema comparison landed earlier the same day paired duplicate-named
+  columns via `Schema::index_of`, which always resolves to the *first*
+  field of a given name; `d1 = a,a,x` combined with `d2 = x,a,a` reported
+  the second `a` as `min=100 max=1300 mean=700.0` (pyarrow ground truth:
+  `min=70 max=300 mean=140.0`) — one physical column double-counted,
+  another dropped entirely, exit 0. Fixed by matching duplicate names by
+  (name, occurrence), the same identity `write_output::union_columns`/
+  `column_indices` already use for CSV/table output, plus an explicit
+  per-occurrence type check (a duplicate name's types can be permuted
+  across files in a way the schema multiset guard alone cannot see).
+  Guards: `crates/pq-cli/tests/describe_tests.rs` (8 new tests — reordered
+  duplicates matching pyarrow, same-order control, 3+ occurrences,
+  duplicates plus multiple unique columns, differing duplicate counts
+  refused, `--sample-size` interaction, type-permuted duplicates refused,
+  single-file control); the 5 tests that exercise the reorder path
+  independently confirmed to fail against the pre-fix binary.
+
 - [x] P1: `pq sql --help`'s advertised examples all failed, and its glob-support claim was false — Fixed. See CHANGELOG.md/DIARY.md 2026-09-02. Two follow-on gaps deliberately left open:
   - [ ] P3: duplicate-top-level-column-name protection (`RenamedDuplicatesTable`) is not extended to glob-matched multi-file tables — a glob whose matched files individually have duplicate column names still silently collapses them the way plain `Target::Other` locations always have (this is not a regression from the glob fix; every previously-unclassified location had this same gap already). Would need a per-matched-file schema read analogous to `reject_directory_with_duplicate_columns`, adapted from an object-store listing to a plain `Vec<PathBuf>`.
   - [ ] P3: the new `crates/pq-cli/tests/help_examples_tests.rs` guard only extracts and runs `pq sql "..."` examples. Every other subcommand's `long_about`/`after_help` (`jq`, `grep`, `select`, ...) can drift the same way `sql`'s did and nothing would catch it — extending the guard needs a fixture matching each subcommand's own example columns (nested structs/arrays for `jq`, specific column names for `grep`/`select`), which is why it wasn't done here as a drive-by.
