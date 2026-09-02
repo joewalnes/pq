@@ -61,7 +61,6 @@ fn write_rows(
 ) -> anyhow::Result<usize> {
     let mut out_file = std::fs::File::create(output_path)?;
     let mut total_rows: usize = 0;
-    let mut wrote_csv_header = false;
 
     if format == Format::Json {
         let mut all_rows: Vec<serde_json::Value> = Vec::new();
@@ -75,6 +74,40 @@ fn write_rows(
         }
         serde_json::to_writer_pretty(&mut out_file, &all_rows)?;
         writeln!(out_file)?;
+    } else if format == Format::Csv {
+        // Header is the union of every file's schema field names, in
+        // file/column order — not just the first file's. `export h1.parquet
+        // h2.parquet` with differing schemas used to freeze the header from
+        // file 1's first row, which silently shifted or dropped values from
+        // files with a different key set (see the CSV column-shift bug).
+        //
+        // The union is built from a cheap metadata-only read per file
+        // (`open_metadata` reads the Parquet footer, not row data), so this
+        // pass doesn't require buffering any row data — the row-writing
+        // pass below still streams file-by-file and batch-by-batch exactly
+        // as before.
+        let schemas: Vec<_> = files
+            .iter()
+            .map(|f| pq_core::reader::open_metadata(f).map(|(schema, _rows)| schema))
+            .collect::<Result<_, _>>()?;
+        let header = super::write_output::union_header(schemas);
+
+        if !header.is_empty() {
+            out_file.write_all(&super::write_output::csv_record_bytes(&header)?)?;
+        }
+        for f in files {
+            let (batches, _schema) = pq_core::reader::open_batches(f, opts)?;
+            for batch in &batches {
+                let rows = pq_query::convert::batch_to_json_rows(batch);
+                total_rows += rows.len();
+                for row in &rows {
+                    if let Some(obj) = row.as_object() {
+                        let record = super::write_output::csv_record(&header, obj);
+                        out_file.write_all(&super::write_output::csv_record_bytes(&record)?)?;
+                    }
+                }
+            }
+        }
     } else {
         for f in files {
             let (batches, _schema) = pq_core::reader::open_batches(f, opts)?;
@@ -86,44 +119,6 @@ fn write_rows(
                         for row in &rows {
                             serde_json::to_writer(&mut out_file, row)?;
                             writeln!(out_file)?;
-                        }
-                    }
-                }
-                Format::Csv => {
-                    for batch in &batches {
-                        let rows = pq_query::convert::batch_to_json_rows(batch);
-                        if rows.is_empty() {
-                            continue;
-                        }
-                        if !wrote_csv_header {
-                            if let Some(obj) = rows[0].as_object() {
-                                let keys: Vec<&str> = obj.keys().map(|k| k.as_str()).collect();
-                                writeln!(out_file, "{}", keys.join(","))?;
-                                wrote_csv_header = true;
-                            }
-                        }
-                        total_rows += rows.len();
-                        for row in &rows {
-                            if let Some(obj) = row.as_object() {
-                                let vals: Vec<String> = obj
-                                    .values()
-                                    .map(|v| match v {
-                                        serde_json::Value::String(s) => {
-                                            if s.contains(',')
-                                                || s.contains('"')
-                                                || s.contains('\n')
-                                            {
-                                                format!("\"{}\"", s.replace('"', "\"\""))
-                                            } else {
-                                                s.clone()
-                                            }
-                                        }
-                                        serde_json::Value::Null => String::new(),
-                                        other => other.to_string(),
-                                    })
-                                    .collect();
-                                writeln!(out_file, "{}", vals.join(","))?;
-                            }
                         }
                     }
                 }

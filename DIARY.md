@@ -4,6 +4,35 @@ Latest entries first. Record significant decisions, architecture changes, and no
 
 ---
 
+## 2026-09-01 — CSV header: union of all columns, not row 0's
+
+Every CSV writer in the crate froze its header from the first row/batch,
+then wrote each row's values by iteration order with no per-row key
+lookup. Combine two Parquet files with different schemas (`pq cat
+a.parquet b.parquet -o out.csv`) and a value from the second file lands
+either under the wrong column name or nowhere at all — silently, exit 0.
+It has nothing to do with key *order*: this codebase's `serde_json` has
+no `preserve_order` feature, so `Value::Object` is a `BTreeMap` and
+always iterates alphabetically; the corruption is entirely from
+differing key *sets* against a header that never grows.
+
+Decision: the header is now the union of every input's columns
+(first-seen order), and every row is looked up by column name against
+it — a column absent from a given row/file gets an empty field, never a
+dropped value. This costs a second pass to compute the union, but
+that pass is over data already fully resident: `write_output.rs`'s
+batch/values writers receive an already-collected slice, and
+`export.rs`'s CSV path gets its union from a cheap Parquet-footer-only
+metadata read per file (no row data), so the row-writing pass still
+streams file-by-file exactly as before. Emitting empty for a missing
+key was the only alternative that doesn't reintroduce the same class of
+bug (a value the user has that never reaches the output).
+
+Also replaced three independent hand-rolled CSV escapers (each checking
+only `,`, `"`, `\n` — missing a bare `\r`, which a compliant reader
+treats as its own record terminator) with the `csv` crate, already a
+declared-but-unused dependency.
+
 ## 2026-09-01 — Tagline drift: picked the ASCII hyphen, deduplicated to one constant
 
 `pq --help` (from `cli.rs`'s clap `about`) and `pq capabilities` (a
