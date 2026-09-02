@@ -96,18 +96,42 @@ impl Format {
     }
 }
 
+/// Buffer capacity for the internal `BufWriter` in [`render_batches`]. Chosen
+/// to be comfortably larger than one terminal screen's worth of table output
+/// and small enough that a single flush is not itself a stall.
+const RENDER_BUFFER_CAPACITY: usize = 64 * 1024;
+
+/// Render `batches` to `writer`, buffering internally.
+///
+/// Every renderer below (`render_jsonl` in particular) writes one `serde_json`
+/// call plus one `writeln!` *per row*. Called with `writer` as a raw `File` or
+/// a locked `Stdout`, each of those is a separate syscall — for JSON/JSONL
+/// export of a large file, a syscall per token. Wrapping in a `BufWriter`
+/// here, at the single call-through point every renderer and every caller
+/// (`cat`, `export`, `sql -o`, `view`/`head`/`tail`) already goes through,
+/// fixes every one of those paths without changing any renderer's signature
+/// or any caller.
+///
+/// The flush is unconditional and happens only on the success path, *before*
+/// this function returns. Callers that write to a staged file under
+/// `pq_transform::output_guard::with_atomic_output` rename only after their
+/// closure returns `Ok`, so a flush here always lands before that rename. On
+/// error, the `BufWriter` (and, upstream, the staging file) is discarded
+/// without ceremony — there is nothing to commit.
 pub fn render_batches(
     writer: &mut dyn Write,
     batches: &[RecordBatch],
     format: Format,
 ) -> std::io::Result<()> {
+    let mut buffered = std::io::BufWriter::with_capacity(RENDER_BUFFER_CAPACITY, writer);
     match format {
-        Format::Json => json::render_json(writer, batches),
-        Format::JsonLines => json::render_jsonl(writer, batches),
-        Format::Csv => csv::render_csv(writer, batches),
-        Format::Table => table::render_table(writer, batches),
-        Format::Plain => table::render_plain(writer, batches),
-    }
+        Format::Json => json::render_json(&mut buffered, batches),
+        Format::JsonLines => json::render_jsonl(&mut buffered, batches),
+        Format::Csv => csv::render_csv(&mut buffered, batches),
+        Format::Table => table::render_table(&mut buffered, batches),
+        Format::Plain => table::render_plain(&mut buffered, batches),
+    }?;
+    buffered.flush()
 }
 
 pub fn render_value(
