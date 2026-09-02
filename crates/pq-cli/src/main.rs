@@ -177,7 +177,10 @@ fn run(cli: Cli, format: Format, explicit_format: bool) -> anyhow::Result<()> {
             run_sample(&resolved, lines, seed, columns.clone(), format)
         }
 
-        Command::Count { ref files } => commands::count::run(files, format),
+        Command::Count { ref files } => {
+            let resolved = files::resolve_files(files)?;
+            commands::count::run(&resolved, format)
+        }
 
         Command::Sql {
             ref query,

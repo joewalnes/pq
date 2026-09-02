@@ -1556,6 +1556,69 @@ fn test_sample_multi_file_draws_from_all_files() {
     );
 }
 
+/// `count` and `merge` must expand glob patterns themselves — `resolve_files`
+/// is what every other multi-file command routes through, and a pattern
+/// that arrives unexpanded (quoted, passed programmatically as here, or on
+/// a shell/platform with no globbing) must not silently degrade.
+#[test]
+fn test_count_expands_glob_and_sums_across_files() {
+    let tmp = TempDir::new().unwrap();
+    write_tagged_fixture(tmp.path(), "multi-a", "A", 5);
+    write_tagged_fixture(tmp.path(), "multi-b", "B", 10);
+    write_tagged_fixture(tmp.path(), "multi-c", "C", 20);
+
+    let pattern = tmp.path().join("multi-*.parquet");
+    let output = pq()
+        .args(["count", pattern.to_str().unwrap(), "-f", "json"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let result: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(
+        result["total"], 35,
+        "expected 5+10+20=35 summed across the glob's 3 matches, got: {stdout}"
+    );
+}
+
+/// A glob that matches zero files and a literal path that does not exist
+/// are different problems and must be reported differently: the former
+/// never reaches the filesystem layer (caught by `resolve_files` itself),
+/// the latter fails trying to open exactly the path named.
+#[test]
+fn test_count_glob_no_match_differs_from_missing_literal_path() {
+    let tmp = TempDir::new().unwrap();
+    write_tagged_fixture(tmp.path(), "present", "A", 3);
+
+    let no_match_glob = tmp.path().join("nope-*.parquet");
+    let glob_output = pq()
+        .args(["count", no_match_glob.to_str().unwrap(), "-f", "json"])
+        .output()
+        .unwrap();
+    assert!(!glob_output.status.success());
+    let glob_stderr = String::from_utf8_lossy(&glob_output.stderr);
+    assert!(
+        glob_stderr.contains("No files matched pattern"),
+        "a glob matching nothing should say so distinctly: {glob_stderr}"
+    );
+
+    let missing_literal = tmp.path().join("definitely_missing.parquet");
+    let literal_output = pq()
+        .args(["count", missing_literal.to_str().unwrap(), "-f", "json"])
+        .output()
+        .unwrap();
+    assert!(!literal_output.status.success());
+    let literal_stderr = String::from_utf8_lossy(&literal_output.stderr);
+    assert!(
+        !literal_stderr.contains("No files matched pattern"),
+        "a literal missing path is not a glob-match failure: {literal_stderr}"
+    );
+}
+
 // ── Layout correctness tests ────────────────────────────────────────────
 
 /// `pq layout` must accumulate row offsets across row groups and account
