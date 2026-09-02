@@ -16,10 +16,12 @@
 //! identical-looking column lists.
 
 use arrow::array::{
-    Int64Array, RecordBatch, StringArray, TimestampMicrosecondArray, TimestampMillisecondArray,
+    Float64Array, Int64Array, RecordBatch, StringArray, TimestampMicrosecondArray,
+    TimestampMillisecondArray,
 };
 use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use assert_cmd::Command;
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -272,6 +274,281 @@ fn describe_type_mismatch_error_names_the_actual_difference() {
         "error should name the actual type difference, not collapse both \
          to \"timestamp\": {stderr}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Column *names*, not just `DataType`s, must agree across files, and column
+// *order* must not matter once the names agree.
+//
+// `schemas_concat_compatible` briefly compared only `DataType` per column
+// position, dropping `name` from the check entirely. Two files with
+// completely disjoint column names but a shared `DataType` passed that
+// guard, and `run`'s position-based indexing then labelled the second
+// file's data with the first file's column names — a silent wrong answer,
+// not a refusal. Ground truth for every numeric assertion below is computed
+// independently by hand from the literal input arrays, mirroring what
+// `pyarrow.concat_tables` would report, never by comparing pq's output
+// against another pq invocation.
+// ---------------------------------------------------------------------------
+
+/// Writes a single named `Int64` column, letting the test control the
+/// column name independently of the file name (`write_ints` above always
+/// names its column `"v"`).
+fn write_named_column(dir: &Path, file_name: &str, col_name: &str, values: Vec<i64>) -> PathBuf {
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        col_name,
+        DataType::Int64,
+        true,
+    )]));
+    let batch = RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(values))]).unwrap();
+    write_batch(dir, file_name, batch)
+}
+
+/// The exact bug: two files, disjoint column names, both `Int64`. Before
+/// this fix, `alpha`'s and `omega`'s values were pooled under the name
+/// `alpha`, exit 0, no note (foreman-reproduced against pyarrow: reading
+/// each file independently confirms `alpha == [1, 2]` and `omega == [500,
+/// 600]`, two distinct columns, never one). This must now be refused, and
+/// the error must name both actual column names, not print an
+/// identical-looking pair of lists.
+#[test]
+fn describe_disjoint_column_names_same_type_is_refused_not_silently_merged() {
+    let dir = TempDir::new().unwrap();
+    let a = write_named_column(dir.path(), "x_alpha", "alpha", vec![1, 2]);
+    let b = write_named_column(dir.path(), "x_omega", "omega", vec![500, 600]);
+
+    let assert = pq()
+        .args([
+            "stats",
+            "--describe",
+            a.to_str().unwrap(),
+            b.to_str().unwrap(),
+            "-f",
+            "jsonl",
+        ])
+        .assert()
+        .failure();
+
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    assert!(
+        !stderr.to_lowercase().contains("panic"),
+        "must fail cleanly, not panic: {stderr}"
+    );
+    assert!(
+        stderr.contains("alpha") && stderr.contains("omega"),
+        "error must name the actual differing columns: {stderr}"
+    );
+}
+
+/// Column names must be compared exactly, not case-insensitively: `Alpha`
+/// and `alpha` are different columns, and silently unifying them would
+/// reintroduce the same silent-merge bug under a different disguise.
+#[test]
+fn describe_column_name_case_difference_is_refused() {
+    let dir = TempDir::new().unwrap();
+    let a = write_named_column(dir.path(), "upper", "Alpha", vec![1, 2]);
+    let b = write_named_column(dir.path(), "lower", "alpha", vec![3, 4]);
+
+    let assert = pq()
+        .args([
+            "stats",
+            "--describe",
+            a.to_str().unwrap(),
+            b.to_str().unwrap(),
+        ])
+        .assert()
+        .failure();
+
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    assert!(
+        stderr.contains("Alpha") && stderr.contains("alpha"),
+        "case-differing names must be named in the error, not silently unified: {stderr}"
+    );
+}
+
+/// One file has an extra column beyond the other's names — a degenerate
+/// case of the name-set check, distinct from the wide/narrow panic-safety
+/// tests above (which used positional column *count* mismatches with
+/// overlapping names at each shared position).
+#[test]
+fn describe_extra_column_beyond_shared_names_is_refused() {
+    let dir = TempDir::new().unwrap();
+    let a = import_jsonl(dir.path(), "two_cols", "{\"x\": 1, \"y\": 2}\n");
+    let b = import_jsonl(dir.path(), "one_col", "{\"x\": 1}\n");
+
+    pq().args([
+        "stats",
+        "--describe",
+        a.to_str().unwrap(),
+        b.to_str().unwrap(),
+    ])
+    .assert()
+    .failure();
+}
+
+/// Same column name, genuinely different type, must still be refused — the
+/// name-set fix must not loosen the type check `describe_type_mismatch_*`
+/// above already covers with `Timestamp` units; this pins the simpler
+/// Int64-vs-Utf8 case under the same column name.
+#[test]
+fn describe_same_name_different_type_is_refused_control() {
+    let dir = TempDir::new().unwrap();
+    let a = import_jsonl(dir.path(), "int_id", "{\"id\": 1}\n");
+    let b = import_jsonl(dir.path(), "string_id", "{\"id\": \"x\"}\n");
+
+    let assert = pq()
+        .args([
+            "stats",
+            "--describe",
+            a.to_str().unwrap(),
+            b.to_str().unwrap(),
+        ])
+        .assert()
+        .failure();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    assert!(
+        !stderr.to_lowercase().contains("panic"),
+        "must fail cleanly, not panic: {stderr}"
+    );
+}
+
+/// Field *metadata* differing across files (e.g. different writers stamping
+/// their own provenance key) must not cause a rejection, mirroring the
+/// nullability control above. `concat` never looks at metadata
+/// (arrow-schema-53.4.1/src/field.rs:52-58 lists it as part of `Field::eq`,
+/// but arrow-select-53.4.1/src/concat.rs:150-161 only ever compares bare
+/// array `DataType`s), so a guard that rejects on metadata alone rejects
+/// input `concat` handles fine.
+#[test]
+fn describe_differing_field_metadata_across_files_still_works() {
+    let dir = TempDir::new().unwrap();
+
+    let mut meta_a = HashMap::new();
+    meta_a.insert("source".to_string(), "writer-a".to_string());
+    let schema_a = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, true).with_metadata(meta_a)
+    ]));
+    let batch_a =
+        RecordBatch::try_new(schema_a, vec![Arc::new(Int64Array::from(vec![1, 2]))]).unwrap();
+    let a = write_batch(dir.path(), "meta_a", batch_a);
+
+    let mut meta_b = HashMap::new();
+    meta_b.insert("source".to_string(), "writer-b".to_string());
+    meta_b.insert("extra".to_string(), "yes".to_string());
+    let schema_b = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, true).with_metadata(meta_b)
+    ]));
+    let batch_b =
+        RecordBatch::try_new(schema_b, vec![Arc::new(Int64Array::from(vec![3, 4]))]).unwrap();
+    let b = write_batch(dir.path(), "meta_b", batch_b);
+
+    pq().args([
+        "stats",
+        "--describe",
+        a.to_str().unwrap(),
+        b.to_str().unwrap(),
+    ])
+    .assert()
+    .success();
+}
+
+/// The common real case: two files with the same columns in a different
+/// order (`amount, price` vs `price, amount` — writers that don't agree on
+/// column ordering). Refusing this would be needless; the underlying data
+/// must also be physically realigned by name before concatenation, not just
+/// waved through by the schema check, or this degenerates back into the
+/// original bug with the roles of "name" and "position" swapped. If the fix
+/// only relaxed the check without realigning `all_batches`, `amount` would
+/// report `price`'s values here (max 4 instead of 40) and vice versa.
+#[test]
+fn describe_reordered_columns_same_names_are_unioned_correctly() {
+    let dir = TempDir::new().unwrap();
+
+    let schema_a = Arc::new(Schema::new(vec![
+        Field::new("amount", DataType::Int64, true),
+        Field::new("price", DataType::Float64, true),
+    ]));
+    let batch_a = RecordBatch::try_new(
+        schema_a,
+        vec![
+            Arc::new(Int64Array::from(vec![10, 20])),
+            Arc::new(Float64Array::from(vec![1.0, 2.0])),
+        ],
+    )
+    .unwrap();
+    let a = write_batch(dir.path(), "a", batch_a);
+
+    let schema_b = Arc::new(Schema::new(vec![
+        Field::new("price", DataType::Float64, true),
+        Field::new("amount", DataType::Int64, true),
+    ]));
+    let batch_b = RecordBatch::try_new(
+        schema_b,
+        vec![
+            Arc::new(Float64Array::from(vec![3.0, 4.0])),
+            Arc::new(Int64Array::from(vec![30, 40])),
+        ],
+    )
+    .unwrap();
+    let b = write_batch(dir.path(), "b", batch_b);
+
+    let json = describe_json(&[&a, &b], None);
+    let cols = json["columns"].as_array().unwrap();
+    let amount = cols
+        .iter()
+        .find(|c| c["column"] == "amount")
+        .expect("amount column present in output");
+    let price = cols
+        .iter()
+        .find(|c| c["column"] == "price")
+        .expect("price column present in output");
+
+    // Ground truth, hand-computed: amount = [10,20,30,40], price =
+    // [1.0,2.0,3.0,4.0] — matching what `pyarrow.concat_tables` reports.
+    assert_eq!(amount["count"], 4);
+    assert_eq!(amount["min"], 10);
+    assert_eq!(amount["max"], 40);
+    assert_eq!(amount["mean"], 25.0);
+    assert_eq!(price["count"], 4);
+    assert_eq!(price["min"], 1.0);
+    assert_eq!(price["max"], 4.0);
+    assert_eq!(price["mean"], 2.5);
+}
+
+/// Duplicate column names *within a single file* are a distinct case from
+/// cross-file name matching above — `describe` walks columns by index, not
+/// by name, so two same-named columns must still each get their own row
+/// with their own (not merged, not overwritten) statistics.
+#[test]
+fn describe_duplicate_column_names_within_one_file_yields_one_row_per_column() {
+    let dir = TempDir::new().unwrap();
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("x", DataType::Int64, true),
+        Field::new("x", DataType::Int64, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(Int64Array::from(vec![1, 2, 3])),
+            Arc::new(Int64Array::from(vec![100, 200, 300])),
+        ],
+    )
+    .unwrap();
+    let f = write_batch(dir.path(), "dup", batch);
+
+    let json = describe_json(&[&f], None);
+    let cols = json["columns"].as_array().unwrap();
+    assert_eq!(
+        cols.len(),
+        2,
+        "duplicate-named columns must each get their own row: {json}"
+    );
+    assert_eq!(cols[0]["column"], "x");
+    assert_eq!(cols[1]["column"], "x");
+    assert_eq!(cols[0]["min"], 1, "first x column's own data: {json}");
+    assert_eq!(cols[0]["max"], 3, "first x column's own data: {json}");
+    assert_eq!(cols[1]["min"], 100, "second x column's own data: {json}");
+    assert_eq!(cols[1]["max"], 300, "second x column's own data: {json}");
 }
 
 // ---------------------------------------------------------------------------

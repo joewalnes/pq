@@ -59,6 +59,37 @@ table/column names, offending value). Guarded in
 against the pre-fix code that it fails on the very first case (the parser
 error) with the same string shown above.
 
+## 2026-09-02 — `stats --describe`: multi-file schema mismatch refuses on name/type, tolerates order
+
+A same-day earlier fix relaxed the multi-file schema guard from comparing
+whole `Field`s (name, type, nullable, metadata) to comparing only
+`DataType`, to stop rejecting files that legitimately differed in
+nullability or metadata. That dropped column *name* from the comparison too
+— two files with disjoint column names but a shared `DataType` then passed
+the guard, and `describe` concatenates by column *position*, so the second
+file's values were silently reported under the first file's name. Fixed by
+comparing the full (name, type) set, order-independent, and physically
+realigning a later file's columns to the first file's order by name before
+concatenation when the name sets match but the order doesn't.
+
+**Refuse vs. union, decided explicitly rather than defaulted:** when column
+names genuinely differ across files, `describe` refuses, matching its
+existing behaviour for type mismatches — it does not fall back to `cat`'s
+outer-join union. Reasoning: `describe`'s sampling/row-budget model
+(`SamplingInfo`, `rows_read`, `rows_total`) is built around one shared row
+count for every column in the concatenation; a union would need a `count`
+that differs per column (a file missing a column contributes nothing to
+its stats, but still contributes to `rows_total`), which is a real
+redesign of what `--describe` reports, not a bug fix. Making that change
+silently, under a same-day regression-fix mandate, would risk exactly the
+kind of scope-widening this project's `LESSONS.md` warns against. Column
+*order* is a different case: reordering is free (a projection) and doesn't
+touch the row-count model at all, so `amount, price` vs `price, amount` is
+tolerated rather than refused — refusing it would be needless friction for
+a realistic, safe case (files from writers that don't agree on column
+order). If per-column union stats are wanted later, they deserve a
+deliberate design pass, not a rider on this fix.
+
 ## 2026-09-02 — `stats --describe --sample-size`: budget the concatenation, not the file-open order
 
 `stats --describe`'s row-budget loop opened files in argument order with a
