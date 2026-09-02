@@ -2,6 +2,11 @@ use pq_core::reader::{open_batches, ReadOptions};
 
 use crate::output::{self, Format};
 
+// One param per `pq cat` CLI flag, passed straight through from main.rs's
+// arg parsing. Bundling these into an options struct would just move the
+// same 8 fields to a call-site literal with no gain in clarity, since this
+// is the only run() in commands/ that grew past clippy's default threshold.
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     files: &[String],
     limit: Option<usize>,

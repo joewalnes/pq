@@ -14,6 +14,7 @@ Usage:
 import argparse
 import difflib
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -21,9 +22,35 @@ from pathlib import Path
 
 
 def find_pq_binary():
-    """Resolve the pq binary path."""
+    """Resolve the pq binary path.
+
+    Fails loudly (non-zero exit) if the resolved path doesn't exist or isn't
+    executable, rather than returning it unchecked. A stale/typo'd PQ was
+    previously silently tolerated here: run_file() only ever puts the
+    binary's *directory* on PATH and invokes commands via the bare name
+    `pq`, so if this function returned a path to a file that doesn't exist,
+    every console block would quietly fall through to whatever `pq` happens
+    to be first on the ambient PATH (e.g. a stale `brew install`ed build) —
+    passing or failing against code that was never built from this tree.
+    """
     if "PQ" in os.environ:
-        return str(Path(os.environ["PQ"]).resolve())
+        raw = os.environ["PQ"]
+        binary = Path(raw).resolve()
+        if not binary.exists():
+            print(
+                f"PQ={raw!r} does not resolve to an existing file "
+                f"(resolved: {binary}). Refusing to fall back to whatever "
+                f"`pq` happens to be on PATH.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if not os.access(binary, os.X_OK):
+            print(
+                f"PQ={raw!r} resolves to {binary}, but it is not executable.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        return str(binary)
     # Try to build and use target/debug/pq
     repo_root = Path(__file__).resolve().parent.parent.parent
     binary = repo_root / "target" / "debug" / "pq"
@@ -346,6 +373,25 @@ def main():
     args = parser.parse_args()
 
     pq_binary = find_pq_binary()
+
+    # Belt-and-suspenders: console blocks invoke the bare name `pq`, which
+    # resolves via a PATH that has pq_binary's directory prepended (see
+    # run_file). That only works if a file literally named `pq` lives in
+    # that directory. Confirm it does and that it's the exact binary under
+    # test, so a misnamed/misdirected PQ fails loudly here instead of
+    # silently running whatever `pq` is already on the ambient PATH.
+    probe_path = str(Path(pq_binary).parent) + os.pathsep + os.environ.get("PATH", "")
+    resolved_on_path = shutil.which("pq", path=probe_path)
+    if resolved_on_path is None or Path(resolved_on_path).resolve() != Path(pq_binary).resolve():
+        print(
+            f"golden runner misconfigured: with {Path(pq_binary).parent} "
+            f"prepended to PATH, `pq` resolves to {resolved_on_path!r}, not "
+            f"the binary under test ({pq_binary}). Console blocks invoke `pq` "
+            f"by bare name, so this run would silently test the wrong binary. "
+            f"Refusing to continue.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     if args.paths:
         md_files = find_md_files(args.paths)

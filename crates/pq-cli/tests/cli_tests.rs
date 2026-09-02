@@ -437,7 +437,7 @@ fn test_merge_union() {
         .output()
         .unwrap();
     let row: serde_json::Value =
-        serde_json::from_str(&String::from_utf8(cat_output.stdout).unwrap().trim()).unwrap();
+        serde_json::from_str(String::from_utf8(cat_output.stdout).unwrap().trim()).unwrap();
     assert!(row["age"].is_null(), "subset row should have null age");
     assert!(row["score"].is_null(), "subset row should have null score");
 }
@@ -531,6 +531,27 @@ fn test_help() {
         .assert()
         .success()
         .stdout(predicate::str::contains("Parquet Swiss Army Knife"));
+}
+
+/// `pq --help` and `pq capabilities` used to hand-duplicate the tagline and
+/// had drifted (one had an em-dash, the other an ASCII hyphen) — see
+/// crate::cli::TAGLINE, now the single source both consume. This locks the
+/// exact string so a future edit to only one of them fails loudly instead
+/// of shipping the same tool describing itself two different ways
+/// depending on which subcommand you hit.
+#[test]
+fn test_tagline_matches_between_help_and_capabilities() {
+    let tagline = "A Parquet Swiss Army Knife - inspect, query, transform, and view Parquet files";
+
+    pq().arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(tagline));
+
+    pq().args(["capabilities", "-f", "json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(tagline));
 }
 
 // ── Complex / nested type tests ─────────────────────────────────────────

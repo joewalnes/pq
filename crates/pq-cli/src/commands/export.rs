@@ -41,6 +41,24 @@ fn write_to_file(
     opts: &pq_core::reader::ReadOptions,
     format: Format,
 ) -> anyhow::Result<()> {
+    // Staged write — see `pq_transform::output_guard`. The readers below run
+    // lazily; creating the destination up front turned
+    // `pq export a.parquet -o a.parquet` into a zero-byte file.
+    let total_rows = pq_transform::output_guard::with_atomic_output(
+        output_path,
+        |staged| -> anyhow::Result<usize> { write_rows(files, staged, opts, format) },
+    )?;
+
+    eprintln!("Exported {total_rows} rows to {output_path}");
+    Ok(())
+}
+
+fn write_rows(
+    files: &[String],
+    output_path: &std::path::Path,
+    opts: &pq_core::reader::ReadOptions,
+    format: Format,
+) -> anyhow::Result<usize> {
     let mut out_file = std::fs::File::create(output_path)?;
     let mut total_rows: usize = 0;
     let mut wrote_csv_header = false;
@@ -114,8 +132,7 @@ fn write_to_file(
         }
     }
 
-    eprintln!("Exported {total_rows} rows to {output_path}");
-    Ok(())
+    Ok(total_rows)
 }
 
 fn write_to_stdout(

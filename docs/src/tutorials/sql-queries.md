@@ -175,7 +175,7 @@ $ pq sql "SELECT u.name, u.city, COUNT(o.order_id) as num_orders
            FROM './users.parquet' u
            JOIN './orders.parquet' o ON u.name = o.customer
            GROUP BY u.name, u.city
-           ORDER BY num_orders DESC"
+           ORDER BY num_orders DESC, u.name"
 ╭─────────┬─────────────┬────────────╮
 │ name    ┆ city        ┆ num_orders │
 ╞═════════╪═════════════╪════════════╡
@@ -183,11 +183,11 @@ $ pq sql "SELECT u.name, u.city, COUNT(o.order_id) as num_orders
 ├╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌┤
 │ Bob     ┆ Los Angeles ┆ 2          │
 ├╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌┤
+│ Charlie ┆ Chicago     ┆ 1          │
+├╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌┤
 │ Diana   ┆ New York    ┆ 1          │
 ├╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌┤
 │ Eve     ┆ Los Angeles ┆ 1          │
-├╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌┤
-│ Charlie ┆ Chicago     ┆ 1          │
 ╰─────────┴─────────────┴────────────╯
 ```
 
