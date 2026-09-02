@@ -159,7 +159,11 @@ jobs:
           path: ${{ matrix.asset }}
 
   release:
-    needs: [preflight, build, ci]
+    # `licenses` because the release assets now carry LICENSE and
+    # THIRD-PARTY-LICENSES: the curl-a-binary user is otherwise the one
+    # channel that receives a statically-linked binary with no attribution
+    # at all (npm packages and wheels already embed both).
+    needs: [preflight, build, ci, licenses]
     runs-on: ubuntu-latest
     # `gh release create` writes to the repo, so this job — and only this
     # job — needs contents: write. It creates one release for the tag that
@@ -176,6 +180,14 @@ jobs:
           path: dist
           merge-multiple: true
 
+      - name: Download third-party licenses
+        uses: actions/download-artifact@v4
+        with:
+          name: third-party-licenses
+          # Repo root, next to the checked-out LICENSE, so the staging step
+          # below can copy both from one place.
+          path: .
+
       # Staged into a directory of its own, by explicit name, so a build
       # matrix leg that produced nothing fails here - before the release
       # exists - rather than producing a release that is quietly missing a
@@ -185,11 +197,17 @@ jobs:
           set -euo pipefail
           mkdir -p release-assets
           cp dist/pq-darwin-arm64 dist/pq-linux-amd64 dist/pq-linux-arm64 release-assets/
+          # LICENSE from the checkout, THIRD-PARTY-LICENSES from the licenses
+          # job. Both by name: if the licenses artifact failed to download,
+          # this fails here rather than publishing binaries that statically
+          # link ~52 Apache-2.0 crates with no attribution.
+          cp LICENSE THIRD-PARTY-LICENSES release-assets/
           chmod +x release-assets/pq-*
           cd release-assets
           # Names listed explicitly, not `*`: a glob would silently include
           # SHA256SUMS itself or omit an asset that failed to stage.
-          sha256sum pq-darwin-arm64 pq-linux-amd64 pq-linux-arm64 > SHA256SUMS
+          sha256sum pq-darwin-arm64 pq-linux-amd64 pq-linux-arm64 \
+            LICENSE THIRD-PARTY-LICENSES > SHA256SUMS
           cat SHA256SUMS
 
       - name: Create release
@@ -211,6 +229,8 @@ jobs:
             release-assets/pq-darwin-arm64 \
             release-assets/pq-linux-amd64 \
             release-assets/pq-linux-arm64 \
+            release-assets/LICENSE \
+            release-assets/THIRD-PARTY-LICENSES \
             release-assets/SHA256SUMS \
             --title "$TAG" \
             --notes "pq $TAG - built from $(git rev-parse --short HEAD)" \
