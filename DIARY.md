@@ -33,6 +33,41 @@ one constant: a dim middle-dot (`·`) marker, styled the same way the header
 picks up color — only when `--color` resolved on, text is identical either
 way so output stays deterministic for tests.
 
+## 2026-09-02 — Two "unbuffered" write paths, two very different speedups
+
+Measuring the `export`/`cat` buffering fix (2M-row fixture, `/usr/bin/time -l`)
+turned up a gap I didn't expect and want on record before someone re-measures
+this on different hardware and thinks their number is wrong. `export -o
+out.jsonl` went from a mean of ~163s to ~0.87s (~190x). `cat -f jsonl >
+out.jsonl` — same row count, same per-row `serde_json::to_writer` +
+`writeln!` shape, same destination filesystem — went from 5.99s to 1.16s
+(~5x). Both pre-fix paths were equally "unbuffered": one small `write(2)` per
+JSON token either way.
+
+The difference is *which* file descriptor absorbs the syscalls. `cat -f
+jsonl > file` writes into the fd the shell already opened and handed to the
+child at `exec`. `export -o` (and `cat --output`) write into a fd this
+process opens itself, via `pq_transform::output_guard`'s stage-and-rename —
+a fresh `std::fs::File::create` on a hidden sibling file, every run. I
+confirmed the fd-origin, not the flag, is what matters: pre-fix `cat
+--output file.jsonl` (same output_guard staging path as `export -o`) cost
+~152s, matching `export -o`'s order of magnitude despite being the "cat"
+code path. On this machine, syscalls against a process-opened fd are
+dramatically more expensive than the identical syscalls against an
+inherited one — plausibly the sandboxing this whole session runs under
+mediates file opens/writes more heavily than writes to an fd it already
+cleared at exec time. I did not chase this further: it doesn't change what
+to fix (every syscall-per-row path gets buffered regardless of which fd it
+targets) or invalidate the direction of the result, only its magnitude. But
+the ~190x number is real for *this* environment and is not a fair estimate
+of the win on a normal, unsandboxed machine — expect something closer to
+the ~5x seen on the shell-redirect path there, still a solid win, just not
+two orders of magnitude.
+
+---
+
+## 2026-09-02 — The preflight version check guarded the credential, not the version
+
 `preflight`'s job comment says "one source, one value," but its actual check —
 `grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'` — validated shape, not value. Extracted the
 `run:` block with a YAML parser and ran it under bash against creatable git tags:

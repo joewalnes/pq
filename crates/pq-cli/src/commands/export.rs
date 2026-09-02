@@ -143,43 +143,55 @@ fn write_rows(
     opts: &pq_core::reader::ReadOptions,
     format: Format,
 ) -> anyhow::Result<usize> {
-    let mut out_file = std::fs::File::create(output_path)?;
-    let mut total_rows: usize = 0;
+    // Buffered: the JSONL/Plain branch below does one `serde_json::to_writer`
+    // plus one `writeln!` per row, which against a raw `File` is a syscall
+    // per row. `write_csv` shares this buffer too, for the same reason.
+    //
+    // `write_buffered` flushes only on the success path, before it returns —
+    // and this function's return is what
+    // `pq_transform::output_guard::with_atomic_output` waits on before it
+    // renames the staged file over the destination (see `write_to_file`
+    // above). So the flush always lands before the rename; an error return
+    // here skips the flush, but that's fine, since the caller's `?`
+    // discards the staged file on any error and never renames it.
+    super::write_output::write_buffered(std::fs::File::create(output_path)?, |out_file| {
+        let mut total_rows: usize = 0;
 
-    if format == Format::Json {
-        let mut all_rows: Vec<serde_json::Value> = Vec::new();
-        for f in files {
-            let (batches, _schema) = pq_core::reader::open_batches(f, opts)?;
-            for batch in &batches {
-                let rows = pq_query::convert::batch_to_json_rows(batch);
-                total_rows += rows.len();
-                all_rows.extend(rows);
+        if format == Format::Json {
+            let mut all_rows: Vec<serde_json::Value> = Vec::new();
+            for f in files {
+                let (batches, _schema) = pq_core::reader::open_batches(f, opts)?;
+                for batch in &batches {
+                    let rows = pq_query::convert::batch_to_json_rows(batch);
+                    total_rows += rows.len();
+                    all_rows.extend(rows);
+                }
             }
-        }
-        serde_json::to_writer_pretty(&mut out_file, &all_rows)?;
-        writeln!(out_file)?;
-    } else if format == Format::Csv {
-        total_rows = write_csv(files, opts, &mut out_file)?;
-    } else {
-        for f in files {
-            let (batches, _schema) = pq_core::reader::open_batches(f, opts)?;
-            match format {
-                Format::JsonLines | Format::Plain => {
-                    for batch in &batches {
-                        let rows = pq_query::convert::batch_to_json_rows(batch);
-                        total_rows += rows.len();
-                        for row in &rows {
-                            serde_json::to_writer(&mut out_file, row)?;
-                            writeln!(out_file)?;
+            serde_json::to_writer_pretty(&mut *out_file, &all_rows)?;
+            writeln!(out_file)?;
+        } else if format == Format::Csv {
+            total_rows = write_csv(files, opts, out_file)?;
+        } else {
+            for f in files {
+                let (batches, _schema) = pq_core::reader::open_batches(f, opts)?;
+                match format {
+                    Format::JsonLines | Format::Plain => {
+                        for batch in &batches {
+                            let rows = pq_query::convert::batch_to_json_rows(batch);
+                            total_rows += rows.len();
+                            for row in &rows {
+                                serde_json::to_writer(&mut *out_file, row)?;
+                                writeln!(out_file)?;
+                            }
                         }
                     }
+                    _ => unreachable!(),
                 }
-                _ => unreachable!(),
             }
         }
-    }
 
-    Ok(total_rows)
+        Ok(total_rows)
+    })
 }
 
 /// Write every file's rows as CSV to `writer`. Shared by the to-file and
@@ -224,7 +236,11 @@ fn write_to_stdout(
     format: Format,
 ) -> anyhow::Result<()> {
     let stdout = std::io::stdout();
-    let mut writer = stdout.lock();
+    // Buffered for the same reason as `write_rows`'s file path: the
+    // JsonLines/Plain branch below writes per row, and a locked `Stdout` is
+    // exactly as syscall-per-write as a raw `File` — more so when stdout is
+    // piped, since a pipe isn't even line-buffered the way a TTY can be.
+    let mut writer = std::io::BufWriter::new(stdout.lock());
 
     if format == Format::Json {
         let mut all_rows: Vec<serde_json::Value> = Vec::new();
@@ -261,5 +277,6 @@ fn write_to_stdout(
         }
     }
 
+    writer.flush()?;
     Ok(())
 }

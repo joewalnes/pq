@@ -15,6 +15,36 @@ pub enum OutputFileFormat {
     Csv,
 }
 
+/// Run `body` against a buffered wrapper of `inner`, then flush and
+/// propagate any flush error before returning `body`'s result.
+///
+/// This is the one place every buffered file-write in this module (and, via
+/// re-export, `export.rs`) goes through, specifically so the
+/// "write, then flush, then let the caller's `?` gate whatever runs next" ordering
+/// lives in exactly one spot instead of being repeated — and potentially
+/// gotten wrong — at every call site. Swallowing the flush's `Result`
+/// (`let _ = buffered.flush();`) instead of propagating it is exactly the
+/// mistake that matters here: every writer in this workspace goes through
+/// `pq_transform::output_guard::with_atomic_output`, which renames the
+/// staged file over the destination only *after* the writing closure
+/// returns `Ok`. A swallowed flush error would let that `Ok` through with an
+/// incompletely-written staged file, and the rename would commit it — a
+/// silent truncation. See `write_buffered_propagates_a_flush_error` below,
+/// which fails immediately if the `?` after `.flush()` is ever weakened to
+/// an ignored result.
+pub(crate) fn write_buffered<W, T>(
+    inner: W,
+    body: impl FnOnce(&mut std::io::BufWriter<W>) -> anyhow::Result<T>,
+) -> anyhow::Result<T>
+where
+    W: Write,
+{
+    let mut buffered = std::io::BufWriter::new(inner);
+    let value = body(&mut buffered)?;
+    buffered.flush()?;
+    Ok(value)
+}
+
 pub fn format_from_extension(path: &str) -> OutputFileFormat {
     match Path::new(path).extension().and_then(|e| e.to_str()) {
         Some("parquet") => OutputFileFormat::Parquet,
@@ -54,8 +84,15 @@ pub fn write_batches_as(
             pq_core::writer::write_batches(path, batches, &opts)?;
         }
         text => {
-            let mut file = std::fs::File::create(path)?;
-            write_batches_text(&mut file, batches, text)?;
+            // Buffered: `write_batches_text`'s JSON Lines and CSV branches
+            // write per row, which against a raw `File` is a syscall per
+            // row. See `write_buffered` for why the flush must happen here,
+            // before this function returns, rather than being left to the
+            // `BufWriter`'s `Drop` impl (which discards its error).
+            write_buffered(std::fs::File::create(path)?, |file| {
+                write_batches_text(file, batches, text)?;
+                Ok(())
+            })?;
         }
     }
 
@@ -94,8 +131,11 @@ pub fn json_values_to_file(path: &str, values: &[serde_json::Value]) -> anyhow::
             Ok(objects.len())
         }
         format => {
-            let mut file = std::fs::File::create(path)?;
-            write_values_text(&mut file, values, format)?;
+            // Buffered for the same reason as `write_batches_as`'s text
+            // branch above; see `write_buffered`.
+            write_buffered(std::fs::File::create(path)?, |file| {
+                write_values_text(file, values, format)
+            })?;
             Ok(values.len())
         }
     }
@@ -406,6 +446,57 @@ mod tests {
     use arrow::array::{ArrayRef, Int64Array, StringArray};
     use arrow::datatypes::{DataType, Field};
     use std::sync::Arc;
+
+    /// A `Write` that accepts every `write` (so data can build up in the
+    /// `BufWriter` in front of it without erroring) but fails `flush` — the
+    /// shape of a full disk, a broken pipe noticed late, or any other
+    /// backend failure that only surfaces when the buffered bytes are
+    /// finally pushed out.
+    struct FailsOnFlush;
+
+    impl Write for FailsOnFlush {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Err(std::io::Error::other("simulated flush failure"))
+        }
+    }
+
+    #[test]
+    fn write_buffered_propagates_a_flush_error() {
+        // This is the exact mechanism `write_batches_as` and
+        // `json_values_to_file` rely on to keep `with_atomic_output` from
+        // renaming a staged file that never made it fully to disk. If a
+        // future edit changes `write_buffered`'s `buffered.flush()?` to
+        // something that swallows the error (`let _ = buffered.flush();`),
+        // this test fails: `result` becomes `Ok(())` instead of `Err`.
+        let result: anyhow::Result<()> = write_buffered(FailsOnFlush, |w| {
+            w.write_all(b"some bytes that only live in the BufWriter until flush")?;
+            Ok(())
+        });
+        assert!(
+            result.is_err(),
+            "write_buffered must surface a flush failure, not swallow it"
+        );
+    }
+
+    #[test]
+    fn write_buffered_flushes_through_to_the_inner_writer_on_success() {
+        // Written through a real file rather than an in-memory buffer so
+        // that "the bytes actually reached the backing store" is a
+        // meaningful check: reading the file back only sees what was
+        // flushed, not merely what `write_all` staged in the `BufWriter`.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("out.txt");
+        let n = write_buffered(std::fs::File::create(&path).unwrap(), |w| {
+            w.write_all(b"hello")?;
+            Ok(5usize)
+        })
+        .unwrap();
+        assert_eq!(n, 5);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "hello");
+    }
 
     fn dup_id_batch() -> RecordBatch {
         let schema = Arc::new(Schema::new(vec![
