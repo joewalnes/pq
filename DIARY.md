@@ -117,6 +117,62 @@ duplicate check") for every other unclassified location before this change.
 Logged as a known, pre-existing-shaped gap in TODO.md rather than expanded
 scope.
 
+## 2026-09-02 — the `/dev/fd` compensation moves to where the bug is, and gets deleted from where it isn't
+
+`output_guard::can_stage` decided whether `-o` could stage-and-rename by
+asking `fs::metadata(dest).is_file()`. For `-o /dev/stdout` redirected to a
+regular file, `dest` resolves (via `resolve_symlinks`) to `/dev/fd/1`, and
+`fs::metadata` on that reports a regular file — correctly, since fd 1 really
+is one — so the guard tried to create a staging sibling *inside* `/dev/fd`,
+which devfs refuses. Deterministic, not the "roughly 1 in 5" a TODO.md entry
+once guessed (that guess was about an unrelated test-concurrency artifact in
+the same area, later corrected): `export`, `select`, `sql`, `import`,
+`slice`, `merge` each failed 5/5 serial runs.
+
+`cat -O`/`jq -o` didn't show the bug, because when they were staged (a prior
+change) their author added `write_output::names_an_open_descriptor` —
+recognise `/dev/fd` paths and skip the guard for them — and said explicitly
+this was a compensation for a bug in `can_stage`, to be deleted once
+`can_stage` learned the classification itself. Two things followed from
+taking that literally: (1) the classification had to move into
+`output_guard`, checked *before* any staging is attempted, never as a
+fallback after one fails (an `Err(_) => write(dest)` shape is exactly what
+LESSONS.md's stage-and-rename entry already burned this module for); (2)
+once it moved, the one-layer-up copy had no reason to exist and every other
+`-o` command it didn't cover (five of six affected) needed it just as much
+as `cat`/`jq` did.
+
+The interesting part was that "check the same four names in the same way"
+doesn't transplant across the two call sites, because they see the
+destination at different points in its resolution. `output_guard::can_stage`
+runs *after* `resolve_symlinks`, so on macOS `/dev/stdout` already reads as
+`/dev/fd/1` by the time `can_stage` sees it — a plain `/dev/fd` prefix check
+on the resolved path is enough. But `/proc/self/fd/N` typed directly
+resolves *away* on Linux: `resolve_symlinks` walks straight through the
+procfs symlink to the real backing file, which is a perfectly ordinary,
+stageable destination — checking only the resolved path would silently stop
+recognising the literal name the caller used. So `can_stage` checks
+`is_descriptor_alias` on both the original destination and the resolved one;
+which form carries the tell is platform-dependent, so both had to be asked.
+
+Guards: unit tests in `output_guard.rs`, including a mutation check (stub
+`is_descriptor_alias` to always return `false` and confirm two tests fail);
+`crates/pq-cli/tests/output_devfd_tests.rs`, driving the built binary through
+real shell redirection for all six affected commands plus `/dev/stderr`,
+bare `/dev/fd/1`, and the controls that must keep working (piped
+`/dev/stdout`, a fifo, in-place `-o` onto the input, and — the one that
+matters most given LESSONS.md's stage-and-rename history — an ordinary file
+destination still staging, proven by forcing a write to fail part-way
+through and checking the destination survives untouched). All new guards
+independently confirmed to fail against the pre-fix binary, restored by
+temporarily reverting these two files rather than by inspection.
+
+One thing this does *not* attempt: `-o /dev/stdout` pointed at a file that is
+also this process's own input can still lose data, because the shell
+truncates the file (via `>`) before `pq` starts — before there is anything
+for stage-and-rename to protect. That is a shell-level TOCTOU no amount of
+work inside `pq` can close, and is unrelated to the bug fixed here.
+
 ## 2026-09-02 — `pq sql`'s error tripling was the same disease, opposite cure
 
 `SqlError::DataFusion` (`crates/pq-query/src/sql.rs`) had exactly the shape

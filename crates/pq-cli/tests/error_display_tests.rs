@@ -156,30 +156,24 @@ fn import_to_a_directory_destination_error_is_not_doubled() {
 }
 
 #[test]
-#[ignore = "flaky under concurrent test load, see comment; run manually with --ignored"]
-fn dev_stdout_repro_is_flaky_under_concurrent_load_see_comment() {
-    // This is the literal repro from TODO.md's P2 entry:
-    // `pq import x.jsonl -o /dev/stdout > out.bin`. It reliably doubles on
-    // unfixed code and reliably doesn't on fixed code *in isolation*, but it
-    // depends on `/dev/stdout` (a symlink to `/dev/fd/1`) resolving through
-    // `fs::metadata` to whatever fd 1 currently is — a real regular file
-    // here, via `Stdio::from`. `output_guard.rs::can_stage` then sees
-    // `md.is_file() == true` and tries to stage a sibling temp file inside
-    // the *parent* of `/dev/fd/1`, i.e. the synthetic `/dev/fd` directory,
-    // which fails with ENOENT — that failure is what supplies the IO error
-    // this test is really trying to reach.
+fn dev_stdout_repro_now_succeeds_instead_of_doubling_an_error() {
+    // This used to be the literal repro from TODO.md's P2 entry:
+    // `pq import x.jsonl -o /dev/stdout > out.bin`, kept `#[ignore]`d because
+    // whether it doubled an error message depended on an unrelated,
+    // independently-flaky bug: `output_guard.rs::can_stage` resolved
+    // `/dev/stdout` to `/dev/fd/1`, saw `fs::metadata` report a regular file
+    // (because fd 1 was redirected to one), and tried to stage a sibling
+    // temp file inside the synthetic `/dev/fd` directory, which fails with
+    // ENOENT — under concurrent test load that flipped the exit code ~1 run
+    // in 5, so it never became the load-bearing guard for the doubling bug
+    // (`import_to_a_directory_destination_error_is_not_doubled` above is).
     //
-    // Under heavy concurrent load (many other `pq-cli` test processes
-    // forking at once — exactly what `cargo test --workspace` does), this
-    // was observed to intermittently exit 0 instead: ~1 run in 5 under
-    // `cargo test -p pq-cli`, 0 in 9 in isolation. That flip lives in
-    // `output_guard.rs`'s `/dev/fd` handling, which is out of this change's
-    // file scope (`crates/pq-transform/**` is not touched here) and is
-    // unrelated to the doubled-message bug this file otherwise guards — so
-    // rather than ship a gate that reports the state of the dice, this test
-    // is kept for manual reproduction and `#[ignore]`d for CI. The
-    // load-bearing automated guard for this exact `PqError::Io` shape is
-    // `import_to_a_directory_destination_error_is_not_doubled` above.
+    // That bug is now fixed in `output_guard.rs::can_stage`
+    // (`is_descriptor_alias`), so this command no longer errors at all —
+    // there is nothing left to double. This test is the corrected claim:
+    // `import -o /dev/stdout` succeeds, deterministically, and the data
+    // makes it through, redirected to a real regular file exactly as the
+    // original repro did.
     let dir = tmp();
     let src = dir.path().join("x.jsonl");
     fs::write(&src, b"{\"a\":1}\n").unwrap();
@@ -194,13 +188,17 @@ fn dev_stdout_repro_is_flaky_under_concurrent_load_see_comment() {
         ))
         .output()
         .expect("failed to run pq");
-    assert!(
-        !output.status.success(),
-        "expected this command to fail, but it exited 0 (see the flakiness \
-         note above — rerun in isolation if this was under concurrent load)"
-    );
     let stderr = String::from_utf8(output.stderr).expect("stderr was not valid UTF-8");
-    assert_error_shape_ok(&stderr, &["/dev/stdout"]);
+    assert!(
+        output.status.success(),
+        "import -o /dev/stdout should now succeed; stderr: {stderr}"
+    );
+    let bytes = fs::read(&out_file).unwrap();
+    assert!(
+        bytes.len() >= 4 && &bytes[..4] == b"PAR1",
+        "import -o /dev/stdout: captured output is not Parquet: {:?}",
+        &bytes[..bytes.len().min(20)]
+    );
 }
 
 /// Writes a tiny parquet fixture (columns `id: Int64`, `name: Utf8`, two
