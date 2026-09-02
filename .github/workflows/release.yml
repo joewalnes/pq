@@ -61,6 +61,34 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "Releasing version $version"
 
+      # The reversible half of a release must not be doomed while the
+      # irreversible half runs. `release` creates a GitHub release before
+      # `publish-npm` runs, and repository rules make that release immutable;
+      # if NPM_TOKEN is missing, `npm publish` fails afterwards, on a version
+      # number no registry will ever let us reuse. Checking the credential
+      # here costs seconds and turns that into a clean pre-flight failure.
+      #
+      # This proves presence, not validity: an expired or wrong-scope token
+      # is non-empty and still fails at publish time. The only way to prove
+      # validity is to publish, which cannot be done in advance.
+      #
+      # There is no equivalent check for PyPI: publish-pypi uses trusted
+      # publishing (OIDC via the `pypi` environment), so there is no secret
+      # to inspect from here.
+      - name: Check the npm publish credential exists
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$NPM_TOKEN" ]; then
+            echo "::error::Repository secret NPM_TOKEN is empty or unset."
+            echo "::error::publish-npm would fail after the GitHub release is"
+            echo "::error::already created and this version is burned. Add the"
+            echo "::error::secret, then re-run this workflow against the tag."
+            exit 1
+          fi
+          echo "NPM_TOKEN is present. Not validated against the registry - only publishing can do that."
+
   # `needs:` cannot reference a job in another workflow file, so CI is pulled
   # in here as a real job via `workflow_call`. This job's conclusion is the
   # conclusion of the whole CI workflow: if any CI job fails, `ci` fails, and
